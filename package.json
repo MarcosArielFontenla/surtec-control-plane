@@ -1,0 +1,19 @@
+{
+  "name": "surtec-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Surtec control plane for project orchestration, agent governance, Codex execution, and upstream monitoring.",
+  "type": "module",
+  "scripts": {
+    "validate": "bash scripts/validation/validate-schemas.sh && bash scripts/validation/validate-registry.sh",
+    "validate:registry": "bash scripts/validation/validate-registry.sh",
+    "validate:schemas": "bash scripts/validation/validate-schemas.sh",
+    "upstream:check": "bash scripts/upstream/check-updates.sh",
+    "project:bootstrap": "bash scripts/projects/bootstrap-project.sh",
+    "task:run": "bash scripts/projects/run-codex-task.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
+

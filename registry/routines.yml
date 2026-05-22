@@ -1,0 +1,63 @@
+routines:
+  - id: daily-surtec-standup
+    schedule: weekdays 09:00
+    description: Summarize active work, blockers, pending reviews, and risks across Surtec projects.
+    agents:
+      - product-manager
+      - tech-lead
+      - reality-checker
+    outputs:
+      - daily-status-summary
+      - blocker-list
+      - next-actions
+    requires_human_review: true
+
+  - id: weekly-engineering-review
+    schedule: weekly monday 10:00
+    description: Review engineering quality, open branches, test health, technical debt, and delivery risk.
+    agents:
+      - tech-lead
+      - qa-reviewer
+      - security-reviewer
+      - devops-engineer
+    outputs:
+      - engineering-review-report
+      - risk-register-update
+    requires_human_review: true
+
+  - id: weekly-upstream-watch
+    schedule: weekly friday 09:00
+    description: Check monitored upstreams and prepare a manual-review report.
+    agents:
+      - tech-lead
+      - security-reviewer
+      - documentation-writer
+    outputs:
+      - upstream-watch-report
+      - update-candidate-list
+    requires_human_review: true
+
+  - id: monthly-strategy-review
+    schedule: monthly first-monday 11:00
+    description: Review product portfolio direction, MVP scope, active priorities, and new opportunity intake.
+    agents:
+      - product-manager
+      - tech-lead
+      - reality-checker
+    outputs:
+      - strategy-review-notes
+      - roadmap-adjustment-proposals
+    requires_human_review: true
+
+  - id: legal-skills-review
+    schedule: monthly second-friday 10:00
+    description: Review Argentine legal skills, source freshness, legal caveats, and human-review requirements.
+    agents:
+      - legal-reviewer-ar
+      - security-reviewer
+      - documentation-writer
+    outputs:
+      - legal-skills-review-report
+      - verification-needed-list
+    requires_human_review: true
+

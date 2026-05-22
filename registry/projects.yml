@@ -1,0 +1,150 @@
+projects:
+  legal-ai-workbench:
+    repo: git@github.com:surtec/legal-ai-workbench.git
+    local_path: ~/dev/surtec/legal-ai-workbench
+    default_branch: main
+    status: planned
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - legal-reviewer-ar
+      - reality-checker
+    sandbox:
+      default: workspace-write
+      legal_review: read-only
+    commands:
+      install: pnpm install
+      test: pnpm test
+      build: pnpm build
+      lint: pnpm lint
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  stock-control:
+    repo: git@github.com:surtec/stock-control.git
+    local_path: ~/dev/surtec/stock-control
+    default_branch: main
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - devops-engineer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: workspace-write
+    commands:
+      install: pnpm install
+      test: pnpm test
+      build: pnpm build
+      lint: pnpm lint
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  appointment-manager:
+    repo: git@github.com:surtec/appointment-manager.git
+    local_path: ~/dev/surtec/appointment-manager
+    default_branch: main
+    status: planned
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+    sandbox:
+      default: workspace-write
+    commands:
+      install: pnpm install
+      test: pnpm test
+      build: pnpm build
+      lint: pnpm lint
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  automation-lab:
+    repo: git@github.com:surtec/automation-lab.git
+    local_path: ~/dev/surtec/automation-lab
+    default_branch: main
+    status: planned
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - devops-engineer
+      - reality-checker
+    sandbox:
+      default: workspace-write
+    commands:
+      install: pnpm install
+      test: pnpm test
+      build: pnpm build
+      lint: pnpm lint
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  portfolio-site:
+    repo: git@github.com:surtec/portfolio-site.git
+    local_path: ~/dev/surtec/portfolio-site
+    default_branch: main
+    status: planned
+    allowed_agents:
+      - product-manager
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - documentation-writer
+      - reality-checker
+    sandbox:
+      default: workspace-write
+    commands:
+      install: pnpm install
+      test: pnpm test
+      build: pnpm build
+      lint: pnpm lint
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  personal-saas:
+    repo: git@github.com:surtec/personal-saas.git
+    local_path: ~/dev/surtec/personal-saas
+    default_branch: main
+    status: planned
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - devops-engineer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: workspace-write
+    commands:
+      install: pnpm install
+      test: pnpm test
+      build: pnpm build
+      lint: pnpm lint
+    approval:
+      before_merge: true
+      before_deploy: true
+

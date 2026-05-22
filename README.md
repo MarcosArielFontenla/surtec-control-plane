@@ -1,0 +1,119 @@
+# Surtec Control Plane
+
+Surtec Control Plane is the coordination layer for Surtec projects, agents, skills, automation, upstream monitoring, and orchestration adapters.
+
+It is intentionally not a product repository. Real applications such as `legal-ai-workbench`, `stock-control`, `appointment-manager`, `automation-lab`, `portfolio-site`, and `personal-saas` must live in separate repositories. This repository manages how work is described, delegated, reviewed, and monitored.
+
+## What This Is
+
+- A registry for Surtec companies, projects, agents, routines, permissions, and upstreams.
+- A neutral task contract centered on `TaskEnvelope`.
+- A Codex CLI runner layer for dry-run and controlled execution.
+- A Paperclip adapter placeholder that can be replaced by another orchestrator.
+- A home for Surtec-specific skills across software, QA, product, security, and Argentine legal review.
+- A lightweight upstream monitor for external repositories used as references.
+
+## What This Is Not
+
+- It is not the source code for Surtec products.
+- It is not a direct fork of Paperclip, Superpowers, agency-agents, or legal reference repositories.
+- It is not a deployment system.
+- It does not store secrets or production credentials.
+- It does not merge or deploy work automatically.
+
+## Architecture
+
+```text
+Paperclip or another orchestrator
+  -> Surtec Adapter Layer
+  -> TaskEnvelope
+  -> Codex CLI runner
+  -> Surtec project repositories
+```
+
+Paperclip is treated as the first external orchestrator, not as the core of the system. Any future dashboard, GitHub issue workflow, Linear integration, Jira integration, CLI tool, or custom Surtec UI should be able to emit the same `TaskEnvelope` shape.
+
+## Codex CLI
+
+Codex CLI is the primary execution engine for agent tasks. Runners in `adapters/codex-runner/` and `scripts/projects/` default to dry-run mode. Real execution requires:
+
+```bash
+SURTEC_EXECUTE=1 ./adapters/codex-runner/run-task.sh path/to/task.json
+```
+
+All real execution must preserve human review gates, avoid deployments, and avoid merges.
+
+## Codex in VS Code
+
+Codex in VS Code is the preferred place for human review. Agents can generate branches, logs, reports, and suggestions, but humans inspect diffs before accepting changes.
+
+## Superpowers
+
+Superpowers is used as a development methodology when installed. Surtec agents should use it for brainstorming, planning, TDD, debugging, review, verification, and branch finishing workflows when applicable.
+
+## agency-agents
+
+`agency-agents` is treated as an inspiration source for agent definitions. Surtec does not import it wholesale. Candidate agents must be selected, transformed, reviewed, and adapted to Surtec naming and governance.
+
+## claude-for-legal-argentina
+
+`claude-for-legal-argentina` is treated as a legal reference source for building Argentine legal skills. Legal materials require human legal review before use. Agents must not invent law or present legal analysis as professional advice.
+
+## Project Organization
+
+Expected external layout:
+
+```text
+surtec/
+  legal-ai-workbench/
+  stock-control/
+  appointment-manager/
+  automation-lab/
+  portfolio-site/
+  personal-saas/
+```
+
+This repository points to those projects through `registry/projects.yml`.
+
+## Run a Task
+
+Create a `TaskEnvelope` JSON file, then run:
+
+```bash
+./adapters/codex-runner/run-task.sh task.json
+```
+
+By default, the runner prints the `codex exec` command that would run. It executes only when `SURTEC_EXECUTE=1`.
+
+The shell scripts require a Bash-compatible environment. On Windows, use WSL, Git Bash, or run the scripts in CI on Ubuntu.
+
+## Add a New Project
+
+1. Add the project to `registry/projects.yml`.
+2. Define allowed agents, commands, sandbox defaults, and approval requirements.
+3. Bootstrap the external repo:
+
+```bash
+./scripts/projects/bootstrap-project.sh project-id ~/dev/surtec/project-id
+```
+
+## Add a New Agent
+
+1. Add an entry to `registry/agents.yml`.
+2. Add a matching TOML file under `agents/codex/`.
+3. Keep the agent scoped, reviewable, and aligned with `AGENTS.md`.
+4. Add eval coverage under `evals/agents/` when behavior becomes important.
+
+## Watch Upstreams
+
+Run:
+
+```bash
+./scripts/upstream/check-updates.sh
+```
+
+The workflow `.github/workflows/upstream-watcher.yml` runs this weekly and uploads reports. It does not update upstreams automatically.
+
+## Status
+
+Initial scaffold only. Not production-ready.

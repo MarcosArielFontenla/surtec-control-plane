@@ -1,0 +1,16 @@
+services:
+  paperclip:
+    image: paperclip-placeholder:latest
+    container_name: surtec-paperclip
+    profiles:
+      - manual
+    ports:
+      - "${PAPERCLIP_PORT:-3000}:3000"
+    environment:
+      PAPERCLIP_DATABASE_URL: "${PAPERCLIP_DATABASE_URL}"
+      PAPERCLIP_SECRET: "${PAPERCLIP_SECRET}"
+      SURTEC_CONTROL_PLANE_PATH: "${SURTEC_CONTROL_PLANE_PATH}"
+    volumes:
+      - ../../:/workspace/surtec-control-plane:ro
+    command: ["sh", "-c", "echo 'Configure the real Paperclip image before running this service.' && sleep infinity"]
+

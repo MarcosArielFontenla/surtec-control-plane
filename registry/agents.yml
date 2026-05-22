@@ -1,0 +1,148 @@
+agents:
+  - id: product-manager
+    name: Product Manager
+    type: product
+    description: Defines scope, priorities, user stories, and acceptance criteria.
+    codex_agent_file: agents/codex/product-manager.toml
+    default_sandbox: read-only
+    allowed_task_types:
+      - discovery
+      - product-scope
+      - user-story
+      - prioritization
+    requires_human_approval_for:
+      - scope-change
+      - roadmap-change
+
+  - id: tech-lead
+    name: Tech Lead
+    type: engineering
+    description: Reviews architecture, sequencing, technical risk, and implementation plans.
+    codex_agent_file: agents/codex/tech-lead.toml
+    default_sandbox: workspace-write
+    allowed_task_types:
+      - architecture-review
+      - implementation-plan
+      - code-review
+      - refactor
+    requires_human_approval_for:
+      - dependency-change
+      - architecture-change
+      - merge
+
+  - id: backend-engineer
+    name: Backend Engineer
+    type: engineering
+    description: Implements backend services, APIs, jobs, integrations, and persistence changes.
+    codex_agent_file: agents/codex/backend-engineer.toml
+    default_sandbox: workspace-write
+    allowed_task_types:
+      - backend-implementation
+      - api-change
+      - data-model-change
+      - bugfix
+    requires_human_approval_for:
+      - migration
+      - production-data-access
+      - merge
+
+  - id: frontend-engineer
+    name: Frontend Engineer
+    type: engineering
+    description: Implements user interfaces, client-side behavior, accessibility, and frontend tests.
+    codex_agent_file: agents/codex/frontend-engineer.toml
+    default_sandbox: workspace-write
+    allowed_task_types:
+      - frontend-implementation
+      - ui-review
+      - accessibility-review
+      - bugfix
+    requires_human_approval_for:
+      - design-system-change
+      - merge
+
+  - id: qa-reviewer
+    name: QA Reviewer
+    type: quality
+    description: Builds test plans, reviews coverage, and validates acceptance criteria.
+    codex_agent_file: agents/codex/qa-reviewer.toml
+    default_sandbox: read-only
+    allowed_task_types:
+      - test-plan
+      - qa-review
+      - regression-review
+    requires_human_approval_for:
+      - release-signoff
+
+  - id: security-reviewer
+    name: Security Reviewer
+    type: security
+    description: Reviews threat models, secrets exposure, permissions, and security-sensitive changes.
+    codex_agent_file: agents/codex/security-reviewer.toml
+    default_sandbox: read-only
+    allowed_task_types:
+      - threat-model
+      - secrets-review
+      - security-review
+    requires_human_approval_for:
+      - security-exception
+      - production-secret-access
+
+  - id: devops-engineer
+    name: DevOps Engineer
+    type: operations
+    description: Reviews CI, deployment safety, infrastructure scripts, logs, and rollback plans.
+    codex_agent_file: agents/codex/devops-engineer.toml
+    default_sandbox: workspace-write
+    allowed_task_types:
+      - ci-change
+      - deployment-review
+      - observability
+      - automation
+    requires_human_approval_for:
+      - deployment
+      - infrastructure-change
+      - secret-change
+
+  - id: reality-checker
+    name: Reality Checker
+    type: review
+    description: Challenges assumptions, identifies missing facts, and highlights overreach.
+    codex_agent_file: agents/codex/reality-checker.toml
+    default_sandbox: read-only
+    allowed_task_types:
+      - assumption-review
+      - feasibility-review
+      - risk-review
+    requires_human_approval_for:
+      - decision-change
+
+  - id: documentation-writer
+    name: Documentation Writer
+    type: documentation
+    description: Creates and updates docs, runbooks, usage guides, and release notes.
+    codex_agent_file: agents/codex/documentation-writer.toml
+    default_sandbox: workspace-write
+    allowed_task_types:
+      - documentation
+      - runbook
+      - changelog
+    requires_human_approval_for:
+      - public-publication
+
+  - id: legal-reviewer-ar
+    name: Argentine Legal Reviewer
+    type: legal
+    description: Performs initial Argentine legal review drafts for human lawyer validation.
+    codex_agent_file: agents/codex/legal-reviewer-ar.toml
+    default_sandbox: read-only
+    allowed_task_types:
+      - legal-review
+      - contract-review
+      - privacy-review
+      - legal-triage
+    requires_human_approval_for:
+      - legal-conclusion
+      - external-legal-delivery
+      - production-use
+
