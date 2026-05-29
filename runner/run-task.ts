@@ -1,0 +1,92 @@
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { AgentOutcome, AgentResult } from "../lib/state/types";
+import { readTask, writeTask } from "../lib/state/store";
+import { runReadOnlyAgent } from "./claude";
+import { buildSystemPrompt, buildUserPrompt } from "./agent-prompt";
+import { loadRegistryAgents } from "./registry-agents";
+import { toAgentResult, failureResult } from "./result";
+
+function expandHome(p: string): string {
+  if (p === "~") return process.env.HOME ?? process.env.USERPROFILE ?? p;
+  if (p.startsWith("~/") || p.startsWith("~\\")) {
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+    return join(home, p.slice(2));
+  }
+  return p;
+}
+
+export async function runTask(taskId: string, repoRoot: string = process.cwd()): Promise<void> {
+  const rec = readTask(taskId);
+  if (!rec) return;
+
+  const start = new Date().toISOString();
+  rec.lifecycle = "running";
+  rec.started_at = start;
+  rec.updated_at = start;
+  writeTask(rec);
+
+  mkdirSync(join(repoRoot, "reports"), { recursive: true });
+  const logsPath = join("reports", `${rec.envelope.id}-${rec.envelope.agent}-${start.replace(/[:.]/g, "")}.jsonl`);
+  const absLogsPath = join(repoRoot, logsPath);
+
+  const finish = (outcome: AgentOutcome, result: AgentResult): void => {
+    const end = new Date().toISOString();
+    rec.lifecycle = "finished";
+    rec.finished_at = end;
+    rec.updated_at = end;
+    rec.outcome = outcome;
+    rec.result = result;
+    rec.logs_path = logsPath;
+    writeTask(rec);
+  };
+
+  const writeLog = (obj: unknown): void => {
+    try {
+      writeFileSync(absLogsPath, JSON.stringify(obj) + "\n", "utf8");
+    } catch {
+      /* logging must never break the run */
+    }
+  };
+
+  try {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      writeLog({ error: "missing ANTHROPIC_API_KEY" });
+      finish("failed", failureResult(rec.envelope, "missing ANTHROPIC_API_KEY", logsPath));
+      return;
+    }
+    const cwd = expandHome(rec.envelope.repo_path);
+    if (!existsSync(cwd)) {
+      const reason = `repo not found at ${cwd}`;
+      writeLog({ error: reason });
+      finish("failed", failureResult(rec.envelope, reason, logsPath));
+      return;
+    }
+    const agent = loadRegistryAgents(repoRoot).find((a) => a.id === rec.envelope.agent);
+    if (!agent) {
+      const reason = `unknown agent: ${rec.envelope.agent}`;
+      writeLog({ error: reason });
+      finish("failed", failureResult(rec.envelope, reason, logsPath));
+      return;
+    }
+    const agentsMd = readFileSync(join(repoRoot, "AGENTS.md"), "utf8");
+    const systemPrompt = buildSystemPrompt(agent, agentsMd);
+    const prompt = buildUserPrompt(rec.envelope);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+    try {
+      const { text, costUsd, tokens } = await runReadOnlyAgent({ cwd, systemPrompt, prompt }, controller.signal);
+      writeLog({ task_id: rec.envelope.id, cost_usd: costUsd, tokens, text });
+      rec.envelope.metadata.run = { cost_usd: costUsd, tokens };
+      const result = toAgentResult(rec.envelope, text, logsPath);
+      finish(result.status, result);
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (err) {
+    const reason = (err as Error)?.name === "AbortError" ? "timeout (5m)" : (err as Error)?.message ?? "unknown error";
+    writeLog({ error: reason });
+    finish("failed", failureResult(rec.envelope, reason, logsPath));
+  }
+}
