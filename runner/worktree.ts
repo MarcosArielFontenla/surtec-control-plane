@@ -44,3 +44,15 @@ export function commitAndDiff(worktreePath: string, message: string): CommitResu
   if (!commit.ok) throw new Error(`git commit failed: ${commit.stderr.trim()}`);
   return { filesChanged, diffstat: stat.stdout.trim(), committed: true };
 }
+
+export function pushBranch(sourceRepo: string, branch: string): { pushed: boolean; error?: string } {
+  const r = git(["-C", sourceRepo, "push", "origin", branch]);
+  return r.ok ? { pushed: true } : { pushed: false, error: (r.stderr || r.stdout).trim() };
+}
+
+export function removeWorktree(sourceRepo: string, worktreePath: string, branch: string): void {
+  const rm = git(["-C", sourceRepo, "worktree", "remove", "--force", worktreePath]);
+  if (!rm.ok) throw new Error(`git worktree remove failed: ${(rm.stderr || rm.stdout).trim()}`);
+  const del = git(["-C", sourceRepo, "branch", "-D", branch]);
+  if (!del.ok) throw new Error(`git branch -D failed: ${(del.stderr || del.stdout).trim()}`);
+}

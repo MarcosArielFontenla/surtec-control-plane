@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createWorktree, commitAndDiff } from "./worktree";
+import { createWorktree, commitAndDiff, pushBranch, removeWorktree } from "./worktree";
 
 let dir: string;
 let repo: string;
@@ -45,5 +45,42 @@ describe("commitAndDiff", () => {
     expect(r.committed).toBe(false);
     expect(r.filesChanged).toEqual([]);
     expect(r.diffstat).toBe("");
+  });
+});
+
+describe("pushBranch", () => {
+  it("pushes a branch to a configured origin", () => {
+    const bare = join(dir, "remote.git");
+    spawnSync("git", ["init", "--bare", bare], { encoding: "utf8" });
+    spawnSync("git", ["-C", repo, "remote", "add", "origin", bare], { encoding: "utf8" });
+    spawnSync("git", ["-C", repo, "checkout", "-b", "agent/x"], { encoding: "utf8" });
+    writeFileSync(join(repo, "f.txt"), "x\n", "utf8");
+    spawnSync("git", ["-C", repo, "add", "-A"], { encoding: "utf8" });
+    spawnSync("git", ["-C", repo, "commit", "-m", "c"], { encoding: "utf8" });
+
+    const r = pushBranch(repo, "agent/x");
+
+    expect(r.pushed).toBe(true);
+    const ls = spawnSync("git", ["-C", bare, "branch", "--list", "agent/x"], { encoding: "utf8" });
+    expect(ls.stdout).toContain("agent/x");
+  });
+
+  it("returns pushed:false with an error when there is no remote", () => {
+    const r = pushBranch(repo, "main");
+    expect(r.pushed).toBe(false);
+    expect(r.error && r.error.length > 0).toBe(true);
+  });
+});
+
+describe("removeWorktree", () => {
+  it("removes the worktree directory and deletes the branch", () => {
+    const { branch, worktreePath } = createWorktree(repo, "STK-9", "a");
+    expect(existsSync(worktreePath)).toBe(true);
+
+    removeWorktree(repo, worktreePath, branch);
+
+    expect(existsSync(worktreePath)).toBe(false);
+    const ls = spawnSync("git", ["-C", repo, "branch", "--list", branch], { encoding: "utf8" });
+    expect(ls.stdout.trim()).toBe("");
   });
 });
