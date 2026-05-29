@@ -8,7 +8,7 @@ export const WRITE_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "MultiEdit"
 
 // Shell/exec + notebook edits are NEVER allowed, in either mode.
 const EXEC_TOOLS = ["Bash", "BashOutput", "KillBash", "NotebookEdit"];
-// Write tools additionally disallowed in read-only mode.
+// = WRITE_TOOLS - READ_ONLY_TOOLS. If WRITE_TOOLS gains a tool, add it here too.
 const WRITE_TOOLS_DISALLOWED_IN_READONLY = ["Write", "Edit", "MultiEdit"];
 
 export interface RunOptions {

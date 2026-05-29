@@ -11,6 +11,13 @@ describe("buildQueryOptions (read-only)", () => {
     expect(READ_ONLY_TOOLS).toEqual(["Read", "Grep", "Glob"]);
   });
 
+  it("disallows write + shell/exec tools in read-only mode", () => {
+    const o = buildQueryOptions({ cwd: "/repo", systemPrompt: "sp", prompt: "p", mode: "read-only" });
+    for (const tool of ["Write", "Edit", "MultiEdit", "Bash"]) {
+      expect(o.disallowedTools).toContain(tool);
+    }
+  });
+
   it("canUseTool allows read tools and denies write/edit/bash", async () => {
     const o = buildQueryOptions({ cwd: "/repo", systemPrompt: "sp", prompt: "p", mode: "read-only" });
     expect((await o.canUseTool("Read", { file: "x" })).behavior).toBe("allow");
