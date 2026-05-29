@@ -145,6 +145,8 @@ describe("runTask", () => {
     expect(createWorktree).toHaveBeenCalledWith(repo, "T-1", "backend-engineer");
     expect(vi.mocked(runAgent).mock.calls[0][0].mode).toBe("workspace-write");
     expect(commitAndDiff).toHaveBeenCalled();
+    expect(vi.mocked(runAgent).mock.calls[0][0].cwd).toBe(join(repo, "..", "wt"));
+    expect(commitAndDiff).toHaveBeenCalledWith(join(repo, "..", "wt"), expect.any(String));
     const rec = readTask("T-1")!;
     expect(rec.lifecycle).toBe("finished");
     expect(rec.outcome).toBe("completed");
@@ -174,5 +176,42 @@ describe("runTask", () => {
     expect(rec.outcome).toBe("failed");
     expect(rec.result?.blockers[0]).toContain("git worktree add failed");
     expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("workspace-write: completes with no files when the agent made no changes", async () => {
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeTask(writeRecord());
+    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
+    vi.mocked(runAgent).mockResolvedValue({
+      text: '```json\n{ "summary": "nothing to change", "status": "completed" }\n```',
+      costUsd: 0.01,
+      tokens: 5,
+    });
+    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: [], diffstat: "", committed: false });
+
+    await runTask("T-1", root);
+
+    const rec = readTask("T-1")!;
+    expect(rec.lifecycle).toBe("finished");
+    expect(rec.outcome).toBe("completed");
+    expect(rec.result?.files_changed).toEqual([]);
+  });
+
+  it("workspace-write: fails cleanly when committing the edits throws", async () => {
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeTask(writeRecord());
+    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
+    vi.mocked(runAgent).mockResolvedValue({
+      text: '```json\n{ "summary": "edited", "status": "completed" }\n```',
+      costUsd: 0.01,
+      tokens: 5,
+    });
+    vi.mocked(commitAndDiff).mockImplementation(() => { throw new Error("git commit failed: nothing staged"); });
+
+    await runTask("T-1", root);
+
+    const rec = readTask("T-1")!;
+    expect(rec.outcome).toBe("failed");
+    expect(rec.result?.blockers[0]).toContain("git commit failed");
   });
 });
