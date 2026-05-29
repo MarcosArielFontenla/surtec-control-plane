@@ -63,6 +63,7 @@ export function buildOverview(
 
   const attention: AttentionItem[] = [];
   for (const t of tasks) {
+    if (t.decision != null) continue; // decided tasks contribute no attention items
     // A task-level flag is raised only once: needs-review takes priority over
     // awaiting-approval (review the work before approving it). Both branches guard
     // on lifecycle === "finished" so a still-running task never surfaces here.
