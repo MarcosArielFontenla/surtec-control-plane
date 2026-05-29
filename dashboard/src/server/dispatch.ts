@@ -9,6 +9,7 @@ export interface CreateTaskInput {
   project: string;
   agent: string;
   instructions: string;
+  sandbox?: string;
 }
 
 export function createTask(input: CreateTaskInput, repoRoot: string = process.cwd()): { id: string } {
@@ -17,6 +18,11 @@ export function createTask(input: CreateTaskInput, repoRoot: string = process.cw
   const instructions = String(input?.instructions ?? "").trim();
 
   if (!instructions) throw new ValidationError("instructions are required");
+
+  const sandbox = String(input?.sandbox ?? "read-only");
+  if (sandbox !== "read-only" && sandbox !== "workspace-write") {
+    throw new ValidationError(`invalid sandbox: ${sandbox} (use read-only or workspace-write)`);
+  }
 
   const rp = loadRegistryProjects(repoRoot).find((p) => p.id === project);
   if (!rp) throw new ValidationError(`unknown project: ${project}`);
@@ -29,13 +35,13 @@ export function createTask(input: CreateTaskInput, repoRoot: string = process.cw
     id,
     source: "dashboard",
     project,
-    task_type: "analysis",
+    task_type: sandbox === "workspace-write" ? "implementation" : "analysis",
     agent,
     title: instructions.slice(0, 80),
     instructions,
     repo_path: rp.repo_path ?? `~/dev/surtec/${project}`,
     branch: `agent/${id}-${agent}`,
-    sandbox: "read-only",
+    sandbox: sandbox as "read-only" | "workspace-write",
     expected_outputs: ["summary", "risks", "next_steps"],
     requires_human_approval: true,
     metadata: { created_by: "dashboard" },

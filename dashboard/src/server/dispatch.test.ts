@@ -59,4 +59,28 @@ describe("createTask", () => {
   it("rejects empty instructions", () => {
     expect(() => createTask({ project: "stock-control", agent: "backend-engineer", instructions: "   " }, root)).toThrow(ValidationError);
   });
+
+  it("records a workspace-write task with task_type implementation", () => {
+    const { id } = createTask(
+      { project: "stock-control", agent: "backend-engineer", instructions: "Implement X.", sandbox: "workspace-write" },
+      root,
+    );
+    expect(id).toMatch(/^T-/);
+    const t = listTasks().find((x) => x.envelope.id === id)!;
+    expect(t.envelope.sandbox).toBe("workspace-write");
+    expect(t.envelope.task_type).toBe("implementation");
+  });
+
+  it("defaults to read-only / analysis when sandbox is absent", () => {
+    const { id } = createTask({ project: "stock-control", agent: "backend-engineer", instructions: "Look." }, root);
+    const t = listTasks().find((x) => x.envelope.id === id)!;
+    expect(t.envelope.sandbox).toBe("read-only");
+    expect(t.envelope.task_type).toBe("analysis");
+  });
+
+  it("rejects an invalid sandbox value", () => {
+    expect(() =>
+      createTask({ project: "stock-control", agent: "backend-engineer", instructions: "x", sandbox: "danger" } as never, root),
+    ).toThrow(ValidationError);
+  });
 });
