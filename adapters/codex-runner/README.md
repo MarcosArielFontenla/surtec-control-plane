@@ -1,3 +1,8 @@
+> **DEPRECATED (2026-05-28):** Surtec standardizes execution on Claude tooling
+> (Claude Agent SDK / Claude Code). This Codex runner is kept for reference only and
+> receives no further investment. The Claude runner will be introduced in the
+> "dispatch" slice. See `docs/superpowers/specs/2026-05-28-live-status-dashboard-design.md`.
+
 # Codex Runner Adapter
 
 This adapter executes a Surtec `TaskEnvelope` through Codex CLI.

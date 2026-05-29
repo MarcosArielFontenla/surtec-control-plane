@@ -3,6 +3,6 @@ company:
   name: Surtec
   description: Personal and early-team software studio for internal tools, client work, and future products.
   default_orchestrator: paperclip
-  default_executor: codex-cli
+  default_executor: claude
   status: bootstrap
 
