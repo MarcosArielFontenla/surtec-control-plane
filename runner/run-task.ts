@@ -7,6 +7,7 @@ import { runAgent } from "./claude";
 import { buildSystemPrompt, buildUserPrompt } from "./agent-prompt";
 import { loadRegistryAgents } from "./registry-agents";
 import { toAgentResult, failureResult } from "./result";
+import { createWorktree, commitAndDiff } from "./worktree";
 
 function expandHome(p: string): string {
   if (p === "~") return homedir();
@@ -69,17 +70,37 @@ export async function runTask(taskId: string, repoRoot: string = process.cwd()):
       return;
     }
     const agentsMd = readFileSync(join(repoRoot, "AGENTS.md"), "utf8");
-    const systemPrompt = buildSystemPrompt(agent, agentsMd);
+    const mode = rec.envelope.sandbox === "workspace-write" ? "workspace-write" : "read-only";
+    const systemPrompt = buildSystemPrompt(agent, agentsMd, mode);
     const prompt = buildUserPrompt(rec.envelope);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000);
     try {
-      const { text, costUsd, tokens } = await runAgent({ cwd, systemPrompt, prompt, mode: "read-only" }, controller.signal);
-      writeLog({ task_id: rec.envelope.id, cost_usd: costUsd, tokens, text });
-      rec.envelope.metadata.run = { cost_usd: costUsd, tokens };
-      const result = toAgentResult(rec.envelope, text, logsPath);
-      finish(result.status, result);
+      if (mode === "workspace-write") {
+        if (!existsSync(join(cwd, ".git"))) {
+          throw new Error(`not a git repository: ${cwd}`);
+        }
+        const { branch, worktreePath } = createWorktree(cwd, rec.envelope.id, rec.envelope.agent);
+        const { text, costUsd, tokens } = await runAgent(
+          { cwd: worktreePath, systemPrompt, prompt, mode: "workspace-write" },
+          controller.signal,
+        );
+        const { filesChanged, diffstat, committed } = commitAndDiff(
+          worktreePath,
+          `agent ${rec.envelope.id}: ${rec.envelope.title}`.slice(0, 72),
+        );
+        writeLog({ task_id: rec.envelope.id, mode, branch, worktree_path: worktreePath, committed, diffstat, cost_usd: costUsd, tokens, text });
+        rec.envelope.metadata.run = { mode, branch, worktree_path: worktreePath, diffstat, committed, cost_usd: costUsd, tokens };
+        const result = toAgentResult(rec.envelope, text, logsPath, filesChanged);
+        finish(result.status, result);
+      } else {
+        const { text, costUsd, tokens } = await runAgent({ cwd, systemPrompt, prompt, mode: "read-only" }, controller.signal);
+        writeLog({ task_id: rec.envelope.id, mode, cost_usd: costUsd, tokens, text });
+        rec.envelope.metadata.run = { mode, cost_usd: costUsd, tokens };
+        const result = toAgentResult(rec.envelope, text, logsPath);
+        finish(result.status, result);
+      }
     } finally {
       clearTimeout(timeout);
     }
