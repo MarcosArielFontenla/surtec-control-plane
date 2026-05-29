@@ -2,6 +2,8 @@ import type { ReviewDecision, TaskRecord } from "../../../lib/state/types";
 import { readTask, writeTask } from "../../../lib/state/store";
 import { expandHome } from "../../../lib/expand-home";
 import { pushBranch, removeWorktree } from "../../../runner/worktree";
+import { loadRegistryProjects } from "./registry";
+import { openPullRequest, buildPrBody } from "../../../runner/github";
 
 export class ReviewError extends Error {}
 export class TaskNotFoundError extends ReviewError {}
@@ -25,15 +27,32 @@ function loadDecidable(taskId: string): TaskRecord {
   return rec;
 }
 
-export function approveTask(taskId: string): ReviewDecision {
+function defaultBranchFor(repoRoot: string, project: string): string {
+  try {
+    const p = loadRegistryProjects(repoRoot).find((x) => x.id === project);
+    return p?.default_branch ?? "main";
+  } catch {
+    return "main";
+  }
+}
+
+export function approveTask(taskId: string, repoRoot: string = process.cwd()): ReviewDecision {
   const rec = loadDecidable(taskId);
   const decision: ReviewDecision = { status: "approved", at: new Date().toISOString() };
   const { branch, committed } = runInfo(rec);
   if (rec.envelope.sandbox === "workspace-write" && branch && committed) {
-    const r = pushBranch(expandHome(rec.envelope.repo_path), branch);
+    const repoPath = expandHome(rec.envelope.repo_path);
+    const r = pushBranch(repoPath, branch);
     decision.branch = branch;
     decision.pushed = r.pushed;
-    if (!r.pushed) decision.error = r.error;
+    if (!r.pushed) {
+      decision.error = r.error;
+    } else {
+      const base = defaultBranchFor(repoRoot, rec.envelope.project);
+      const pr = openPullRequest(repoPath, branch, base, rec.envelope.title, buildPrBody(rec.envelope, rec.result));
+      if (pr.url) decision.pr_url = pr.url;
+      else decision.error = pr.error;
+    }
   }
   rec.decision = decision;
   rec.updated_at = decision.at;

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskRecord } from "../../../lib/state/types";
@@ -7,6 +7,8 @@ import { expandHome } from "../../../lib/expand-home";
 
 vi.mock("../../../runner/worktree", () => ({ pushBranch: vi.fn(), removeWorktree: vi.fn() }));
 import { pushBranch, removeWorktree } from "../../../runner/worktree";
+vi.mock("../../../runner/github", () => ({ openPullRequest: vi.fn(), buildPrBody: vi.fn(() => "PR_BODY") }));
+import { openPullRequest } from "../../../runner/github";
 import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
 import { writeTask, readTask } from "../../../lib/state/store";
 
@@ -31,9 +33,13 @@ function record(id: string, over: Partial<TaskRecord> & { sandbox?: "read-only" 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "surtec-review-"));
   process.env.SURTEC_STATE_DIR = join(root, "state");
+  mkdirSync(join(root, "registry"), { recursive: true });
+  writeFileSync(join(root, "registry", "projects.yml"), "projects:\n  stock-control:\n    default_branch: main\n", "utf8");
   vi.mocked(pushBranch).mockReset();
   vi.mocked(removeWorktree).mockReset();
   vi.mocked(pushBranch).mockReturnValue({ pushed: true });
+  vi.mocked(openPullRequest).mockReset();
+  vi.mocked(openPullRequest).mockReturnValue({ url: "https://github.com/x/pull/1" });
 });
 afterEach(() => {
   delete process.env.SURTEC_STATE_DIR;
@@ -41,22 +47,25 @@ afterEach(() => {
 });
 
 describe("approveTask", () => {
-  it("approves a workspace-write task and pushes its branch", () => {
+  it("approves a workspace-write task: pushes the branch and opens a PR", () => {
     writeTask(record("RV-1"));
-    const d = approveTask("RV-1");
+    const d = approveTask("RV-1", root);
     expect(d.status).toBe("approved");
     expect(pushBranch).toHaveBeenCalledWith(expandHome("~/dev/x"), "agent/RV-1-backend-engineer");
     expect(d.pushed).toBe(true);
-    expect(readTask("RV-1")!.decision?.status).toBe("approved");
+    expect(openPullRequest).toHaveBeenCalledWith(expandHome("~/dev/x"), "agent/RV-1-backend-engineer", "main", "t", "PR_BODY");
+    expect(d.pr_url).toBe("https://github.com/x/pull/1");
+    expect(readTask("RV-1")!.decision?.pr_url).toBe("https://github.com/x/pull/1");
   });
 
   it("approves a read-only task without pushing", () => {
     const r = record("RV-2", { sandbox: "read-only" });
     r.envelope.metadata = {};
     writeTask(r);
-    const d = approveTask("RV-2");
+    const d = approveTask("RV-2", root);
     expect(d.status).toBe("approved");
     expect(pushBranch).not.toHaveBeenCalled();
+    expect(openPullRequest).not.toHaveBeenCalled();
   });
 
   it("throws ReviewError when already decided", () => {
@@ -76,10 +85,21 @@ describe("approveTask", () => {
   it("records pushed:false with the error when the push fails", () => {
     vi.mocked(pushBranch).mockReturnValue({ pushed: false, error: "no upstream" });
     writeTask(record("RV-7"));
-    const d = approveTask("RV-7");
+    const d = approveTask("RV-7", root);
     expect(d.status).toBe("approved");
     expect(d.pushed).toBe(false);
     expect(d.error).toBe("no upstream");
+    expect(openPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("records the PR error but stays approved when gh fails", () => {
+    vi.mocked(openPullRequest).mockReturnValue({ error: "gh: command not found" });
+    writeTask(record("RV-8"));
+    const d = approveTask("RV-8", root);
+    expect(d.status).toBe("approved");
+    expect(d.pushed).toBe(true);
+    expect(d.pr_url).toBeUndefined();
+    expect(d.error).toContain("gh: command not found");
   });
 });
 
