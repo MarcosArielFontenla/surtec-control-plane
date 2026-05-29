@@ -39,6 +39,7 @@ describe("buildSystemPrompt", () => {
   it("grants edit tools and forbids commands in workspace-write mode", () => {
     const p = buildSystemPrompt(agent, "RULE: do not deploy.", "workspace-write");
     expect(p).toContain("WORKSPACE-WRITE");
+    expect(p).not.toContain("READ-ONLY");
     expect(p).toContain("edit files");
     expect(p).toContain("must NOT run");
     expect(p).toContain("```json");
