@@ -47,8 +47,8 @@ describe("AttentionPanel", () => {
         ]}
       />,
     );
-    expect(screen.getByText(/✓ verificado/)).toBeInTheDocument();
-    expect(screen.getByText(/✗ verificación falló/)).toBeInTheDocument();
-    expect(screen.getByText(/\(sin verificar\)/)).toBeInTheDocument();
+    expect(screen.getByText(/✓ verificado/)).toBeTruthy();
+    expect(screen.getByText(/✗ verificación falló/)).toBeTruthy();
+    expect(screen.getByText(/\(sin verificar\)/)).toBeTruthy();
   });
 });
