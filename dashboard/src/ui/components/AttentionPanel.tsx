@@ -17,7 +17,7 @@ export function AttentionPanel({ items }: { items: AttentionItem[] }) {
   const decide = async (id: string, action: "approve" | "reject") => {
     const ok = window.confirm(
       action === "approve"
-        ? `¿Aprobar ${id}? Si es workspace-write, se pushea su branch a origin.`
+        ? `¿Aprobar ${id}? Si es workspace-write, se pushea su branch a origin y se abre un PR.`
         : `¿Rechazar ${id}? Si es workspace-write, se descartan su worktree y branch.`,
     );
     if (!ok) return;
