@@ -32,5 +32,23 @@ describe("NewTaskForm", () => {
         instructions: "Analyze the auth module.",
       });
     });
+
+    await waitFor(() => expect(screen.getByText(/Despachado: T-abc/)).toBeTruthy());
+  });
+
+  it("shows an error banner when dispatch fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (String(url).endsWith("/api/dispatch-options")) {
+        return { ok: true, status: 200, json: async () => ({ projects: [{ project: "stock-control", agents: ["backend-engineer"] }] }) } as Response;
+      }
+      return { ok: false, status: 400, json: async () => ({ error: "agent not allowed" }) } as Response;
+    }) as unknown as typeof fetch);
+
+    render(<NewTaskForm />);
+    await waitFor(() => expect(screen.getByText("backend-engineer")).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText(/instrucciones/i), { target: { value: "do it" } });
+    fireEvent.click(screen.getByRole("button", { name: /despachar/i }));
+
+    await waitFor(() => expect(screen.getByText(/agent not allowed/)).toBeTruthy());
   });
 });

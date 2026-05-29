@@ -7,6 +7,7 @@ export function NewTaskForm() {
   const [agent, setAgent] = useState("");
   const [instructions, setInstructions] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -35,10 +36,12 @@ export function NewTaskForm() {
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setOkMsg(null);
     setBusy(true);
     try {
-      await createTask({ project, agent, instructions });
+      const { id } = await createTask({ project, agent, instructions });
       setInstructions("");
+      setOkMsg(`Despachado: ${id}`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -50,6 +53,7 @@ export function NewTaskForm() {
     <form onSubmit={onSubmit} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, marginBottom: 24 }}>
       <h4 style={{ marginTop: 0 }}>Nueva tarea</h4>
       {error && <div style={{ background: "#f8d7da", padding: 6, borderRadius: 6, marginBottom: 8 }}>{error}</div>}
+      {okMsg && <div style={{ background: "#d1e7dd", padding: 6, borderRadius: 6, marginBottom: 8 }}>{okMsg}</div>}
       <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
         <select aria-label="Proyecto" value={project} onChange={(e) => onProjectChange(e.target.value)}>
           {options.map((p) => <option key={p.project} value={p.project}>{p.project}</option>)}
@@ -59,6 +63,7 @@ export function NewTaskForm() {
         </select>
       </div>
       <textarea
+        name="instructions"
         placeholder="Instrucciones para el agente…"
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}
