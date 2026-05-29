@@ -1,19 +1,10 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { ReviewDecision, TaskRecord } from "../../../lib/state/types";
 import { readTask, writeTask } from "../../../lib/state/store";
+import { expandHome } from "../../../lib/expand-home";
 import { pushBranch, removeWorktree } from "../../../runner/worktree";
 
 export class ReviewError extends Error {}
 export class TaskNotFoundError extends ReviewError {}
-
-function expandHome(p: string): string {
-  if (p === "~") return homedir().replace(/\\/g, "/");
-  if (p.startsWith("~/") || p.startsWith("~\\")) {
-    return join(homedir(), p.slice(2)).replace(/\\/g, "/");
-  }
-  return p;
-}
 
 interface RunInfo {
   branch?: string;

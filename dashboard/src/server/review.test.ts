@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskRecord } from "../../../lib/state/types";
+import { expandHome } from "../../../lib/expand-home";
 
 vi.mock("../../../runner/worktree", () => ({ pushBranch: vi.fn(), removeWorktree: vi.fn() }));
 import { pushBranch, removeWorktree } from "../../../runner/worktree";
@@ -44,7 +45,7 @@ describe("approveTask", () => {
     writeTask(record("RV-1"));
     const d = approveTask("RV-1");
     expect(d.status).toBe("approved");
-    expect(pushBranch).toHaveBeenCalledWith(expect.stringContaining("dev/x"), "agent/RV-1-backend-engineer");
+    expect(pushBranch).toHaveBeenCalledWith(expandHome("~/dev/x"), "agent/RV-1-backend-engineer");
     expect(d.pushed).toBe(true);
     expect(readTask("RV-1")!.decision?.status).toBe("approved");
   });
@@ -71,6 +72,15 @@ describe("approveTask", () => {
   it("throws TaskNotFoundError for a missing task", () => {
     expect(() => approveTask("NOPE")).toThrow(TaskNotFoundError);
   });
+
+  it("records pushed:false with the error when the push fails", () => {
+    vi.mocked(pushBranch).mockReturnValue({ pushed: false, error: "no upstream" });
+    writeTask(record("RV-7"));
+    const d = approveTask("RV-7");
+    expect(d.status).toBe("approved");
+    expect(d.pushed).toBe(false);
+    expect(d.error).toBe("no upstream");
+  });
 });
 
 describe("rejectTask", () => {
@@ -78,7 +88,7 @@ describe("rejectTask", () => {
     writeTask(record("RV-5"));
     const d = rejectTask("RV-5");
     expect(d.status).toBe("rejected");
-    expect(removeWorktree).toHaveBeenCalledWith(expect.stringContaining("dev/x"), "/tmp/wt", "agent/RV-5-backend-engineer");
+    expect(removeWorktree).toHaveBeenCalledWith(expandHome("~/dev/x"), "/tmp/wt", "agent/RV-5-backend-engineer");
     expect(readTask("RV-5")!.decision?.status).toBe("rejected");
   });
 
