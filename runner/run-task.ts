@@ -99,7 +99,7 @@ export async function runTask(taskId: string, repoRoot: string = process.cwd()):
         const result = toAgentResult(rec.envelope, text, logsPath, filesChanged, verification);
         finish(result.status, result);
       } else {
-        const { text, costUsd, tokens } = await runAgent({ cwd, systemPrompt, prompt, mode: "read-only" }, controller.signal);
+        const { text, costUsd, tokens } = await runAgent({ cwd, systemPrompt, prompt, mode }, controller.signal);
         writeLog({ task_id: rec.envelope.id, mode, cost_usd: costUsd, tokens, text });
         rec.envelope.metadata.run = { mode, cost_usd: costUsd, tokens };
         const result = toAgentResult(rec.envelope, text, logsPath);

@@ -171,3 +171,13 @@ default `[install, test]` from `commands`) inside the worktree, captures the rea
 records the result on the task. The dashboard shows a ✓/✗ badge in the attention panel so you see
 verified work before approving. The agent never runs shell — the runner performs verification.
 Verification is fail-fast and never crashes a run; it does not block approval (the human decides).
+
+### Auto-fix loop (opt-in)
+
+A workspace-write task can be dispatched in "Implementar + auto-fix (verify)" mode. In this mode the
+agent is given a Bash tool restricted by an exact-match allowlist: it may run ONLY the project's
+declared verify commands (from `registry/projects.yml`), so it can run tests/typecheck during its turn,
+see failures, and fix its edits before finishing. Any other shell command is denied by the runner's
+`canUseTool` policy. This is the one place the "agent never runs shell" rule is relaxed, and only under
+this explicit per-task opt-in. read-only and plain workspace-write tasks never get shell. The runner
+still runs verification after the commit (see Self-verify) as the authoritative pass/fail record.
