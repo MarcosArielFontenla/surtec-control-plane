@@ -28,3 +28,30 @@ export function useOverview(intervalMs = 3000): { data: OverviewModel | null; er
 
   return { data, error };
 }
+
+export interface DispatchOptions {
+  projects: { project: string; agents: string[] }[];
+}
+
+export async function fetchDispatchOptions(): Promise<DispatchOptions> {
+  const res = await fetch("/api/dispatch-options");
+  if (!res.ok) throw new Error(`dispatch-options failed: ${res.status}`);
+  return (await res.json()) as DispatchOptions;
+}
+
+export async function createTask(body: {
+  project: string;
+  agent: string;
+  instructions: string;
+}): Promise<{ id: string }> {
+  const res = await fetch("/api/tasks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `dispatch failed: ${res.status}`);
+  }
+  return (await res.json()) as { id: string };
+}
