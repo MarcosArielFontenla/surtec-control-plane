@@ -10,4 +10,7 @@ tmp/*
 !tmp/.gitkeep
 .DS_Store
 coverage
+.superpowers/
+/state/
+dashboard/dist
 

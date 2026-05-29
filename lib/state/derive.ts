@@ -1,0 +1,83 @@
+import type {
+  TaskRecord, ProjectStatusOverride, OverviewModel, ProjectView, TaskView, AttentionItem,
+} from "./types";
+
+export interface RegistryProject {
+  id: string;
+  status: string;
+  repo: string | null;
+}
+
+function toTaskView(t: TaskRecord): TaskView {
+  return {
+    id: t.envelope.id,
+    project: t.envelope.project,
+    agent: t.envelope.agent,
+    title: t.envelope.title,
+    lifecycle: t.lifecycle,
+    outcome: t.outcome,
+    updated_at: t.updated_at,
+    finished_at: t.finished_at,
+    requires_human_approval: t.envelope.requires_human_approval,
+  };
+}
+
+export function buildOverview(
+  registryProjects: RegistryProject[],
+  tasks: TaskRecord[],
+  overrides: ProjectStatusOverride[],
+): OverviewModel {
+  const overrideById = new Map(overrides.map((o) => [o.id, o]));
+
+  const inProgress = tasks
+    .filter((t) => t.lifecycle !== "finished")
+    .map(toTaskView);
+
+  const history = tasks
+    .filter((t) => t.lifecycle === "finished")
+    .map(toTaskView)
+    .sort((a, b) => (b.finished_at ?? "").localeCompare(a.finished_at ?? ""));
+
+  const projects: ProjectView[] = registryProjects.map((rp) => {
+    const projTasks = tasks.filter((t) => t.envelope.project === rp.id);
+    const lastActivity = projTasks.reduce<string | null>(
+      (max, t) => (max === null || t.updated_at > max ? t.updated_at : max),
+      null,
+    );
+    const ov = overrideById.get(rp.id);
+    return {
+      id: rp.id,
+      status: rp.status,
+      health: ov?.health ?? null,
+      note: ov?.note ?? null,
+      repo: rp.repo,
+      last_activity: lastActivity,
+      task_counts: {
+        inProgress: projTasks.filter((t) => t.lifecycle !== "finished").length,
+        finished: projTasks.filter((t) => t.lifecycle === "finished").length,
+      },
+    };
+  });
+
+  const attention: AttentionItem[] = [];
+  for (const t of tasks) {
+    // A task-level flag is raised only once: needs-review takes priority over
+    // awaiting-approval (review the work before approving it). Both branches guard
+    // on lifecycle === "finished" so a still-running task never surfaces here.
+    if (t.lifecycle === "finished" && t.outcome === "needs-review") {
+      attention.push({ kind: "needs-review", task_id: t.envelope.id, project: t.envelope.project, title: t.envelope.title });
+    } else if (t.lifecycle === "finished" && t.envelope.requires_human_approval) {
+      attention.push({ kind: "awaiting-approval", task_id: t.envelope.id, project: t.envelope.project, title: t.envelope.title });
+    }
+    if (t.result) {
+      for (const r of t.result.risks) {
+        attention.push({ kind: "risk", task_id: t.envelope.id, project: t.envelope.project, title: r });
+      }
+      for (const b of t.result.blockers) {
+        attention.push({ kind: "blocker", task_id: t.envelope.id, project: t.envelope.project, title: b });
+      }
+    }
+  }
+
+  return { projects, inProgress, history, attention };
+}

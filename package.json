@@ -10,10 +10,36 @@
     "validate:schemas": "bash scripts/validation/validate-schemas.sh",
     "upstream:check": "bash scripts/upstream/check-updates.sh",
     "project:bootstrap": "bash scripts/projects/bootstrap-project.sh",
-    "task:run": "bash scripts/projects/run-codex-task.sh"
+    "task:run": "bash scripts/projects/run-codex-task.sh",
+    "state": "tsx cli/surtec-state.ts",
+    "dev:api": "tsx watch dashboard/src/server/index.ts",
+    "dev:ui": "vite",
+    "dev": "concurrently -n api,ui -c blue,green \"pnpm dev:api\" \"pnpm dev:ui\"",
+    "build": "vite build",
+    "start": "tsx dashboard/src/server/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
-  "engines": {
-    "node": ">=18"
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.6.14",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "jsdom": "^25.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
   }
 }
-
