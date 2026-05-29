@@ -17,6 +17,7 @@ describe("loadRegistryProjects", () => {
         "    repo: git@github.com:surtec/stock-control.git",
         "    local_path: ~/dev/surtec/stock-control",
         "    status: active",
+        "    default_branch: main",
         "    allowed_agents:",
         "      - backend-engineer",
         "      - qa-reviewer",
@@ -37,6 +38,7 @@ describe("loadRegistryProjects", () => {
         repo: "git@github.com:surtec/stock-control.git",
         allowed_agents: ["backend-engineer", "qa-reviewer"],
         repo_path: "~/dev/surtec/stock-control",
+        default_branch: "main",
       },
       {
         id: "portfolio-site",
@@ -44,6 +46,7 @@ describe("loadRegistryProjects", () => {
         repo: null,
         allowed_agents: [],
         repo_path: null,
+        default_branch: null,
       },
     ]);
   });
