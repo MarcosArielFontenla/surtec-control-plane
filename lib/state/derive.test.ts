@@ -73,6 +73,39 @@ describe("buildOverview", () => {
     expect(buildOverview(registry, [decided], []).attention).toEqual([]);
   });
 
+  it("surfaces verification status on the awaiting-approval attention item", () => {
+    const task = rec({
+      id: "V", project: "stock-control", lifecycle: "finished", outcome: "completed",
+      finished_at: "2026-05-29T12:00:00Z",
+      envelope: { requires_human_approval: true } as TaskRecord["envelope"],
+      result: {
+        task_id: "V", agent: "backend-engineer", status: "completed", summary: "ok",
+        files_changed: [], commands_run: [], tests_run: [],
+        risks: [], blockers: [], next_steps: [], artifacts: [], logs_path: "reports/V.jsonl",
+        verification: { status: "failed", checks: [{ command: "pnpm test", ok: false, output_tail: "" }] },
+      },
+    });
+    const o = buildOverview(registry, [task], []);
+    const item = o.attention.find((a) => a.task_id === "V" && a.kind === "awaiting-approval");
+    expect(item?.verification).toBe("failed");
+  });
+
+  it("leaves attention-item verification null when the result has none", () => {
+    const task = rec({
+      id: "W", project: "stock-control", lifecycle: "finished", outcome: "completed",
+      finished_at: "2026-05-29T12:00:00Z",
+      envelope: { requires_human_approval: true } as TaskRecord["envelope"],
+      result: {
+        task_id: "W", agent: "backend-engineer", status: "completed", summary: "ok",
+        files_changed: [], commands_run: [], tests_run: [],
+        risks: [], blockers: [], next_steps: [], artifacts: [], logs_path: "reports/W.jsonl",
+      },
+    });
+    const o = buildOverview(registry, [task], []);
+    const item = o.attention.find((a) => a.kind === "awaiting-approval");
+    expect(item?.verification ?? null).toBeNull();
+  });
+
   it("builds attention from needs-review, awaiting-approval, risks and blockers", () => {
     const tasks = [
       rec({ id: "A", project: "stock-control", lifecycle: "finished", outcome: "needs-review", finished_at: "2026-05-28T12:00:00Z" }),
