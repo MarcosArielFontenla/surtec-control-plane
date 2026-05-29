@@ -1,12 +1,15 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { CanUseTool, Options, SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 
-export type RunMode = "read-only" | "workspace-write";
+export type RunMode = "read-only" | "workspace-write" | "workspace-write-verify";
 
 export const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"] as const;
 export const WRITE_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "MultiEdit"] as const;
+export const VERIFY_TOOLS = [...WRITE_TOOLS, "Bash", "BashOutput", "KillBash"] as const;
 
-// Shell/exec + notebook edits are NEVER allowed, in either mode.
+// Shell/exec tools are denied in read-only and workspace-write. In workspace-write-verify,
+// Bash/BashOutput/KillBash are allowed but Bash is gated by canUseTool exact-match; NotebookEdit
+// is denied in all modes.
 const EXEC_TOOLS = ["Bash", "BashOutput", "KillBash", "NotebookEdit"];
 // = WRITE_TOOLS - READ_ONLY_TOOLS. If WRITE_TOOLS gains a tool, add it here too.
 const WRITE_TOOLS_DISALLOWED_IN_READONLY = ["Write", "Edit", "MultiEdit"];
@@ -18,6 +21,7 @@ export interface RunOptions {
   mode: RunMode;
   model?: string;
   maxTurns?: number;
+  verifyCommands?: string[];
 }
 
 export interface RunResult {
@@ -40,20 +44,38 @@ export function buildQueryOptions(o: RunOptions): {
   disallowedTools: string[];
   canUseTool: (toolName: string, input: Record<string, unknown>) => Promise<PermissionResult>;
 } {
-  const allowed = (o.mode === "workspace-write" ? WRITE_TOOLS : READ_ONLY_TOOLS) as readonly string[];
+  const allowed = (
+    o.mode === "workspace-write-verify"
+      ? VERIFY_TOOLS
+      : o.mode === "workspace-write"
+        ? WRITE_TOOLS
+        : READ_ONLY_TOOLS
+  ) as readonly string[];
   const disallowed =
-    o.mode === "workspace-write" ? [...EXEC_TOOLS] : [...EXEC_TOOLS, ...WRITE_TOOLS_DISALLOWED_IN_READONLY];
+    o.mode === "read-only"
+      ? [...EXEC_TOOLS, ...WRITE_TOOLS_DISALLOWED_IN_READONLY]
+      : o.mode === "workspace-write"
+        ? [...EXEC_TOOLS]
+        : ["NotebookEdit"]; // workspace-write-verify: Bash/BashOutput/KillBash allowed; NotebookEdit denied
+  const verifySet = new Set(o.verifyCommands ?? []);
   return {
     cwd: o.cwd,
     systemPrompt: o.systemPrompt,
     model: o.model ?? "claude-sonnet-4-6",
-    maxTurns: o.maxTurns ?? 12,
+    maxTurns: o.maxTurns ?? (o.mode === "workspace-write-verify" ? 20 : 12),
     allowedTools: [...allowed],
     disallowedTools: disallowed,
-    canUseTool: async (toolName, input) =>
-      allowed.includes(toolName)
+    canUseTool: async (toolName, input) => {
+      if (o.mode === "workspace-write-verify" && toolName === "Bash") {
+        const cmd = typeof input.command === "string" ? input.command.trim() : "";
+        return cmd !== "" && verifySet.has(cmd)
+          ? { behavior: "allow", updatedInput: input }
+          : { behavior: "deny", message: `runner (verify): Bash command not allowlisted: ${cmd}` };
+      }
+      return allowed.includes(toolName)
         ? { behavior: "allow", updatedInput: input }
-        : { behavior: "deny", message: `runner (${o.mode}): tool '${toolName}' is not permitted` },
+        : { behavior: "deny", message: `runner (${o.mode}): tool '${toolName}' is not permitted` };
+    },
   };
 }
 

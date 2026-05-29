@@ -42,4 +42,9 @@ describe("loadProjectVerifyCommands", () => {
   it("returns [] when the registry file is missing", () => {
     expect(loadProjectVerifyCommands(root, "p")).toEqual([]);
   });
+
+  it("drops empty/whitespace entries from an explicit verify list", () => {
+    writeRegistry(`projects:\n  p:\n    verify:\n      - ""\n      - "  "\n      - pnpm test\n`);
+    expect(loadProjectVerifyCommands(root, "p")).toEqual(["pnpm test"]);
+  });
 });

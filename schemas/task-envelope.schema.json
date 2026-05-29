@@ -73,6 +73,9 @@
     "metadata": {
       "type": "object",
       "additionalProperties": true
+    },
+    "self_verify": {
+      "type": "boolean"
     }
   }
 }

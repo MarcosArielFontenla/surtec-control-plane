@@ -272,4 +272,44 @@ describe("runTask", () => {
     const rec = readTask("T-1")!;
     expect(rec.result?.verification ?? null).toBeNull();
   });
+
+  it("self_verify workspace-write → runAgent in workspace-write-verify mode with verifyCommands", async () => {
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const r = writeRecord(); r.envelope.self_verify = true; writeTask(r);
+    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
+    vi.mocked(runAgent).mockResolvedValue({ text: '```json\n{ "summary": "ok", "status": "completed" }\n```', costUsd: 0, tokens: 0 });
+    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: ["a.ts"], diffstat: "x", committed: true });
+    vi.mocked(loadProjectVerifyCommands).mockReturnValue(["pnpm test"]);
+
+    await runTask("T-1", root);
+
+    const arg = vi.mocked(runAgent).mock.calls[0][0];
+    expect(arg.mode).toBe("workspace-write-verify");
+    expect(arg.verifyCommands).toEqual(["pnpm test"]);
+  });
+
+  it("workspace-write WITHOUT self_verify → runAgent in workspace-write mode", async () => {
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeTask(writeRecord());
+    vi.mocked(createWorktree).mockReturnValue({ branch: "b", worktreePath: join(repo, "..", "wt") });
+    vi.mocked(runAgent).mockResolvedValue({ text: '```json\n{ "summary": "ok", "status": "completed" }\n```', costUsd: 0, tokens: 0 });
+    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: ["a.ts"], diffstat: "x", committed: true });
+
+    await runTask("T-1", root);
+
+    expect(vi.mocked(runAgent).mock.calls[0][0].mode).toBe("workspace-write");
+  });
+
+  it("self_verify but no verify commands → falls back to workspace-write", async () => {
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const r = writeRecord(); r.envelope.self_verify = true; writeTask(r);
+    vi.mocked(createWorktree).mockReturnValue({ branch: "b", worktreePath: join(repo, "..", "wt") });
+    vi.mocked(runAgent).mockResolvedValue({ text: '```json\n{ "summary": "ok", "status": "completed" }\n```', costUsd: 0, tokens: 0 });
+    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: ["a.ts"], diffstat: "x", committed: true });
+    vi.mocked(loadProjectVerifyCommands).mockReturnValue([]);
+
+    await runTask("T-1", root);
+
+    expect(vi.mocked(runAgent).mock.calls[0][0].mode).toBe("workspace-write");
+  });
 });

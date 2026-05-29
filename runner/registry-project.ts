@@ -22,7 +22,7 @@ export function loadProjectVerifyCommands(repoRoot: string, projectId: string): 
   const p = doc.projects?.[projectId];
   if (!p) return [];
   if (Array.isArray(p.verify) && p.verify.length > 0) {
-    return p.verify.filter((c): c is string => typeof c === "string");
+    return p.verify.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
   }
   const cmds = p.commands ?? {};
   if (cmds.install && cmds.test) return [cmds.install, cmds.test];

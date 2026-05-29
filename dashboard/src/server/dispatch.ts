@@ -10,6 +10,7 @@ export interface CreateTaskInput {
   agent: string;
   instructions: string;
   sandbox?: string;
+  self_verify?: boolean;
 }
 
 export function createTask(input: CreateTaskInput, repoRoot: string = process.cwd()): { id: string } {
@@ -22,6 +23,11 @@ export function createTask(input: CreateTaskInput, repoRoot: string = process.cw
   const sandbox = String(input?.sandbox ?? "read-only");
   if (sandbox !== "read-only" && sandbox !== "workspace-write") {
     throw new ValidationError(`invalid sandbox: ${sandbox} (use read-only or workspace-write)`);
+  }
+
+  const selfVerify = input?.self_verify === true;
+  if (selfVerify && sandbox !== "workspace-write") {
+    throw new ValidationError("self_verify requires sandbox workspace-write");
   }
 
   const rp = loadRegistryProjects(repoRoot).find((p) => p.id === project);
@@ -45,6 +51,7 @@ export function createTask(input: CreateTaskInput, repoRoot: string = process.cw
     expected_outputs: ["summary", "risks", "next_steps"],
     requires_human_approval: true,
     metadata: { created_by: "dashboard" },
+    self_verify: selfVerify && sandbox === "workspace-write",
   };
 
   const ts = new Date().toISOString();

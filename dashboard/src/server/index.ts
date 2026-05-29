@@ -58,7 +58,10 @@ export function createApp(
       return c.json({ error: "invalid JSON body" }, 400);
     }
     try {
-      const { id } = createTask(body as { project: string; agent: string; instructions: string }, repoRoot);
+      const { id } = createTask(
+        body as { project: string; agent: string; instructions: string; sandbox?: string; self_verify?: boolean },
+        repoRoot,
+      );
       onTaskCreated(id);
       return c.json({ id }, 201);
     } catch (err) {

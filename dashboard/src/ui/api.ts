@@ -44,6 +44,7 @@ export async function createTask(body: {
   agent: string;
   instructions: string;
   sandbox?: string;
+  self_verify?: boolean;
 }): Promise<{ id: string }> {
   const res = await fetch("/api/tasks", {
     method: "POST",

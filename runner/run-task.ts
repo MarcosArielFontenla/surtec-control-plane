@@ -66,35 +66,40 @@ export async function runTask(taskId: string, repoRoot: string = process.cwd()):
       return;
     }
     const agentsMd = readFileSync(join(repoRoot, "AGENTS.md"), "utf8");
-    const mode = rec.envelope.sandbox === "workspace-write" ? "workspace-write" : "read-only";
-    const systemPrompt = buildSystemPrompt(agent, agentsMd, mode);
+    const verifyCommands =
+      rec.envelope.sandbox === "workspace-write" ? loadProjectVerifyCommands(repoRoot, rec.envelope.project) : [];
+    const wantsVerify = rec.envelope.self_verify === true && verifyCommands.length > 0;
+    const mode = wantsVerify
+      ? "workspace-write-verify"
+      : rec.envelope.sandbox === "workspace-write"
+        ? "workspace-write"
+        : "read-only";
+    const systemPrompt = buildSystemPrompt(agent, agentsMd, mode, verifyCommands);
     const prompt = buildUserPrompt(rec.envelope);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000);
     try {
-      if (mode === "workspace-write") {
+      if (rec.envelope.sandbox === "workspace-write") {
         if (!existsSync(join(cwd, ".git"))) {
           throw new Error(`not a git repository: ${cwd}`);
         }
         const { branch, worktreePath } = createWorktree(cwd, rec.envelope.id, rec.envelope.agent);
         const { text, costUsd, tokens } = await runAgent(
-          { cwd: worktreePath, systemPrompt, prompt, mode: "workspace-write" },
+          { cwd: worktreePath, systemPrompt, prompt, mode, verifyCommands },
           controller.signal,
         );
         const { filesChanged, diffstat, committed } = commitAndDiff(
           worktreePath,
           `agent ${rec.envelope.id}: ${rec.envelope.title}`.slice(0, 72),
         );
-        const verification = committed
-          ? runVerification(worktreePath, loadProjectVerifyCommands(repoRoot, rec.envelope.project))
-          : null;
+        const verification = committed ? runVerification(worktreePath, verifyCommands) : null;
         writeLog({ task_id: rec.envelope.id, mode, branch, worktree_path: worktreePath, committed, diffstat, verification, cost_usd: costUsd, tokens, text });
         rec.envelope.metadata.run = { mode, branch, worktree_path: worktreePath, diffstat, committed, verification, cost_usd: costUsd, tokens };
         const result = toAgentResult(rec.envelope, text, logsPath, filesChanged, verification);
         finish(result.status, result);
       } else {
-        const { text, costUsd, tokens } = await runAgent({ cwd, systemPrompt, prompt, mode: "read-only" }, controller.signal);
+        const { text, costUsd, tokens } = await runAgent({ cwd, systemPrompt, prompt, mode }, controller.signal);
         writeLog({ task_id: rec.envelope.id, mode, cost_usd: costUsd, tokens, text });
         rec.envelope.metadata.run = { mode, cost_usd: costUsd, tokens };
         const result = toAgentResult(rec.envelope, text, logsPath);

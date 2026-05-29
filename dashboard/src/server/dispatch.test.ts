@@ -83,4 +83,22 @@ describe("createTask", () => {
       createTask({ project: "stock-control", agent: "backend-engineer", instructions: "x", sandbox: "danger" } as never, root),
     ).toThrow(ValidationError);
   });
+
+  it("rejects self_verify on a read-only task", () => {
+    expect(() =>
+      createTask({ project: "stock-control", agent: "backend-engineer", instructions: "x", sandbox: "read-only", self_verify: true }, root),
+    ).toThrow(/self_verify requires/i);
+  });
+
+  it("sets self_verify on a workspace-write envelope", () => {
+    const { id } = createTask({ project: "stock-control", agent: "backend-engineer", instructions: "x", sandbox: "workspace-write", self_verify: true }, root);
+    const t = listTasks().find((x) => x.envelope.id === id)!;
+    expect(t.envelope.self_verify).toBe(true);
+  });
+
+  it("defaults self_verify to false when omitted", () => {
+    const { id } = createTask({ project: "stock-control", agent: "backend-engineer", instructions: "x", sandbox: "workspace-write" }, root);
+    const t = listTasks().find((x) => x.envelope.id === id)!;
+    expect(t.envelope.self_verify).toBe(false);
+  });
 });
