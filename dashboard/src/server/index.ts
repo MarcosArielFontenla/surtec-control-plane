@@ -5,6 +5,7 @@ import { listTasks, listProjectOverrides, readTask } from "../../../lib/state/st
 import { buildOverview } from "../../../lib/state/derive";
 import { loadRegistryProjects } from "./registry";
 import { createTask, ValidationError } from "./dispatch";
+import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
 import { runTask } from "../../../runner/run-task";
 import { reconcileRunning } from "../../../runner/reconcile";
 
@@ -62,6 +63,26 @@ export function createApp(
       return c.json({ id }, 201);
     } catch (err) {
       if (err instanceof ValidationError) return c.json({ error: err.message }, 400);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/tasks/:id/approve", (c) => {
+    try {
+      return c.json({ decision: approveTask(c.req.param("id")) });
+    } catch (err) {
+      if (err instanceof TaskNotFoundError) return c.json({ error: err.message }, 404);
+      if (err instanceof ReviewError) return c.json({ error: err.message }, 400);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/tasks/:id/reject", (c) => {
+    try {
+      return c.json({ decision: rejectTask(c.req.param("id")) });
+    } catch (err) {
+      if (err instanceof TaskNotFoundError) return c.json({ error: err.message }, 404);
+      if (err instanceof ReviewError) return c.json({ error: err.message }, 400);
       return c.json({ error: (err as Error).message }, 500);
     }
   });
