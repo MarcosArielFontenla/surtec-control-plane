@@ -33,4 +33,12 @@ describe("App", () => {
     expect(screen.getByText(/STK-002/)).toBeTruthy();
     expect(screen.getByText(/No rate limiting/)).toBeTruthy();
   });
+
+  it("shows the error banner when the overview fetch fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch);
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/No pude refrescar/)).toBeTruthy());
+  });
 });

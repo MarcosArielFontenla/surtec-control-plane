@@ -15,8 +15,8 @@ export function AttentionPanel({ items }: { items: AttentionItem[] }) {
         <p style={{ color: "#999" }}>Todo en orden.</p>
       ) : (
         <ul style={{ paddingLeft: 16 }}>
-          {items.map((a, i) => (
-            <li key={`${a.task_id}-${i}`}>
+          {items.map((a) => (
+            <li key={`${a.task_id}-${a.kind}-${a.title}`}>
               <em>{LABEL[a.kind]}</em> · {a.task_id} · {a.title}
             </li>
           ))}
