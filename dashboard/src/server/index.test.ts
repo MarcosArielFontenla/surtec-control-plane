@@ -12,7 +12,7 @@ beforeEach(() => {
   mkdirSync(join(root, "registry"), { recursive: true });
   writeFileSync(
     join(root, "registry", "projects.yml"),
-    "projects:\n  stock-control:\n    status: active\n",
+    "projects:\n  stock-control:\n    status: active\n    allowed_agents:\n      - backend-engineer\n",
     "utf8",
   );
   stateDir = join(root, "state");
@@ -60,5 +60,37 @@ describe("api", () => {
     const app = createApp(root);
     const res = await app.request("/api/tasks/NOPE");
     expect(res.status).toBe(404);
+  });
+
+  it("GET /api/dispatch-options returns projects with their allowed agents", async () => {
+    const app = createApp(root, () => {});
+    const res = await app.request("/api/dispatch-options");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.projects).toEqual([{ project: "stock-control", agents: ["backend-engineer"] }]);
+  });
+
+  it("POST /api/tasks creates a queued task and returns 201 {id}", async () => {
+    const fired: string[] = [];
+    const app = createApp(root, (id: string) => { fired.push(id); });
+    const res = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: "stock-control", agent: "backend-engineer", instructions: "Analyze auth." }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.id).toMatch(/^T-/);
+    expect(fired).toEqual([body.id]);
+  });
+
+  it("POST /api/tasks returns 400 for a disallowed agent", async () => {
+    const app = createApp(root, () => {});
+    const res = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: "stock-control", agent: "frontend-engineer", instructions: "x" }),
+    });
+    expect(res.status).toBe(400);
   });
 });
