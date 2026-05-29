@@ -1,0 +1,23 @@
+{
+  "envelope": {
+    "id": "STK-001", "source": "cli", "project": "stock-control",
+    "task_type": "backend-implementation", "agent": "backend-engineer",
+    "title": "Add low-stock alert endpoint", "instructions": "Implement GET /alerts/low-stock.",
+    "repo_path": "~/dev/surtec/stock-control", "branch": "agent/STK-001-backend-engineer",
+    "sandbox": "workspace-write", "expected_outputs": ["summary", "files_changed", "tests_run"],
+    "requires_human_approval": true, "metadata": { "priority": "high" }
+  },
+  "lifecycle": "finished", "outcome": "completed",
+  "created_at": "2026-05-28T09:00:00Z", "started_at": "2026-05-28T09:05:00Z",
+  "updated_at": "2026-05-28T09:40:00Z", "finished_at": "2026-05-28T09:40:00Z",
+  "result": {
+    "task_id": "STK-001", "agent": "backend-engineer", "status": "completed",
+    "summary": "Added low-stock alert endpoint with tests.",
+    "files_changed": ["src/routes/alerts.ts", "test/alerts.test.ts"],
+    "commands_run": ["pnpm test"], "tests_run": ["alerts.test.ts"],
+    "risks": ["No rate limiting on the new endpoint"], "blockers": [],
+    "next_steps": ["Add rate limiting"], "artifacts": [],
+    "logs_path": "reports/STK-001-backend-engineer.jsonl"
+  },
+  "logs_path": "reports/STK-001-backend-engineer.jsonl"
+}
