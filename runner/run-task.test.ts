@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskRecord } from "../lib/state/types";
 
-vi.mock("./claude", () => ({ runReadOnlyAgent: vi.fn() }));
-import { runReadOnlyAgent } from "./claude";
+vi.mock("./claude", () => ({ runAgent: vi.fn() }));
+import { runAgent } from "./claude";
 import { runTask } from "./run-task";
 import { readTask, writeTask } from "../lib/state/store";
 
@@ -39,7 +39,7 @@ beforeEach(() => {
   writeFileSync(join(root, "AGENTS.md"), "RULE: do not deploy.\n", "utf8");
   process.env.SURTEC_STATE_DIR = join(root, "state");
   process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-  vi.mocked(runReadOnlyAgent).mockReset();
+  vi.mocked(runAgent).mockReset();
 });
 
 afterEach(() => {
@@ -51,7 +51,7 @@ afterEach(() => {
 describe("runTask", () => {
   it("transitions queued -> finished with the parsed AgentResult", async () => {
     writeTask(queuedRecord());
-    vi.mocked(runReadOnlyAgent).mockResolvedValue({
+    vi.mocked(runAgent).mockResolvedValue({
       text: '```json\n{ "summary": "ok", "risks": ["r"], "blockers": [], "next_steps": [], "status": "completed" }\n```',
       costUsd: 0.01,
       tokens: 42,
@@ -70,7 +70,7 @@ describe("runTask", () => {
 
   it("marks failed with a blocker when the agent throws", async () => {
     writeTask(queuedRecord());
-    vi.mocked(runReadOnlyAgent).mockRejectedValue(new Error("api exploded"));
+    vi.mocked(runAgent).mockRejectedValue(new Error("api exploded"));
 
     await runTask("T-1", root);
 
@@ -89,7 +89,7 @@ describe("runTask", () => {
     const rec = readTask("T-1")!;
     expect(rec.outcome).toBe("failed");
     expect(rec.result?.blockers[0]).toContain("ANTHROPIC_API_KEY");
-    expect(runReadOnlyAgent).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
   });
 
   it("fails when the repo path does not exist", async () => {
@@ -102,7 +102,7 @@ describe("runTask", () => {
     const out = readTask("T-1")!;
     expect(out.outcome).toBe("failed");
     expect(out.result?.blockers[0]).toContain("repo not found");
-    expect(runReadOnlyAgent).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
   });
 
   it("fails when the agent id is not in the registry", async () => {
@@ -115,6 +115,6 @@ describe("runTask", () => {
     const out = readTask("T-1")!;
     expect(out.outcome).toBe("failed");
     expect(out.result?.blockers[0]).toContain("unknown agent");
-    expect(runReadOnlyAgent).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
   });
 });

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { AgentOutcome, AgentResult } from "../lib/state/types";
 import { readTask, writeTask } from "../lib/state/store";
-import { runReadOnlyAgent } from "./claude";
+import { runAgent } from "./claude";
 import { buildSystemPrompt, buildUserPrompt } from "./agent-prompt";
 import { loadRegistryAgents } from "./registry-agents";
 import { toAgentResult, failureResult } from "./result";
@@ -75,7 +75,7 @@ export async function runTask(taskId: string, repoRoot: string = process.cwd()):
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000);
     try {
-      const { text, costUsd, tokens } = await runReadOnlyAgent({ cwd, systemPrompt, prompt }, controller.signal);
+      const { text, costUsd, tokens } = await runAgent({ cwd, systemPrompt, prompt, mode: "read-only" }, controller.signal);
       writeLog({ task_id: rec.envelope.id, cost_usd: costUsd, tokens, text });
       rec.envelope.metadata.run = { cost_usd: costUsd, tokens };
       const result = toAgentResult(rec.envelope, text, logsPath);
