@@ -141,3 +141,10 @@ runs a **read-only** Claude agent (Agent SDK) against the project repo and write
 lifecycle and result to the store, which the dashboard shows live. Read-only means the
 agent can inspect the repo but cannot modify files, run commands, merge, deploy, or push.
 Design: `docs/superpowers/specs/2026-05-29-dispatch-runner-design.md`.
+
+**Workspace-write (implement):** In **Nueva tarea**, choosing **Implementar** runs the agent in
+workspace-write mode: it edits files **in an isolated git worktree** (`../surtec-worktrees/...`) on
+a branch `agent/<task>-<agent>`, and the control plane commits the edits to that branch. The agent
+still cannot run shell commands, merge, deploy, or push. Review the branch in VS Code and run the
+tests; the changed files + diffstat are recorded on the task. Worktrees are not auto-removed.
+Design: `docs/superpowers/specs/2026-05-29-workspace-write-design.md`.
