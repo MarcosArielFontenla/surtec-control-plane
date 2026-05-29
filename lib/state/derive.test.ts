@@ -103,7 +103,23 @@ describe("buildOverview", () => {
     });
     const o = buildOverview(registry, [task], []);
     const item = o.attention.find((a) => a.kind === "awaiting-approval");
-    expect(item?.verification ?? null).toBeNull();
+    expect(item?.verification).toBeNull();
+  });
+
+  it("surfaces verification status on the needs-review attention item", () => {
+    const task = rec({
+      id: "NR", project: "stock-control", lifecycle: "finished", outcome: "needs-review",
+      finished_at: "2026-05-29T12:00:00Z",
+      result: {
+        task_id: "NR", agent: "backend-engineer", status: "needs-review", summary: "ok",
+        files_changed: [], commands_run: [], tests_run: [],
+        risks: [], blockers: [], next_steps: [], artifacts: [], logs_path: "reports/NR.jsonl",
+        verification: { status: "passed", checks: [{ command: "pnpm test", ok: true, output_tail: "" }] },
+      },
+    });
+    const o = buildOverview(registry, [task], []);
+    const item = o.attention.find((a) => a.task_id === "NR" && a.kind === "needs-review");
+    expect(item?.verification).toBe("passed");
   });
 
   it("builds attention from needs-review, awaiting-approval, risks and blockers", () => {
