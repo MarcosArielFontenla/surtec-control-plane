@@ -46,6 +46,23 @@ describe("buildSystemPrompt", () => {
   });
 });
 
+describe("buildSystemPrompt (workspace-write-verify)", () => {
+  it("verify mode lists the exact allowed commands and the ONLY-these instruction", () => {
+    const agent = { id: "be", name: "Backend", description: "impl", allowed_task_types: ["bugfix"] };
+    const p = buildSystemPrompt(agent as any, "RULES", "workspace-write-verify", ["pnpm install", "pnpm test"]);
+    expect(p).toContain("WORKSPACE-WRITE mode with VERIFICATION");
+    expect(p).toMatch(/ONLY these exact commands/i);
+    expect(p).toContain("pnpm install");
+    expect(p).toContain("pnpm test");
+  });
+
+  it("workspace-write (non-verify) prompt does not mention VERIFICATION", () => {
+    const agent = { id: "be", name: "Backend", description: "impl", allowed_task_types: ["bugfix"] };
+    const p = buildSystemPrompt(agent as any, "RULES", "workspace-write");
+    expect(p).not.toMatch(/VERIFICATION/);
+  });
+});
+
 describe("buildUserPrompt", () => {
   it("includes the task title, project and instructions", () => {
     const p = buildUserPrompt(envelope);
