@@ -5,5 +5,6 @@ export default defineConfig({
     environment: "node",
     include: ["**/*.test.ts", "**/*.test.tsx"],
     globals: true,
+    setupFiles: ["@testing-library/jest-dom/vitest"],
   },
 });
