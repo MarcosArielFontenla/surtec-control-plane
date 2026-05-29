@@ -26,6 +26,8 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain("RULE: do not deploy.");
     expect(p).toContain("```json");
     expect(p).toContain('"status"');
+    expect(p).toContain("Allowed task types");
+    expect(p).toContain("bugfix");
   });
 });
 
