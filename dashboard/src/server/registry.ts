@@ -4,7 +4,12 @@ import { parse } from "yaml";
 import type { RegistryProject } from "../../../lib/state/derive";
 
 interface RegistryDoc {
-  projects?: Record<string, { repo?: string; status?: string }>;
+  projects?: Record<string, {
+    repo?: string;
+    status?: string;
+    local_path?: string;
+    allowed_agents?: string[];
+  }>;
 }
 
 export function loadRegistryProjects(repoRoot: string = process.cwd()): RegistryProject[] {
@@ -15,5 +20,7 @@ export function loadRegistryProjects(repoRoot: string = process.cwd()): Registry
     id,
     status: v?.status ?? "unknown",
     repo: v?.repo ?? null,
+    allowed_agents: v?.allowed_agents ?? [],
+    repo_path: v?.local_path ?? null,
   }));
 }

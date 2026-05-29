@@ -20,9 +20,12 @@ const overview: OverviewModel = {
 };
 
 beforeEach(() => {
-  vi.stubGlobal("fetch", vi.fn(async () => ({
-    ok: true, status: 200, json: async () => overview,
-  })) as unknown as typeof fetch);
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (String(url).endsWith("/api/dispatch-options")) {
+      return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    }
+    return { ok: true, status: 200, json: async () => overview };
+  }) as unknown as typeof fetch);
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -35,7 +38,10 @@ describe("App", () => {
   });
 
   it("shows the error banner when the overview fetch fails", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (String(url).endsWith("/api/dispatch-options")) {
+        return { ok: true, status: 200, json: async () => ({ projects: [] }) } as Response;
+      }
       throw new Error("network down");
     }) as unknown as typeof fetch);
     render(<App />);

@@ -6,6 +6,8 @@ export interface RegistryProject {
   id: string;
   status: string;
   repo: string | null;
+  allowed_agents?: string[];
+  repo_path?: string | null;
 }
 
 function toTaskView(t: TaskRecord): TaskView {

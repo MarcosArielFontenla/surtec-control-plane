@@ -3,6 +3,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ProjectCard } from "./components/ProjectCard";
 import { TaskList } from "./components/TaskList";
 import { AttentionPanel } from "./components/AttentionPanel";
+import { NewTaskForm } from "./components/NewTaskForm";
 
 export function App() {
   const { data, error } = useOverview();
@@ -12,6 +13,7 @@ export function App() {
       <Sidebar />
       <main style={{ flex: 1, padding: 24 }}>
         <h2 style={{ marginTop: 0 }}>Estado vivo</h2>
+        <NewTaskForm />
         {error && (
           <div style={{ background: "#fff3cd", padding: 8, borderRadius: 6, marginBottom: 12 }}>
             No pude refrescar ({error}); mostrando el último estado conocido.

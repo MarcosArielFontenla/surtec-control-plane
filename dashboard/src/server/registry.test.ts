@@ -15,7 +15,11 @@ describe("loadRegistryProjects", () => {
         "projects:",
         "  stock-control:",
         "    repo: git@github.com:surtec/stock-control.git",
+        "    local_path: ~/dev/surtec/stock-control",
         "    status: active",
+        "    allowed_agents:",
+        "      - backend-engineer",
+        "      - qa-reviewer",
         "  portfolio-site:",
         "    status: planned",
         "",
@@ -25,10 +29,22 @@ describe("loadRegistryProjects", () => {
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  it("maps projects to id/status/repo", () => {
+  it("maps projects to id/status/repo/allowed_agents/repo_path", () => {
     expect(loadRegistryProjects(root)).toEqual([
-      { id: "stock-control", status: "active", repo: "git@github.com:surtec/stock-control.git" },
-      { id: "portfolio-site", status: "planned", repo: null },
+      {
+        id: "stock-control",
+        status: "active",
+        repo: "git@github.com:surtec/stock-control.git",
+        allowed_agents: ["backend-engineer", "qa-reviewer"],
+        repo_path: "~/dev/surtec/stock-control",
+      },
+      {
+        id: "portfolio-site",
+        status: "planned",
+        repo: null,
+        allowed_agents: [],
+        repo_path: null,
+      },
     ]);
   });
 });
