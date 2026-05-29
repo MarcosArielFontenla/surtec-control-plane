@@ -52,6 +52,8 @@ describe("buildQueryOptions (workspace-write-verify)", () => {
     expect((await q.canUseTool("Bash", { command: "rm -rf /" })).behavior).toBe("deny");
     expect((await q.canUseTool("Bash", { command: "pnpm test --watch" })).behavior).toBe("deny");
     expect((await q.canUseTool("Bash", { command: "pnpm test && rm -rf ." })).behavior).toBe("deny");
+    expect((await q.canUseTool("Bash", { command: "pnpm test; evil" })).behavior).toBe("deny");
+    expect((await q.canUseTool("Bash", { command: "pnpm test | evil" })).behavior).toBe("deny");
     expect((await q.canUseTool("Bash", {})).behavior).toBe("deny");
   });
 
@@ -63,6 +65,13 @@ describe("buildQueryOptions (workspace-write-verify)", () => {
 
   it("verify mode bumps default maxTurns to 20", () => {
     expect(buildQueryOptions(baseVerify).maxTurns).toBe(20);
+  });
+
+  it("verify mode: allows BashOutput/KillBash ungated and denies empty Bash command", async () => {
+    const q = buildQueryOptions(baseVerify);
+    expect((await q.canUseTool("BashOutput", {})).behavior).toBe("allow");
+    expect((await q.canUseTool("KillBash", {})).behavior).toBe("allow");
+    expect((await q.canUseTool("Bash", { command: "   " })).behavior).toBe("deny");
   });
 
   it("plain workspace-write still denies Bash entirely", async () => {

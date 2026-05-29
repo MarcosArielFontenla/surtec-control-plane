@@ -7,7 +7,9 @@ export const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"] as const;
 export const WRITE_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write", "MultiEdit"] as const;
 export const VERIFY_TOOLS = [...WRITE_TOOLS, "Bash", "BashOutput", "KillBash"] as const;
 
-// Shell/exec + notebook edits are NEVER allowed, in either mode.
+// Shell/exec tools are denied in read-only and workspace-write. In workspace-write-verify,
+// Bash/BashOutput/KillBash are allowed but Bash is gated by canUseTool exact-match; NotebookEdit
+// is denied in all modes.
 const EXEC_TOOLS = ["Bash", "BashOutput", "KillBash", "NotebookEdit"];
 // = WRITE_TOOLS - READ_ONLY_TOOLS. If WRITE_TOOLS gains a tool, add it here too.
 const WRITE_TOOLS_DISALLOWED_IN_READONLY = ["Write", "Edit", "MultiEdit"];
@@ -66,7 +68,7 @@ export function buildQueryOptions(o: RunOptions): {
     canUseTool: async (toolName, input) => {
       if (o.mode === "workspace-write-verify" && toolName === "Bash") {
         const cmd = typeof input.command === "string" ? input.command.trim() : "";
-        return verifySet.has(cmd)
+        return cmd !== "" && verifySet.has(cmd)
           ? { behavior: "allow", updatedInput: input }
           : { behavior: "deny", message: `runner (verify): Bash command not allowlisted: ${cmd}` };
       }

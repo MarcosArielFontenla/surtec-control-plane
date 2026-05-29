@@ -4,7 +4,7 @@ import type { RunMode } from "./claude";
 
 export function buildSystemPrompt(agent: RegistryAgent, agentsMd: string, mode: RunMode = "read-only", verifyCommands: string[] = []): string {
   const modeLines =
-    mode === "workspace-write-verify"
+    mode === "workspace-write-verify" && verifyCommands.length > 0
       ? [
           "You are running in WORKSPACE-WRITE mode with VERIFICATION. You MAY use Read, Grep, and Glob",
           "to inspect the repository AND edit files with Edit, Write, and MultiEdit. You MAY ALSO run",
