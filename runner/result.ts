@@ -1,4 +1,4 @@
-import type { AgentResult, AgentOutcome, TaskEnvelope } from "../lib/state/types";
+import type { AgentResult, AgentOutcome, TaskEnvelope, VerificationReport } from "../lib/state/types";
 
 const OUTCOMES: AgentOutcome[] = ["completed", "partial", "blocked", "failed", "needs-review"];
 
@@ -28,6 +28,7 @@ export function toAgentResult(
   text: string,
   logsPath: string,
   filesChanged: string[] = [],
+  verification: VerificationReport | null = null,
 ): AgentResult {
   const parsed = parseTrailingJson(text);
   const rawStatus = parsed?.status;
@@ -47,6 +48,7 @@ export function toAgentResult(
     next_steps: asStringArray(parsed?.next_steps),
     artifacts: [],
     logs_path: logsPath,
+    verification,
   };
 }
 
@@ -64,5 +66,6 @@ export function failureResult(envelope: TaskEnvelope, reason: string, logsPath: 
     next_steps: [],
     artifacts: [],
     logs_path: logsPath,
+    verification: null,
   };
 }

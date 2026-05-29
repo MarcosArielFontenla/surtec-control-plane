@@ -52,6 +52,17 @@ describe("toAgentResult", () => {
     const r = toAgentResult(envelope, "ok", "l");
     expect(r.files_changed).toEqual([]);
   });
+
+  it("attaches the verification report when provided", () => {
+    const report = { status: "passed" as const, checks: [{ command: "pnpm test", ok: true, output_tail: "" }] };
+    const r = toAgentResult(envelope, "done\n```json\n{\"status\":\"completed\"}\n```", "log.jsonl", ["a.ts"], report);
+    expect(r.verification).toEqual(report);
+  });
+
+  it("defaults verification to null", () => {
+    const r = toAgentResult(envelope, "done", "log.jsonl");
+    expect(r.verification).toBeNull();
+  });
 });
 
 describe("failureResult", () => {
@@ -61,5 +72,9 @@ describe("failureResult", () => {
     expect(r.blockers).toEqual(["timeout (5m)"]);
     expect(r.summary).toContain("timeout (5m)");
     expect(r.logs_path).toBe("reports/T-1.jsonl");
+  });
+
+  it("failureResult sets verification to null", () => {
+    expect(failureResult(envelope, "boom", "log.jsonl").verification).toBeNull();
   });
 });
