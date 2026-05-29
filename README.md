@@ -157,3 +157,8 @@ decision and, for a workspace-write task, pushes its branch `agent/<task>-<agent
 the decision and discards the worktree + local branch. Decided tasks leave the attention panel.
 Pushing needs an `origin` remote and your git credentials; if absent, the task is still recorded
 approved with the push error noted. Design: `docs/superpowers/specs/2026-05-29-review-gate-design.md`.
+
+On approve, a workspace-write task also opens a **Pull Request** via the `gh` CLI (after the push),
+targeting the project's `default_branch` from the registry. The merge stays manual on GitHub. If `gh`
+is not installed/authenticated (or a PR already exists), the task is still recorded approved + pushed
+with the PR error noted. Design: `docs/superpowers/specs/2026-05-29-pr-on-approve-design.md`.
