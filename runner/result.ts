@@ -23,7 +23,12 @@ function parseTrailingJson(text: string): Record<string, unknown> | null {
   }
 }
 
-export function toAgentResult(envelope: TaskEnvelope, text: string, logsPath: string): AgentResult {
+export function toAgentResult(
+  envelope: TaskEnvelope,
+  text: string,
+  logsPath: string,
+  filesChanged: string[] = [],
+): AgentResult {
   const parsed = parseTrailingJson(text);
   const rawStatus = parsed?.status;
   const status: AgentOutcome = OUTCOMES.includes(rawStatus as AgentOutcome)
@@ -34,7 +39,7 @@ export function toAgentResult(envelope: TaskEnvelope, text: string, logsPath: st
     agent: envelope.agent,
     status,
     summary: typeof parsed?.summary === "string" ? parsed.summary : text.trim(),
-    files_changed: [],
+    files_changed: filesChanged,
     commands_run: [],
     tests_run: [],
     risks: asStringArray(parsed?.risks),

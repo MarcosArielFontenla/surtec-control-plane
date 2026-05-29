@@ -42,6 +42,16 @@ describe("toAgentResult", () => {
     expect(r.blockers).toEqual([]);
     expect(r.next_steps).toEqual([]);
   });
+
+  it("uses the provided filesChanged (workspace-write) instead of empty", () => {
+    const r = toAgentResult(envelope, "ok", "l", ["src/a.ts", "src/b.ts"]);
+    expect(r.files_changed).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("defaults files_changed to [] when none provided", () => {
+    const r = toAgentResult(envelope, "ok", "l");
+    expect(r.files_changed).toEqual([]);
+  });
 });
 
 describe("failureResult", () => {
