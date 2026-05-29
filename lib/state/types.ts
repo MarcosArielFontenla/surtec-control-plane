@@ -15,6 +15,7 @@ export interface TaskEnvelope {
   expected_outputs: string[];
   requires_human_approval: boolean;
   metadata: Record<string, unknown>;
+  self_verify?: boolean;
 }
 
 // Canonical TS mirror of schemas/agent-result.schema.json
