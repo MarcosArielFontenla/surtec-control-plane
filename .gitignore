@@ -11,6 +11,6 @@ tmp/*
 .DS_Store
 coverage
 .superpowers/
-state/
+/state/
 dashboard/dist
 
