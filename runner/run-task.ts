@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { AgentOutcome, AgentResult } from "../lib/state/types";
 import { readTask, writeTask } from "../lib/state/store";
 import { runReadOnlyAgent } from "./claude";
@@ -8,17 +9,15 @@ import { loadRegistryAgents } from "./registry-agents";
 import { toAgentResult, failureResult } from "./result";
 
 function expandHome(p: string): string {
-  if (p === "~") return process.env.HOME ?? process.env.USERPROFILE ?? p;
-  if (p.startsWith("~/") || p.startsWith("~\\")) {
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-    return join(home, p.slice(2));
-  }
+  if (p === "~") return homedir();
+  if (p.startsWith("~/") || p.startsWith("~\\")) return join(homedir(), p.slice(2));
   return p;
 }
 
 export async function runTask(taskId: string, repoRoot: string = process.cwd()): Promise<void> {
   const rec = readTask(taskId);
   if (!rec) return;
+  if (rec.lifecycle !== "queued") return; // already running/finished — do not re-run/clobber
 
   const start = new Date().toISOString();
   rec.lifecycle = "running";
@@ -43,7 +42,7 @@ export async function runTask(taskId: string, repoRoot: string = process.cwd()):
 
   const writeLog = (obj: unknown): void => {
     try {
-      writeFileSync(absLogsPath, JSON.stringify(obj) + "\n", "utf8");
+      writeFileSync(absLogsPath, JSON.stringify(obj) + "\n", { encoding: "utf8", flag: "a" });
     } catch {
       /* logging must never break the run */
     }

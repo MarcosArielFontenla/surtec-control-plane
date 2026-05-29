@@ -91,4 +91,30 @@ describe("runTask", () => {
     expect(rec.result?.blockers[0]).toContain("ANTHROPIC_API_KEY");
     expect(runReadOnlyAgent).not.toHaveBeenCalled();
   });
+
+  it("fails when the repo path does not exist", async () => {
+    const rec = queuedRecord();
+    rec.envelope.repo_path = join(root, "does-not-exist");
+    writeTask(rec);
+
+    await runTask("T-1", root);
+
+    const out = readTask("T-1")!;
+    expect(out.outcome).toBe("failed");
+    expect(out.result?.blockers[0]).toContain("repo not found");
+    expect(runReadOnlyAgent).not.toHaveBeenCalled();
+  });
+
+  it("fails when the agent id is not in the registry", async () => {
+    const rec = queuedRecord();
+    rec.envelope.agent = "ghost-agent";
+    writeTask(rec);
+
+    await runTask("T-1", root);
+
+    const out = readTask("T-1")!;
+    expect(out.outcome).toBe("failed");
+    expect(out.result?.blockers[0]).toContain("unknown agent");
+    expect(runReadOnlyAgent).not.toHaveBeenCalled();
+  });
 });
