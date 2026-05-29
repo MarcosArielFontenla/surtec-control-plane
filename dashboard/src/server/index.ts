@@ -10,7 +10,11 @@ import { reconcileRunning } from "../../../runner/reconcile";
 
 export function createApp(
   repoRoot: string = process.cwd(),
-  onTaskCreated: (id: string) => void = (id) => { void runTask(id, repoRoot); },
+  onTaskCreated: (id: string) => void = (id) => {
+    runTask(id, repoRoot).catch((err: unknown) => {
+      console.error(`runTask failed unexpectedly for ${id}:`, err);
+    });
+  },
 ): Hono {
   const app = new Hono();
 
@@ -34,11 +38,15 @@ export function createApp(
   });
 
   app.get("/api/dispatch-options", (c) => {
-    const projects = loadRegistryProjects(repoRoot).map((p) => ({
-      project: p.id,
-      agents: p.allowed_agents ?? [],
-    }));
-    return c.json({ projects });
+    try {
+      const projects = loadRegistryProjects(repoRoot).map((p) => ({
+        project: p.id,
+        agents: p.allowed_agents ?? [],
+      }));
+      return c.json({ projects });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
   });
 
   app.post("/api/tasks", async (c) => {
@@ -63,7 +71,8 @@ export function createApp(
 
 // Entrypoint: only runs when executed directly (not when imported by tests).
 if (process.argv[1] && process.argv[1].endsWith("index.ts")) {
-  reconcileRunning();
+  const interrupted = reconcileRunning();
+  if (interrupted > 0) console.log(`Reconciled ${interrupted} interrupted task(s) from a previous run.`);
   const app = createApp();
   app.use("/*", serveStatic({ root: "./dashboard/dist" }));
   const port = Number(process.env.PORT ?? 4317);

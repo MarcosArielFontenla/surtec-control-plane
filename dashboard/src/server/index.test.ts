@@ -93,4 +93,14 @@ describe("api", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("POST /api/tasks returns 400 for a malformed JSON body", async () => {
+    const app = createApp(root, () => {});
+    const res = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{ not json",
+    });
+    expect(res.status).toBe(400);
+  });
 });
