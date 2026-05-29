@@ -61,7 +61,10 @@ export function buildOverview(
 
   const attention: AttentionItem[] = [];
   for (const t of tasks) {
-    if (t.outcome === "needs-review") {
+    // A task-level flag is raised only once: needs-review takes priority over
+    // awaiting-approval (review the work before approving it). Both branches guard
+    // on lifecycle === "finished" so a still-running task never surfaces here.
+    if (t.lifecycle === "finished" && t.outcome === "needs-review") {
       attention.push({ kind: "needs-review", task_id: t.envelope.id, project: t.envelope.project, title: t.envelope.title });
     } else if (t.lifecycle === "finished" && t.envelope.requires_human_approval) {
       attention.push({ kind: "awaiting-approval", task_id: t.envelope.id, project: t.envelope.project, title: t.envelope.title });
