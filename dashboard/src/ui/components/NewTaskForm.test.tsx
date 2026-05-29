@@ -48,7 +48,9 @@ describe("NewTaskForm", () => {
       const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
       const post = calls.find((c) => String(c[0]).endsWith("/api/tasks") && (c[1] as RequestInit)?.method === "POST");
       expect(post).toBeTruthy();
-      expect(JSON.parse((post![1] as RequestInit).body as string).sandbox).toBe("workspace-write");
+      const body = JSON.parse((post![1] as RequestInit).body as string);
+      expect(body.sandbox).toBe("workspace-write");
+      expect(body.self_verify).toBeUndefined(); // plain workspace-write must NOT opt into auto-fix
     });
   });
 
