@@ -6,8 +6,12 @@ import type { TaskRecord } from "../lib/state/types";
 
 vi.mock("./claude", () => ({ runAgent: vi.fn() }));
 vi.mock("./worktree", () => ({ createWorktree: vi.fn(), commitAndDiff: vi.fn() }));
+vi.mock("./verify", () => ({ runVerification: vi.fn() }));
+vi.mock("./registry-project", () => ({ loadProjectVerifyCommands: vi.fn() }));
 import { runAgent } from "./claude";
 import { createWorktree, commitAndDiff } from "./worktree";
+import { runVerification } from "./verify";
+import { loadProjectVerifyCommands } from "./registry-project";
 import { runTask } from "./run-task";
 import { readTask, writeTask } from "../lib/state/store";
 
@@ -51,6 +55,10 @@ beforeEach(() => {
   vi.mocked(runAgent).mockReset();
   vi.mocked(createWorktree).mockReset();
   vi.mocked(commitAndDiff).mockReset();
+  vi.mocked(loadProjectVerifyCommands).mockReset();
+  vi.mocked(loadProjectVerifyCommands).mockReturnValue(["pnpm test"]);
+  vi.mocked(runVerification).mockReset();
+  vi.mocked(runVerification).mockReturnValue({ status: "passed", checks: [] });
 });
 
 afterEach(() => {
@@ -213,5 +221,55 @@ describe("runTask", () => {
     const rec = readTask("T-1")!;
     expect(rec.outcome).toBe("failed");
     expect(rec.result?.blockers[0]).toContain("git commit failed");
+  });
+
+  it("workspace-write: runs verification after a committed change and records the report", async () => {
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeTask(writeRecord());
+    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
+    vi.mocked(runAgent).mockResolvedValue({
+      text: '```json\n{ "summary": "edited", "status": "completed" }\n```',
+      costUsd: 0.01, tokens: 5,
+    });
+    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: ["src/x.ts"], diffstat: "1 file changed", committed: true });
+    vi.mocked(runVerification).mockReturnValue({ status: "passed", checks: [{ command: "pnpm test", ok: true, output_tail: "" }] });
+
+    await runTask("T-1", root);
+
+    expect(loadProjectVerifyCommands).toHaveBeenCalledWith(root, "stock-control");
+    expect(runVerification).toHaveBeenCalledWith(join(repo, "..", "wt"), ["pnpm test"]);
+    const rec = readTask("T-1")!;
+    expect(rec.result?.verification?.status).toBe("passed");
+  });
+
+  it("workspace-write: skips verification when the agent made no changes", async () => {
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeTask(writeRecord());
+    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
+    vi.mocked(runAgent).mockResolvedValue({
+      text: '```json\n{ "summary": "nothing", "status": "completed" }\n```',
+      costUsd: 0.01, tokens: 5,
+    });
+    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: [], diffstat: "", committed: false });
+
+    await runTask("T-1", root);
+
+    expect(runVerification).not.toHaveBeenCalled();
+    const rec = readTask("T-1")!;
+    expect(rec.result?.verification ?? null).toBeNull();
+  });
+
+  it("read-only: does not run verification", async () => {
+    writeTask(queuedRecord()); // queuedRecord() is read-only
+    vi.mocked(runAgent).mockResolvedValue({
+      text: '```json\n{ "summary": "ok", "status": "completed" }\n```',
+      costUsd: 0.01, tokens: 5,
+    });
+
+    await runTask("T-1", root);
+
+    expect(runVerification).not.toHaveBeenCalled();
+    const rec = readTask("T-1")!;
+    expect(rec.result?.verification ?? null).toBeNull();
   });
 });

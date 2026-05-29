@@ -8,6 +8,8 @@ import { buildSystemPrompt, buildUserPrompt } from "./agent-prompt";
 import { loadRegistryAgents } from "./registry-agents";
 import { toAgentResult, failureResult } from "./result";
 import { createWorktree, commitAndDiff } from "./worktree";
+import { runVerification } from "./verify";
+import { loadProjectVerifyCommands } from "./registry-project";
 
 export async function runTask(taskId: string, repoRoot: string = process.cwd()): Promise<void> {
   const rec = readTask(taskId);
@@ -84,9 +86,12 @@ export async function runTask(taskId: string, repoRoot: string = process.cwd()):
           worktreePath,
           `agent ${rec.envelope.id}: ${rec.envelope.title}`.slice(0, 72),
         );
-        writeLog({ task_id: rec.envelope.id, mode, branch, worktree_path: worktreePath, committed, diffstat, cost_usd: costUsd, tokens, text });
-        rec.envelope.metadata.run = { mode, branch, worktree_path: worktreePath, diffstat, committed, cost_usd: costUsd, tokens };
-        const result = toAgentResult(rec.envelope, text, logsPath, filesChanged);
+        const verification = committed
+          ? runVerification(worktreePath, loadProjectVerifyCommands(repoRoot, rec.envelope.project))
+          : null;
+        writeLog({ task_id: rec.envelope.id, mode, branch, worktree_path: worktreePath, committed, diffstat, verification, cost_usd: costUsd, tokens, text });
+        rec.envelope.metadata.run = { mode, branch, worktree_path: worktreePath, diffstat, committed, verification, cost_usd: costUsd, tokens };
+        const result = toAgentResult(rec.envelope, text, logsPath, filesChanged, verification);
         finish(result.status, result);
       } else {
         const { text, costUsd, tokens } = await runAgent({ cwd, systemPrompt, prompt, mode: "read-only" }, controller.signal);
