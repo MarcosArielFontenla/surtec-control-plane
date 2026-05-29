@@ -55,6 +55,12 @@ describe("store", () => {
     expect(result.map((r) => r.envelope.id)).toEqual(["STK-1"]);
   });
 
+  it("readTask throws on a corrupt existing file", () => {
+    mkdirSync(tasks, { recursive: true });
+    writeFileSync(join(tasks, "BAD.json"), "{ not json", "utf8");
+    expect(() => readTask("BAD", tasks)).toThrow();
+  });
+
   it("upserts and lists project overrides", () => {
     upsertProjectOverride({ id: "stock-control", health: "ok", note: "fine" }, projects);
     expect(listProjectOverrides(projects)).toEqual([

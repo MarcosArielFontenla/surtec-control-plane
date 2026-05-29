@@ -32,8 +32,12 @@ export function writeTask(record: TaskRecord, dir: string = tasksDir()): void {
 
 export function readTask(id: string, dir: string = tasksDir()): TaskRecord | null {
   const p = join(dir, `${id}.json`);
-  if (!existsSync(p)) return null;
-  return JSON.parse(readFileSync(p, "utf8")) as TaskRecord;
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) as TaskRecord;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
 }
 
 export function listTasks(dir: string = tasksDir()): TaskRecord[] {
