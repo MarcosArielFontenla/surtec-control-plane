@@ -11,7 +11,7 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "types": ["node"],
+    "types": ["node", "@testing-library/jest-dom/vitest"],
     "noEmit": true
   },
   "include": ["lib", "cli", "dashboard"]
