@@ -6,6 +6,7 @@ export function NewTaskForm() {
   const [project, setProject] = useState("");
   const [agent, setAgent] = useState("");
   const [instructions, setInstructions] = useState("");
+  const [mode, setMode] = useState("read-only");
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -39,7 +40,7 @@ export function NewTaskForm() {
     setOkMsg(null);
     setBusy(true);
     try {
-      const { id } = await createTask({ project, agent, instructions });
+      const { id } = await createTask({ project, agent, instructions, sandbox: mode });
       setInstructions("");
       setOkMsg(`Despachado: ${id}`);
     } catch (err) {
@@ -60,6 +61,10 @@ export function NewTaskForm() {
         </select>
         <select aria-label="Agente" value={agent} onChange={(e) => setAgent(e.target.value)}>
           {agents.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <select aria-label="Modo" value={mode} onChange={(e) => setMode(e.target.value)}>
+          <option value="read-only">Analizar (read-only)</option>
+          <option value="workspace-write">Implementar (workspace-write)</option>
         </select>
       </div>
       <textarea
