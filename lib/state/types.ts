@@ -33,6 +33,18 @@ export interface AgentResult {
   next_steps: string[];
   artifacts: string[];
   logs_path: string;
+  verification?: VerificationReport | null;
+}
+
+export interface VerificationCheck {
+  command: string;
+  ok: boolean;
+  output_tail: string; // last ~4000 chars of combined stdout+stderr (full output goes to the jsonl log)
+}
+
+export interface VerificationReport {
+  status: "passed" | "failed" | "skipped";
+  checks: VerificationCheck[];
 }
 
 export interface ReviewDecision {
@@ -92,6 +104,7 @@ export interface AttentionItem {
   task_id: string;
   project: string;
   title: string;
+  verification?: VerificationReport["status"] | null;
 }
 
 export interface OverviewModel {

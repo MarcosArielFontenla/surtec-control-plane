@@ -11,6 +11,12 @@ const LABEL: Record<AttentionItem["kind"], string> = {
 
 const TASK_KINDS: AttentionItem["kind"][] = ["needs-review", "awaiting-approval"];
 
+function verificationBadge(v: AttentionItem["verification"]): string {
+  if (v === "passed") return "✓ verificado";
+  if (v === "failed") return "✗ verificación falló";
+  return "(sin verificar)";
+}
+
 export function AttentionPanel({ items }: { items: AttentionItem[] }) {
   const [error, setError] = useState<string | null>(null);
 
@@ -45,6 +51,9 @@ export function AttentionPanel({ items }: { items: AttentionItem[] }) {
               {TASK_KINDS.includes(a.kind) && (
                 <>
                   {" "}
+                  <small style={{ color: a.verification === "failed" ? "#b02a37" : "#666" }}>
+                    {verificationBadge(a.verification)}
+                  </small>{" "}
                   <button type="button" onClick={() => decide(a.task_id, "approve")}>Aprobar</button>{" "}
                   <button type="button" onClick={() => decide(a.task_id, "reject")}>Rechazar</button>
                 </>

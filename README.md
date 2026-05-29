@@ -162,3 +162,12 @@ On approve, a workspace-write task also opens a **Pull Request** via the `gh` CL
 targeting the project's `default_branch` from the registry. The merge stays manual on GitHub. If `gh`
 is not installed/authenticated (or a PR already exists), the task is still recorded approved + pushed
 with the PR error noted. Design: `docs/superpowers/specs/2026-05-29-pr-on-approve-design.md`.
+
+### Self-verify
+
+When a workspace-write task finishes and its edits are committed, the runner runs the project's
+declared verification commands (from `registry/projects.yml` — an explicit `verify:` list, or by
+default `[install, test]` from `commands`) inside the worktree, captures the real exit codes, and
+records the result on the task. The dashboard shows a ✓/✗ badge in the attention panel so you see
+verified work before approving. The agent never runs shell — the runner performs verification.
+Verification is fail-fast and never crashes a run; it does not block approval (the human decides).

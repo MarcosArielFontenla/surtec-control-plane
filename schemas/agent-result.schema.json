@@ -78,6 +78,30 @@
     },
     "logs_path": {
       "type": "string"
+    },
+    "verification": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["status", "checks"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["passed", "failed", "skipped"]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["command", "ok", "output_tail"],
+            "properties": {
+              "command": { "type": "string" },
+              "ok": { "type": "boolean" },
+              "output_tail": { "type": "string" }
+            }
+          }
+        }
+      }
     }
   }
 }

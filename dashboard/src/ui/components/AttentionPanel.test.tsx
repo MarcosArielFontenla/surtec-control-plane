@@ -36,4 +36,19 @@ describe("AttentionPanel", () => {
     render(<AttentionPanel items={[{ kind: "risk", task_id: "T-2", project: "p", title: "r" }]} />);
     expect(screen.queryByRole("button")).toBeNull();
   });
+
+  it("renders a verification badge per item status", () => {
+    render(
+      <AttentionPanel
+        items={[
+          { kind: "awaiting-approval", task_id: "T-1", project: "p", title: "ok", verification: "passed" },
+          { kind: "awaiting-approval", task_id: "T-2", project: "p", title: "bad", verification: "failed" },
+          { kind: "awaiting-approval", task_id: "T-3", project: "p", title: "none", verification: null },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/✓ verificado/)).toBeTruthy();
+    expect(screen.getByText(/✗ verificación falló/)).toBeTruthy();
+    expect(screen.getByText(/\(sin verificar\)/)).toBeTruthy();
+  });
 });
