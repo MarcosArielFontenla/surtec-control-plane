@@ -117,3 +117,18 @@ The workflow `.github/workflows/upstream-watcher.yml` runs this weekly and uploa
 ## Status
 
 Initial scaffold only. Not production-ready.
+
+## Dashboard (local)
+
+A local web dashboard shows live status across Surtec projects (project cards,
+in-progress/history tasks, risks and pending approvals). It reads a file-first store
+under `state/` (gitignored).
+
+```bash
+pnpm install
+pnpm state seed     # load example data into state/
+pnpm dev            # UI on http://localhost:5173 (API on :4317)
+```
+
+For a production-style run: `pnpm build && pnpm start` (serves UI + API on :4317).
+Design: `docs/superpowers/specs/2026-05-28-live-status-dashboard-design.md`.
