@@ -61,6 +61,18 @@ describe("buildOverview", () => {
     expect(sc.task_counts).toEqual({ inProgress: 2, finished: 0 });
   });
 
+  it("a decided task contributes no attention items", () => {
+    const base = rec({
+      id: "A", project: "stock-control", lifecycle: "finished", outcome: "needs-review",
+      finished_at: "2026-05-29T12:00:00Z",
+    });
+    // pending → it IS in attention
+    expect(buildOverview(registry, [base], []).attention.some((a) => a.task_id === "A")).toBe(true);
+    // decided → it is NOT in attention
+    const decided = { ...base, decision: { status: "approved" as const, at: "2026-05-29T13:00:00Z" } };
+    expect(buildOverview(registry, [decided], []).attention).toEqual([]);
+  });
+
   it("builds attention from needs-review, awaiting-approval, risks and blockers", () => {
     const tasks = [
       rec({ id: "A", project: "stock-control", lifecycle: "finished", outcome: "needs-review", finished_at: "2026-05-28T12:00:00Z" }),

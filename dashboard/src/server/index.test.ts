@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "./index";
+import { readTask } from "../../../lib/state/store";
 
 let root: string;
 let stateDir: string;
@@ -101,6 +102,54 @@ describe("api", () => {
       headers: { "Content-Type": "application/json" },
       body: "{ not json",
     });
+    expect(res.status).toBe(400);
+  });
+
+  function writeFinishedReadOnly(id: string): void {
+    const task = {
+      envelope: {
+        id, source: "dashboard", project: "stock-control", task_type: "analysis",
+        agent: "backend-engineer", title: "Look", instructions: "x", repo_path: "~/dev",
+        branch: `agent/${id}`, sandbox: "read-only", expected_outputs: [],
+        requires_human_approval: true, metadata: {},
+      },
+      lifecycle: "finished", outcome: "completed", created_at: "2026-05-29T10:00:00Z",
+      started_at: "2026-05-29T10:00:00Z", updated_at: "2026-05-29T10:00:00Z",
+      finished_at: "2026-05-29T10:30:00Z", result: null, logs_path: null, decision: null,
+    };
+    writeFileSync(join(stateDir, "tasks", `${id}.json`), JSON.stringify(task), "utf8");
+  }
+
+  it("POST /api/tasks/:id/approve records an approved decision", async () => {
+    writeFinishedReadOnly("RV-1");
+    const app = createApp(root, () => {});
+    const res = await app.request("/api/tasks/RV-1/approve", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.decision.status).toBe("approved");
+    expect(readTask("RV-1")!.decision?.status).toBe("approved");
+  });
+
+  it("POST /api/tasks/:id/reject records a rejected decision", async () => {
+    writeFinishedReadOnly("RV-2");
+    const app = createApp(root, () => {});
+    const res = await app.request("/api/tasks/RV-2/reject", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect((await res.json()).decision.status).toBe("rejected");
+    expect(readTask("RV-2")!.decision?.status).toBe("rejected");
+  });
+
+  it("POST /api/tasks/:id/approve returns 404 for a missing task", async () => {
+    const app = createApp(root, () => {});
+    const res = await app.request("/api/tasks/NOPE/approve", { method: "POST" });
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /api/tasks/:id/approve returns 400 when already decided", async () => {
+    writeFinishedReadOnly("RV-3");
+    const app = createApp(root, () => {});
+    await app.request("/api/tasks/RV-3/approve", { method: "POST" });
+    const res = await app.request("/api/tasks/RV-3/approve", { method: "POST" });
     expect(res.status).toBe(400);
   });
 });

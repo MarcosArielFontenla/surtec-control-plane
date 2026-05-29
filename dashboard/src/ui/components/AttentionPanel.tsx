@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { AttentionItem } from "../../../../lib/state/types";
+import { approveTask, rejectTask } from "../api";
 
 const LABEL: Record<AttentionItem["kind"], string> = {
   "needs-review": "Revisar",
@@ -7,10 +9,32 @@ const LABEL: Record<AttentionItem["kind"], string> = {
   blocker: "Bloqueo",
 };
 
+const TASK_KINDS: AttentionItem["kind"][] = ["needs-review", "awaiting-approval"];
+
 export function AttentionPanel({ items }: { items: AttentionItem[] }) {
+  const [error, setError] = useState<string | null>(null);
+
+  const decide = async (id: string, action: "approve" | "reject") => {
+    const ok = window.confirm(
+      action === "approve"
+        ? `¿Aprobar ${id}? Si es workspace-write, se pushea su branch a origin.`
+        : `¿Rechazar ${id}? Si es workspace-write, se descartan su worktree y branch.`,
+    );
+    if (!ok) return;
+    setError(null);
+    try {
+      if (action === "approve") await approveTask(id);
+      else await rejectTask(id);
+      // the 3s polling refresh drops the decided item from the panel
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
   return (
     <section style={{ flex: 1 }}>
       <h4>⚠ Necesita tu atención</h4>
+      {error && <div style={{ background: "#f8d7da", padding: 6, borderRadius: 6, marginBottom: 8 }}>{error}</div>}
       {items.length === 0 ? (
         <p style={{ color: "#999" }}>Todo en orden.</p>
       ) : (
@@ -18,6 +42,13 @@ export function AttentionPanel({ items }: { items: AttentionItem[] }) {
           {items.map((a) => (
             <li key={`${a.task_id}-${a.kind}-${a.title}`}>
               <em>{LABEL[a.kind]}</em> · {a.task_id} · {a.title}
+              {TASK_KINDS.includes(a.kind) && (
+                <>
+                  {" "}
+                  <button type="button" onClick={() => decide(a.task_id, "approve")}>Aprobar</button>{" "}
+                  <button type="button" onClick={() => decide(a.task_id, "reject")}>Rechazar</button>
+                </>
+              )}
             </li>
           ))}
         </ul>

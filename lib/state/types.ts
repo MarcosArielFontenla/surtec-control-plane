@@ -35,6 +35,14 @@ export interface AgentResult {
   logs_path: string;
 }
 
+export interface ReviewDecision {
+  status: "approved" | "rejected";
+  at: string;
+  branch?: string;
+  pushed?: boolean;
+  error?: string;
+}
+
 export type Lifecycle = "queued" | "running" | "finished";
 
 export interface TaskRecord {
@@ -47,6 +55,7 @@ export interface TaskRecord {
   finished_at: string | null;
   result: AgentResult | null;
   logs_path: string | null;
+  decision?: ReviewDecision | null;
 }
 
 export interface ProjectStatusOverride {

@@ -1,19 +1,13 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import type { AgentOutcome, AgentResult } from "../lib/state/types";
 import { readTask, writeTask } from "../lib/state/store";
+import { expandHome } from "../lib/expand-home";
 import { runAgent } from "./claude";
 import { buildSystemPrompt, buildUserPrompt } from "./agent-prompt";
 import { loadRegistryAgents } from "./registry-agents";
 import { toAgentResult, failureResult } from "./result";
 import { createWorktree, commitAndDiff } from "./worktree";
-
-function expandHome(p: string): string {
-  if (p === "~") return homedir();
-  if (p.startsWith("~/") || p.startsWith("~\\")) return join(homedir(), p.slice(2));
-  return p;
-}
 
 export async function runTask(taskId: string, repoRoot: string = process.cwd()): Promise<void> {
   const rec = readTask(taskId);

@@ -56,3 +56,20 @@ export async function createTask(body: {
   }
   return (await res.json()) as { id: string };
 }
+
+async function decide(id: string, action: "approve" | "reject"): Promise<{ decision: unknown }> {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `${action} failed: ${res.status}`);
+  }
+  return (await res.json()) as { decision: unknown };
+}
+
+export function approveTask(id: string): Promise<{ decision: unknown }> {
+  return decide(id, "approve");
+}
+
+export function rejectTask(id: string): Promise<{ decision: unknown }> {
+  return decide(id, "reject");
+}
