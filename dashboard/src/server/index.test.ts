@@ -136,6 +136,7 @@ describe("api", () => {
     const res = await app.request("/api/tasks/RV-2/reject", { method: "POST" });
     expect(res.status).toBe(200);
     expect((await res.json()).decision.status).toBe("rejected");
+    expect(readTask("RV-2")!.decision?.status).toBe("rejected");
   });
 
   it("POST /api/tasks/:id/approve returns 404 for a missing task", async () => {

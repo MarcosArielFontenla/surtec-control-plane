@@ -71,6 +71,7 @@ export function createApp(
     try {
       return c.json({ decision: approveTask(c.req.param("id")) });
     } catch (err) {
+      // TaskNotFoundError extends ReviewError — check the subclass first (404 vs 400).
       if (err instanceof TaskNotFoundError) return c.json({ error: err.message }, 404);
       if (err instanceof ReviewError) return c.json({ error: err.message }, 400);
       return c.json({ error: (err as Error).message }, 500);
@@ -81,6 +82,7 @@ export function createApp(
     try {
       return c.json({ decision: rejectTask(c.req.param("id")) });
     } catch (err) {
+      // TaskNotFoundError extends ReviewError — check the subclass first (404 vs 400).
       if (err instanceof TaskNotFoundError) return c.json({ error: err.message }, 404);
       if (err instanceof ReviewError) return c.json({ error: err.message }, 400);
       return c.json({ error: (err as Error).message }, 500);
