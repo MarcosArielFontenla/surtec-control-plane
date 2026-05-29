@@ -1,15 +1,27 @@
 import type { RegistryAgent } from "./registry-agents";
 import type { TaskEnvelope } from "../lib/state/types";
+import type { RunMode } from "./claude";
 
-export function buildSystemPrompt(agent: RegistryAgent, agentsMd: string): string {
+export function buildSystemPrompt(agent: RegistryAgent, agentsMd: string, mode: RunMode = "read-only"): string {
+  const modeLines =
+    mode === "workspace-write"
+      ? [
+          "You are running in WORKSPACE-WRITE mode. You MAY use Read, Grep, and Glob to inspect",
+          "the repository AND edit files with Edit, Write, and MultiEdit. You must NOT run shell",
+          "commands, execute scripts, merge, deploy, or push. The control plane commits your edits",
+          "to a branch for human review.",
+        ]
+      : [
+          "You are running in READ-ONLY mode. You MAY use the Read, Grep, and Glob tools to",
+          "inspect the repository. You must NOT modify files, run shell commands, execute",
+          "scripts, merge, deploy, or push.",
+        ];
   return [
     `You are the Surtec "${agent.name}" agent (id: ${agent.id}).`,
     `Role: ${agent.description}`,
     `Allowed task types: ${agent.allowed_task_types.join(", ") || "(unspecified)"}.`,
     "",
-    "You are running in READ-ONLY mode. You MAY use the Read, Grep, and Glob tools to",
-    "inspect the repository. You must NOT modify files, run shell commands, execute",
-    "scripts, merge, deploy, or push.",
+    ...modeLines,
     "",
     "Repository rules (AGENTS.md):",
     agentsMd.trim(),

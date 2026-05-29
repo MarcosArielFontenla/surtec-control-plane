@@ -29,6 +29,20 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain("Allowed task types");
     expect(p).toContain("bugfix");
   });
+
+  it("uses read-only wording by default", () => {
+    const p = buildSystemPrompt(agent, "RULE: do not deploy.");
+    expect(p).toContain("READ-ONLY");
+    expect(p).not.toContain("WORKSPACE-WRITE");
+  });
+
+  it("grants edit tools and forbids commands in workspace-write mode", () => {
+    const p = buildSystemPrompt(agent, "RULE: do not deploy.", "workspace-write");
+    expect(p).toContain("WORKSPACE-WRITE");
+    expect(p).toContain("edit files");
+    expect(p).toContain("must NOT run");
+    expect(p).toContain("```json");
+  });
 });
 
 describe("buildUserPrompt", () => {
