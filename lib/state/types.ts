@@ -40,6 +40,7 @@ export interface ReviewDecision {
   at: string;
   branch?: string;
   pushed?: boolean;
+  pr_url?: string;
   error?: string;
 }
 
