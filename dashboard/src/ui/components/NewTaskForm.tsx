@@ -40,7 +40,11 @@ export function NewTaskForm() {
     setOkMsg(null);
     setBusy(true);
     try {
-      const { id } = await createTask({ project, agent, instructions, sandbox: mode });
+      const body =
+        mode === "workspace-write-verify"
+          ? { project, agent, instructions, sandbox: "workspace-write", self_verify: true }
+          : { project, agent, instructions, sandbox: mode };
+      const { id } = await createTask(body);
       setInstructions("");
       setOkMsg(`Despachado: ${id}`);
     } catch (err) {
@@ -65,6 +69,7 @@ export function NewTaskForm() {
         <select aria-label="Modo" value={mode} onChange={(e) => setMode(e.target.value)}>
           <option value="read-only">Analizar (read-only)</option>
           <option value="workspace-write">Implementar (workspace-write)</option>
+          <option value="workspace-write-verify">Implementar + auto-fix (verify)</option>
         </select>
       </div>
       <textarea

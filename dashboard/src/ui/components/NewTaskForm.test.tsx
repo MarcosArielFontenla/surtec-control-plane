@@ -52,6 +52,24 @@ describe("NewTaskForm", () => {
     });
   });
 
+  it("dispatches self_verify when the auto-fix (verify) mode is selected", async () => {
+    render(<NewTaskForm />);
+    await waitFor(() => expect(screen.getByText("backend-engineer")).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText("Modo"), { target: { value: "workspace-write-verify" } });
+    fireEvent.change(screen.getByPlaceholderText(/instrucciones/i), { target: { value: "fix the bug" } });
+    fireEvent.click(screen.getByRole("button", { name: /despachar/i }));
+
+    await waitFor(() => {
+      const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+      const post = calls.find((c) => String(c[0]).endsWith("/api/tasks") && (c[1] as RequestInit)?.method === "POST");
+      expect(post).toBeTruthy();
+      const body = JSON.parse((post![1] as RequestInit).body as string);
+      expect(body.sandbox).toBe("workspace-write");
+      expect(body.self_verify).toBe(true);
+    });
+  });
+
   it("shows an error banner when dispatch fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (String(url).endsWith("/api/dispatch-options")) {
