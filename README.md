@@ -132,3 +132,12 @@ pnpm dev            # UI on http://localhost:5173 (API on :4317)
 
 For a production-style run: `pnpm build && pnpm start` (serves UI + API on :4317).
 Design: `docs/superpowers/specs/2026-05-28-live-status-dashboard-design.md`.
+
+### Dispatch (read-only)
+
+Set `ANTHROPIC_API_KEY` (copy `.env.example` to `.env`). From the dashboard, use
+**Nueva tarea** to pick a project + agent and write instructions; the control plane
+runs a **read-only** Claude agent (Agent SDK) against the project repo and writes its
+lifecycle and result to the store, which the dashboard shows live. Read-only means the
+agent can inspect the repo but cannot modify files, run commands, merge, deploy, or push.
+Design: `docs/superpowers/specs/2026-05-29-dispatch-runner-design.md`.
