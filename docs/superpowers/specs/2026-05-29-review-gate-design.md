@@ -67,8 +67,9 @@ Rechazar → UI confirm → POST /api/tasks/:id/reject
         catch (e) { decision.error = e.message; }   // still recorded rejected; cleanup error noted
     rec.decision = decision; writeTask(rec); return decision;
 
-derive.buildOverview: an awaiting-approval / needs-review attention item is emitted ONLY when
-rec.decision == null. Decided tasks therefore drop out of the attention panel on the next poll.
+derive.buildOverview: a DECIDED task (rec.decision != null) contributes NO attention items
+(needs-review, awaiting-approval, risks, or blockers). Decided tasks therefore drop out of the
+attention panel entirely on the next poll.
 ```
 
 `lib/state` stays dependency-free; git stays confined to `runner/worktree.ts` (the runner).
@@ -107,8 +108,8 @@ export interface ReviewDecision {
 // TaskRecord gains: decision: ReviewDecision | null
 ```
 
-`lib/state/derive.ts`: in the attention loop, emit `needs-review` / `awaiting-approval` only when
-`t.decision == null` (risks/blockers unaffected).
+`lib/state/derive.ts`: in the attention loop, skip a task entirely (`continue`) when
+`t.decision != null` — a decided task contributes no attention items at all.
 
 `dashboard/src/ui/`:
 - `api.ts` — `approveTask(id)` / `rejectTask(id)` (POST, no body; throw with the server `{error}` on !ok).
