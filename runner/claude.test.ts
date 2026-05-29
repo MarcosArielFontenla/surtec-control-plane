@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { buildQueryOptions, READ_ONLY_TOOLS, WRITE_TOOLS } from "./claude";
 
+const baseVerify = {
+  cwd: "/w", systemPrompt: "s", prompt: "p",
+  mode: "workspace-write-verify" as const,
+  verifyCommands: ["pnpm install", "pnpm test"],
+};
+
 describe("buildQueryOptions (read-only)", () => {
   it("allows only Read/Grep/Glob and passes through cwd/systemPrompt", () => {
     const o = buildQueryOptions({ cwd: "/repo", systemPrompt: "sp", prompt: "p", mode: "read-only" });
@@ -24,6 +30,46 @@ describe("buildQueryOptions (read-only)", () => {
     for (const tool of ["Write", "Edit", "Bash", "WebFetch"]) {
       expect((await o.canUseTool(tool, {})).behavior).toBe("deny");
     }
+  });
+});
+
+describe("buildQueryOptions (workspace-write-verify)", () => {
+  it("verify mode allows Bash/BashOutput/KillBash and denies only NotebookEdit", () => {
+    const q = buildQueryOptions(baseVerify);
+    expect(q.allowedTools).toEqual(expect.arrayContaining(["Bash", "BashOutput", "KillBash", "Edit", "Write"]));
+    expect(q.disallowedTools).toContain("NotebookEdit");
+    expect(q.disallowedTools).not.toContain("Bash");
+  });
+
+  it("verify mode: canUseTool allows an exact allowlisted command (trimmed)", async () => {
+    const q = buildQueryOptions(baseVerify);
+    expect((await q.canUseTool("Bash", { command: "pnpm test" })).behavior).toBe("allow");
+    expect((await q.canUseTool("Bash", { command: "  pnpm install  " })).behavior).toBe("allow");
+  });
+
+  it("verify mode: canUseTool denies non-listed, arg-extended, or chained commands", async () => {
+    const q = buildQueryOptions(baseVerify);
+    expect((await q.canUseTool("Bash", { command: "rm -rf /" })).behavior).toBe("deny");
+    expect((await q.canUseTool("Bash", { command: "pnpm test --watch" })).behavior).toBe("deny");
+    expect((await q.canUseTool("Bash", { command: "pnpm test && rm -rf ." })).behavior).toBe("deny");
+    expect((await q.canUseTool("Bash", {})).behavior).toBe("deny");
+  });
+
+  it("verify mode: denies tools outside VERIFY_TOOLS", async () => {
+    const q = buildQueryOptions(baseVerify);
+    expect((await q.canUseTool("NotebookEdit", {})).behavior).toBe("deny");
+    expect((await q.canUseTool("WebFetch", {})).behavior).toBe("deny");
+  });
+
+  it("verify mode bumps default maxTurns to 20", () => {
+    expect(buildQueryOptions(baseVerify).maxTurns).toBe(20);
+  });
+
+  it("plain workspace-write still denies Bash entirely", async () => {
+    const q = buildQueryOptions({ cwd: "/w", systemPrompt: "s", prompt: "p", mode: "workspace-write" });
+    expect(q.allowedTools).not.toContain("Bash");
+    expect(q.disallowedTools).toContain("Bash");
+    expect((await q.canUseTool("Bash", { command: "pnpm test" })).behavior).toBe("deny");
   });
 });
 
