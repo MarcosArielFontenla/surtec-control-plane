@@ -2,12 +2,15 @@ import { useState } from "react";
 import { useOverview } from "./api";
 import { Sidebar, type NavItem } from "./components/Sidebar";
 import { ProjectCard } from "./components/ProjectCard";
-import { TaskList } from "./components/TaskList";
 import { AttentionPanel } from "./components/AttentionPanel";
 import { NewTaskForm } from "./components/NewTaskForm";
+import { KpiStrip } from "./components/KpiStrip";
+import { InProgressColumn } from "./components/InProgressColumn";
 import { ProcesosView } from "./views/ProcesosView";
 import { useRuns } from "./useRuns";
-import { BulkSync } from "./components/BulkSync";
+import { deriveKpis, deriveSummary } from "./derive-kpis";
+
+const ANCHOR: Partial<Record<NavItem, string>> = { Proyectos: "sec-proyectos", Tareas: "sec-tareas", "Atención": "sec-atencion" };
 
 export function App() {
   const { data, error } = useOverview();
@@ -21,52 +24,63 @@ export function App() {
     runningByProject.set(r.projectId, [...(runningByProject.get(r.projectId) ?? []), label]);
   }
 
+  const summary = data ? deriveSummary(data) : { total: 0, configured: 0, unconfigured: 0, attention: 0 };
+  const kpis = data ? deriveKpis(data, runs) : null;
+  const view: "Overview" | "Procesos" = nav === "Procesos" ? "Procesos" : "Overview";
+
+  const onSelect = (item: NavItem) => {
+    if (item === "Overview" || item === "Procesos") { setNav(item); return; }
+    setNav("Overview");
+    const id = ANCHOR[item];
+    if (id) requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
+
+  const activeProjectIds = data ? data.projects.filter((p) => p.configured).map((p) => p.id) : [];
+  const gitProjectIds = data ? data.projects.filter((p) => p.git?.ok).map((p) => p.id) : [];
+
   return (
-    <div className="app-shell">
-      <Sidebar active={nav} onSelect={setNav} />
-      <div className="app-main">
-        <header className="es-top">
-          <span className="es-top__title">{nav === "Procesos" ? "Procesos" : "Estado vivo"}</span>
-          <span className="es-live">
-            <span className={`es-dot ${error ? "es-dot--danger" : "es-dot--ok"}`} />
-            <span>{error ? "sin conexión" : "en vivo"}</span>
+    <div className="app">
+      <Sidebar active={nav} onSelect={onSelect} summary={summary} connected={!error} />
+      <main className="main">
+        <header className="topbar">
+          <div className="topbar-left">
+            <h1>{view === "Procesos" ? "Procesos" : "Estado vivo"}</h1>
+            <span className="sub">{summary.total} repos · {data?.inProgress.length ?? 0} tareas activas</span>
+          </div>
+          <span className={`live${error ? " live--down" : ""}`}>
+            <span className="dot" />{error ? "Sin conexión" : "En vivo"}
           </span>
         </header>
-        <main className="app-content">
-          {nav === "Procesos" ? (
-            <ProcesosView projectIds={data ? data.projects.filter((p) => p.configured).map((p) => p.id) : []} />
+
+        <div className="wrap">
+          {view === "Procesos" ? (
+            <ProcesosView projectIds={activeProjectIds} />
           ) : (
             <>
-              <NewTaskForm />
-              {error && (
-                <div className="es-banner es-banner--warn">
-                  No pude refrescar ({error}); mostrando el último estado conocido.
-                </div>
-              )}
-              {!data ? (
-                <p className="es-empty">Cargando…</p>
-              ) : (
+              {kpis && <KpiStrip kpis={kpis} />}
+              <NewTaskForm bulkProjectIds={gitProjectIds} />
+              {error && <div className="banner banner--warn">No pude refrescar ({error}); mostrando el último estado conocido.</div>}
+              {!data ? <p className="empty-mini">Cargando…</p> : (
                 <>
-                  <BulkSync projectIds={data.projects.filter((p) => p.git?.ok).map((p) => p.id)} />
-                  <section>
-                    <h4 className="es-section__title">Proyectos</h4>
-                    <div className="es-cards">
-                      {data.projects.map((p) => (
-                        <ProjectCard key={p.id} p={p} running={runningByProject.get(p.id) ?? []} />
-                      ))}
-                    </div>
+                  <div className="section-head" id="sec-proyectos"><h2>Proyectos</h2><span className="meta">{data.projects.length} repos</span></div>
+                  <section className="proj-grid">
+                    {data.projects.map((p) => <ProjectCard key={p.id} p={p} running={runningByProject.get(p.id) ?? []} />)}
                   </section>
-                  <div className="es-cols">
-                    <TaskList title="En curso" tasks={data.inProgress} />
-                    <AttentionPanel items={data.attention} />
+                  <div className="two-col">
+                    <div id="sec-atencion">
+                      <div className="section-head"><h2>Necesita tu atención</h2><span className="meta">{data.attention.length} ítems</span></div>
+                      <AttentionPanel items={data.attention} />
+                    </div>
+                    <div id="sec-tareas">
+                      <InProgressColumn inProgress={data.inProgress} history={data.history} />
+                    </div>
                   </div>
-                  <TaskList title="Historial" tasks={data.history} />
                 </>
               )}
             </>
           )}
-        </main>
-      </div>
+        </div>
+      </main>
     </div>
   );
 }
