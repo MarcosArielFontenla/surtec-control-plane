@@ -55,8 +55,8 @@ export function NewTaskForm() {
   };
 
   return (
-    <form onSubmit={onSubmit} className="es-form" style={{ marginBottom: 24 }}>
-      <h4 className="es-section__title" style={{ marginTop: 0 }}>Nueva tarea</h4>
+    <form onSubmit={onSubmit} className="es-form">
+      <h4 className="es-section__title">Nueva tarea</h4>
       {error && <div className="es-banner es-banner--danger">{error}</div>}
       {okMsg && <div className="es-banner es-banner--ok">{okMsg}</div>}
       <div className="es-form__row">

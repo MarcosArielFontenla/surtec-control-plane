@@ -26,7 +26,7 @@ function GitLine({ git }: { git: GitStatus | null }) {
 
 export function ProjectCard({ p }: { p: ProjectView }) {
   return (
-    <div className="es-card" style={{ minWidth: 220 }}>
+    <div className="es-card">
       <div className="es-card__head">
         <span className="es-card__title">{p.id}</span>
         <span className="es-chip">

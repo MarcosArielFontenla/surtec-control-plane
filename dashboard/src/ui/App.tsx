@@ -16,10 +16,10 @@ export function App() {
           <span className="es-top__title">Estado vivo</span>
           <span className="es-live">
             <span className={`es-dot ${error ? "es-dot--danger" : "es-dot--ok"}`} />
-            {error ? "sin conexión" : "en vivo"}
+            <span>{error ? "sin conexión" : "en vivo"}</span>
           </span>
         </header>
-        <div className="app-content">
+        <main className="app-content">
           <NewTaskForm />
           {error && (
             <div className="es-banner es-banner--warn">
@@ -43,7 +43,7 @@ export function App() {
               <TaskList title="Historial" tasks={data.history} />
             </>
           )}
-        </div>
+        </main>
       </div>
     </div>
   );
