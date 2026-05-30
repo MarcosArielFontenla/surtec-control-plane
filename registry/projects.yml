@@ -1,9 +1,23 @@
+# Surtec Control Plane — project registry (config overlay)
+#
+# Discovery drives the project LIST (real git repos under SURTEC_PROJECTS_ROOT,
+# default E:\product-projects). This file OVERLAYS config by folder name: repo,
+# default_branch, allowed_agents, sandbox, commands. A discovered project with no
+# entry here is shown but "sin configurar" (not dispatchable).
+#
+# Generated 2026-05-29 from discovery + git remotes + package.json, with policy:
+#   sandbox.default = read-only (agents analyze only; opt a project into
+#   workspace-write to let them edit), allowed_agents = standard engineering subset.
+# `status` defaults to "active" — adjust per project as you like.
+# NOTE: Angular `test` (ng test / Karma) needs headless flags for self-verify;
+# since the default is read-only, verify does not run until you opt into workspace-write.
+
 projects:
-  legal-ai-workbench:
-    repo: git@github.com:surtec/legal-ai-workbench.git
-    local_path: ~/dev/surtec/legal-ai-workbench
-    default_branch: main
-    status: planned
+  appointment-manager:
+    repo: https://github.com/MarcosArielFontenla/appointment-manager.git
+    local_path: E:/product-projects/appointment-manager
+    default_branch: master
+    status: active
     allowed_agents:
       - product-manager
       - tech-lead
@@ -11,23 +25,242 @@ projects:
       - frontend-engineer
       - qa-reviewer
       - security-reviewer
-      - legal-reviewer-ar
       - reality-checker
+      - documentation-writer
     sandbox:
-      default: workspace-write
-      legal_review: read-only
-    commands:
-      install: pnpm install
-      test: pnpm test
-      build: pnpm build
-      lint: pnpm lint
+      default: read-only
     approval:
       before_merge: true
       before_deploy: true
 
-  stock-control:
-    repo: git@github.com:surtec/stock-control.git
-    local_path: ~/dev/surtec/stock-control
+  stock-control-mvp:
+    repo: https://github.com/MarcosArielFontenla/stock-control-mvp.git
+    local_path: E:/product-projects/stock-control-mvp
+    default_branch: master
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: read-only
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  expense-tracker-mvp:
+    repo: https://github.com/MarcosArielFontenla/expense-tracker-mvp.git
+    local_path: E:/product-projects/expense-tracker-mvp
+    default_branch: master
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: read-only
+    commands:
+      install: npm install
+      build: npm run build
+      test: npm test
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  fintrack-landing:
+    repo: https://github.com/MarcosArielFontenla/fintrack-landing.git
+    local_path: E:/product-projects/fintrack-landing
+    default_branch: master
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: read-only
+    commands:
+      install: npm install
+      build: npm run build
+      test: npm test
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  vital-sync-app:
+    repo: https://github.com/MarcosArielFontenla/vital-sync-app
+    local_path: E:/product-projects/vital-sync-app
+    default_branch: master
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: read-only
+    commands:
+      install: npm install
+      build: npm run build
+      test: npm test
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  qa-cases-hub:
+    repo: https://github.com/MarcosArielFontenla/qa-hub
+    local_path: E:/product-projects/qa-cases-hub
+    default_branch: master
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: read-only
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  sur-tec-landing:
+    repo: https://github.com/MarcosArielFontenla/sur-tec-landing.git
+    local_path: E:/product-projects/sur-tec-landing
+    default_branch: master
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: read-only
+    commands:
+      install: npm install
+      build: npm run build
+      test: npm test
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  surtec-cli:
+    repo: https://github.com/MarcosArielFontenla/surtec-cli.git
+    local_path: E:/product-projects/surtec-cli
+    default_branch: dev
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: read-only
+    commands:
+      install: bun install
+      test: bun test
+      lint: bun run lint
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  surtec-llm-cli:
+    repo: https://github.com/MarcosArielFontenla/surtec-llm-cli.git
+    local_path: E:/product-projects/surtec-llm-cli
+    default_branch: master
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: read-only
+    commands:
+      install: npm install
+      build: npm run build
+      test: npm test
+      lint: npm run lint
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  company-agentic-platform:
+    repo: https://github.com/MarcosArielFontenla/agentic-central-platform
+    local_path: E:/product-projects/company-agentic-platform
+    default_branch: master
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: read-only
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  corner-of-memories-app:
+    repo: https://github.com/MarcosArielFontenla/corner-of-memories-app
+    local_path: E:/product-projects/corner-of-memories-app
+    default_branch: master
+    status: active
+    allowed_agents:
+      - product-manager
+      - tech-lead
+      - backend-engineer
+      - frontend-engineer
+      - qa-reviewer
+      - security-reviewer
+      - reality-checker
+      - documentation-writer
+    sandbox:
+      default: read-only
+    approval:
+      before_merge: true
+      before_deploy: true
+
+  agent-skills:
+    repo: https://github.com/MarcosArielFontenla/agent-skills.git
+    local_path: E:/product-projects/agent-skills
     default_branch: main
     status: active
     allowed_agents:
@@ -37,114 +270,10 @@ projects:
       - frontend-engineer
       - qa-reviewer
       - security-reviewer
-      - devops-engineer
       - reality-checker
       - documentation-writer
     sandbox:
-      default: workspace-write
-    commands:
-      install: pnpm install
-      test: pnpm test
-      build: pnpm build
-      lint: pnpm lint
+      default: read-only
     approval:
       before_merge: true
       before_deploy: true
-
-  appointment-manager:
-    repo: git@github.com:surtec/appointment-manager.git
-    local_path: ~/dev/surtec/appointment-manager
-    default_branch: main
-    status: planned
-    allowed_agents:
-      - product-manager
-      - tech-lead
-      - backend-engineer
-      - frontend-engineer
-      - qa-reviewer
-      - security-reviewer
-      - reality-checker
-    sandbox:
-      default: workspace-write
-    commands:
-      install: pnpm install
-      test: pnpm test
-      build: pnpm build
-      lint: pnpm lint
-    approval:
-      before_merge: true
-      before_deploy: true
-
-  automation-lab:
-    repo: git@github.com:surtec/automation-lab.git
-    local_path: ~/dev/surtec/automation-lab
-    default_branch: main
-    status: planned
-    allowed_agents:
-      - product-manager
-      - tech-lead
-      - backend-engineer
-      - qa-reviewer
-      - security-reviewer
-      - devops-engineer
-      - reality-checker
-    sandbox:
-      default: workspace-write
-    commands:
-      install: pnpm install
-      test: pnpm test
-      build: pnpm build
-      lint: pnpm lint
-    approval:
-      before_merge: true
-      before_deploy: true
-
-  portfolio-site:
-    repo: git@github.com:surtec/portfolio-site.git
-    local_path: ~/dev/surtec/portfolio-site
-    default_branch: main
-    status: planned
-    allowed_agents:
-      - product-manager
-      - frontend-engineer
-      - qa-reviewer
-      - security-reviewer
-      - documentation-writer
-      - reality-checker
-    sandbox:
-      default: workspace-write
-    commands:
-      install: pnpm install
-      test: pnpm test
-      build: pnpm build
-      lint: pnpm lint
-    approval:
-      before_merge: true
-      before_deploy: true
-
-  personal-saas:
-    repo: git@github.com:surtec/personal-saas.git
-    local_path: ~/dev/surtec/personal-saas
-    default_branch: main
-    status: planned
-    allowed_agents:
-      - product-manager
-      - tech-lead
-      - backend-engineer
-      - frontend-engineer
-      - qa-reviewer
-      - security-reviewer
-      - devops-engineer
-      - reality-checker
-      - documentation-writer
-    sandbox:
-      default: workspace-write
-    commands:
-      install: pnpm install
-      test: pnpm test
-      build: pnpm build
-      lint: pnpm lint
-    approval:
-      before_merge: true
-      before_deploy: true
-
