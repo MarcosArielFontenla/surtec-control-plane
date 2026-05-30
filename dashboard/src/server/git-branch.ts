@@ -6,7 +6,6 @@ export class BranchError extends Error {
   constructor(message: string, public status: number) { super(message); this.name = "BranchError"; }
 }
 
-export type BranchOp = "switch" | "create";
 export interface BranchListResult { branches: string[]; current: string | null }
 export interface BranchOpResult { ok: boolean; output: string }
 
@@ -63,6 +62,7 @@ function combine(r: { stdout?: string | Buffer; stderr?: string | Buffer; error?
 // Switches the main checkout to an EXISTING local branch. Refuses (ok:false, no switch) when the working
 // tree is dirty or the target branch does not exist. The caller (route) has already validated the name.
 export function switchBranch(repoRoot: string, id: string, name: string, deps: GitBranchDeps = {}): BranchOpResult {
+  if (!validateBranchName(name)) return { ok: false, output: `invalid branch name: ${name}` };
   const spawnSync = deps.spawnSync ?? nodeSpawnSync;
   const path = resolvePath(repoRoot, id, deps);
   const status = spawnSync("git", ["-C", path, "status", "--porcelain"], { encoding: "utf8", timeout: TIMEOUT_MS });
@@ -80,6 +80,7 @@ export function switchBranch(repoRoot: string, id: string, name: string, deps: G
 // Creates AND switches to a new branch from the current HEAD (safe even with a dirty tree — git carries
 // the changes to the new branch). The caller (route) has already validated the name.
 export function createBranch(repoRoot: string, id: string, name: string, deps: GitBranchDeps = {}): BranchOpResult {
+  if (!validateBranchName(name)) return { ok: false, output: `invalid branch name: ${name}` };
   const spawnSync = deps.spawnSync ?? nodeSpawnSync;
   const path = resolvePath(repoRoot, id, deps);
   const r = spawnSync("git", ["-C", path, "switch", "-c", name], { encoding: "utf8", timeout: TIMEOUT_MS });

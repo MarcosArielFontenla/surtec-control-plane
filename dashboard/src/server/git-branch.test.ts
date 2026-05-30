@@ -87,6 +87,14 @@ describe("switchBranch", () => {
     const switchCall = (spawnSync.mock.calls as unknown[][]).find((c) => (c[1] as string[]).includes("switch"));
     expect(switchCall![1]).toEqual(["-C", "/p/alpha", "switch", "dev"]);
   });
+
+  it("rejects an invalid name (defense-in-depth) without spawning", () => {
+    const spawnSync = vi.fn();
+    const r = switchBranch("/repo", "alpha", "-x", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
+    expect(r.ok).toBe(false);
+    expect(r.output).toMatch(/invalid branch name/);
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
 });
 
 describe("createBranch", () => {
@@ -107,5 +115,13 @@ describe("createBranch", () => {
   it("throws BranchError(404) for an unknown project", () => {
     expect(() => createBranch("/repo", "ghost", "x", { spawnSync: vi.fn() as never, discover: () => [], root: "/root" }))
       .toThrow(BranchError);
+  });
+
+  it("rejects an invalid name (defense-in-depth) without spawning", () => {
+    const spawnSync = vi.fn();
+    const r = createBranch("/repo", "alpha", "--force", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
+    expect(r.ok).toBe(false);
+    expect(r.output).toMatch(/invalid branch name/);
+    expect(spawnSync).not.toHaveBeenCalled();
   });
 });
