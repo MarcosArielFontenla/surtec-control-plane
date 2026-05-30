@@ -165,3 +165,24 @@ export async function gitSync(
   }
   return (await res.json()) as { ok: boolean; action: string; output: string };
 }
+
+export async function getBranches(id: string): Promise<{ branches: string[]; current: string | null }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/branches`);
+  if (!res.ok) throw new Error(`branches failed: ${res.status}`);
+  return (await res.json()) as { branches: string[]; current: string | null };
+}
+
+export async function branchOp(
+  id: string, op: "switch" | "create", name: string,
+): Promise<{ ok: boolean; output: string }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/branch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op, name }),
+  });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `branch ${op} failed: ${res.status}`);
+  }
+  return (await res.json()) as { ok: boolean; output: string };
+}
