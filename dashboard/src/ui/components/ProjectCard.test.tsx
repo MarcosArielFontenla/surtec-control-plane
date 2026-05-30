@@ -173,6 +173,18 @@ describe("ProjectCard branch control", () => {
       expect(b.op).toBe("create"); expect(b.name).toBe("feature/z");
     });
   });
+
+  it("shows a warn banner when a branch op is refused (ok:false)", async () => {
+    stubBranchFetch({ ok: false, output: "working tree no está limpio; commiteá o descartá los cambios para cambiar de branch" });
+    render(<ProjectCard p={gitP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    const devBtn = await screen.findByRole("button", { name: /^dev$/ });
+    fireEvent.click(devBtn);
+    await waitFor(() => {
+      const banner = screen.getByText(/no está limpio/);
+      expect(banner.className).toContain("es-banner--warn");
+    });
+  });
 });
 
 describe("ProjectCard git sync", () => {

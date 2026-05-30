@@ -76,6 +76,7 @@ function BranchControl({ project }: { project: ProjectView }) {
   if (!git?.ok) return null;
 
   const load = () => {
+    if (loading) return; // avoid overlapping fetches (toggle + post-op refresh)
     setLoading(true);
     getBranches(project.id)
       .then((b) => { setBranches(b.branches); setCurrent(b.current); })
@@ -105,7 +106,7 @@ function BranchControl({ project }: { project: ProjectView }) {
   return (
     <div className="es-branches">
       <button type="button" className="es-btn es-btn--ghost" onClick={toggle}>
-        Branch: {current ?? "(detached)"}
+        Branch: {git.branch ?? "(detached)"}
       </button>
       {open && (
         <div className="es-branches__panel">
