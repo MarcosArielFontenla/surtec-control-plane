@@ -1,6 +1,7 @@
 import type {
   TaskRecord, ProjectStatusOverride, OverviewModel, ProjectView, TaskView, AttentionItem,
 } from "./types";
+import type { PortfolioProject } from "../portfolio";
 
 export interface RegistryProject {
   id: string;
@@ -26,7 +27,7 @@ function toTaskView(t: TaskRecord): TaskView {
 }
 
 export function buildOverview(
-  registryProjects: RegistryProject[],
+  registryProjects: PortfolioProject[],
   tasks: TaskRecord[],
   overrides: ProjectStatusOverride[],
 ): OverviewModel {
@@ -54,6 +55,9 @@ export function buildOverview(
       health: ov?.health ?? null,
       note: ov?.note ?? null,
       repo: rp.repo,
+      path: rp.path ?? null,
+      configured: rp.configured ?? false,
+      git: rp.git ?? null,
       last_activity: lastActivity,
       task_counts: {
         inProgress: projTasks.filter((t) => t.lifecycle !== "finished").length,
