@@ -18,7 +18,7 @@ describe("ProjectCard git status", () => {
         last_commit: { hash: "abc123", subject: "fix bug", at: "2026-05-29T10:00:00Z" }, ok: true },
     };
     render(<ProjectCard p={p} />);
-    expect(screen.getByText(/main/)).toBeTruthy();
+    expect(screen.getAllByText(/main/).length).toBeGreaterThan(0);
     expect(screen.getByText(/2 sin commitear/)).toBeTruthy();
     expect(screen.getByText(/fix bug/)).toBeTruthy();
     expect(screen.getByText(/configurado/i)).toBeTruthy();
@@ -96,6 +96,94 @@ describe("ProjectCard open actions", () => {
     render(<ProjectCard p={{ ...base } as any} />);
     fireEvent.click(screen.getByRole("button", { name: /vs code/i }));
     await waitFor(() => expect(screen.getByText(/code no está en el PATH/)).toBeTruthy());
+  });
+});
+
+describe("ProjectCard branch control", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const gitP = (over: Partial<import("../../../../lib/state/types").GitStatus> = {}): ProjectView => ({
+    ...base,
+    git: { branch: "main", dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: true, ...over },
+  });
+
+  // Routes fetch by URL+method: GET /branches → list; POST /branch → op result.
+  function stubBranchFetch(result: { ok: boolean; output: string } = { ok: true, output: "done" }) {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith("/branches") && (!init || init.method === undefined)) {
+        return { ok: true, status: 200, json: async () => ({ branches: ["main", "dev"], current: "main" }) };
+      }
+      return { ok: true, status: 200, json: async () => result };
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    return fetchMock;
+  }
+
+  it("renders no branch control for a non-git project", () => {
+    render(<ProjectCard p={base} />);
+    expect(screen.queryByRole("button", { name: /^branch:/i })).toBeNull();
+  });
+
+  it("opening the panel lists branches and marks current", async () => {
+    stubBranchFetch();
+    render(<ProjectCard p={gitP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    await waitFor(() => expect(screen.getByText("● main")).toBeTruthy());
+    expect(screen.getByRole("button", { name: /^dev$/ })).toBeTruthy();
+  });
+
+  it("clicking a branch posts a switch op", async () => {
+    const fetchMock = stubBranchFetch();
+    render(<ProjectCard p={gitP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    const devBtn = await screen.findByRole("button", { name: /^dev$/ });
+    fireEvent.click(devBtn);
+    await waitFor(() => {
+      const post = (fetchMock.mock.calls as unknown[][]).find(
+        (c) => String(c[0]).endsWith("/api/projects/alpha/branch") && (c[1] as RequestInit)?.method === "POST",
+      );
+      expect(post).toBeTruthy();
+      const b = JSON.parse((post![1] as RequestInit).body as string);
+      expect(b.op).toBe("switch"); expect(b.name).toBe("dev");
+    });
+  });
+
+  it("disables switch buttons when the tree is dirty", async () => {
+    stubBranchFetch();
+    render(<ProjectCard p={gitP({ dirty: true, uncommitted: 1 })} />);
+    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    const devBtn = (await screen.findByRole("button", { name: /^dev$/ })) as HTMLButtonElement;
+    expect(devBtn.disabled).toBe(true);
+  });
+
+  it("creates a branch from the typed name; Crear disabled when empty", async () => {
+    const fetchMock = stubBranchFetch();
+    render(<ProjectCard p={gitP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    const crear = (await screen.findByRole("button", { name: /^crear$/i })) as HTMLButtonElement;
+    expect(crear.disabled).toBe(true); // empty input
+    fireEvent.change(screen.getByPlaceholderText(/nueva/i), { target: { value: "feature/z" } });
+    expect(crear.disabled).toBe(false);
+    fireEvent.click(crear);
+    await waitFor(() => {
+      const post = (fetchMock.mock.calls as unknown[][]).find(
+        (c) => String(c[0]).endsWith("/api/projects/alpha/branch") && (c[1] as RequestInit)?.method === "POST",
+      );
+      const b = JSON.parse((post![1] as RequestInit).body as string);
+      expect(b.op).toBe("create"); expect(b.name).toBe("feature/z");
+    });
+  });
+
+  it("shows a warn banner when a branch op is refused (ok:false)", async () => {
+    stubBranchFetch({ ok: false, output: "working tree no está limpio; commiteá o descartá los cambios para cambiar de branch" });
+    render(<ProjectCard p={gitP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    const devBtn = await screen.findByRole("button", { name: /^dev$/ });
+    fireEvent.click(devBtn);
+    await waitFor(() => {
+      const banner = screen.getByText(/no está limpio/);
+      expect(banner.className).toContain("es-banner--warn");
+    });
   });
 });
 

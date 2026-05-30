@@ -266,6 +266,63 @@ describe("git sync route", () => {
   });
 });
 
+describe("branch routes", () => {
+  it("POST /api/projects/:id/branch with an invalid op → 400", async () => {
+    const app = createApp(process.cwd());
+    const res = await app.request("/api/projects/whatever/branch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ op: "delete", name: "main" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /api/projects/:id/branch with an invalid name → 400", async () => {
+    const app = createApp(process.cwd());
+    const res = await app.request("/api/projects/whatever/branch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ op: "switch", name: "-x" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /api/projects/:id/branch with invalid JSON → 400", async () => {
+    const app = createApp(process.cwd());
+    const res = await app.request("/api/projects/whatever/branch", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "not json",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /api/projects/:id/branch for an unknown project (valid op+name) → 404", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "surtec-branch-empty-"));
+    process.env.SURTEC_PROJECTS_ROOT = empty;
+    try {
+      const app = createApp(process.cwd());
+      const res = await app.request("/api/projects/__nope__/branch", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ op: "switch", name: "main" }),
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("GET /api/projects/:id/branches for an unknown project → 404", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "surtec-branch-empty2-"));
+    process.env.SURTEC_PROJECTS_ROOT = empty;
+    try {
+      const app = createApp(process.cwd());
+      const res = await app.request("/api/projects/__nope__/branches");
+      expect(res.status).toBe(404);
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("run routes", () => {
   it("GET /api/runs returns the manager list", async () => {
     const rec: RunRecord = { runId: "r1", projectId: "p", kind: "dev", command: "d",
