@@ -78,3 +78,17 @@
 .es-empty { color: var(--ink-4); font-size: var(--fs-body-sm); }
 .es-form { background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); padding: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); }
 .es-form__row { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+
+/* procesos / console */
+.es-row--proc { gap: var(--sp-3); }
+.es-proc-slot { display: inline-flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+.es-chip--run { gap: var(--sp-2); }
+.es-run-ind { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-caption); color: var(--ink-2); }
+.es-console { display: flex; flex-direction: column; gap: var(--sp-2); }
+.es-console__bar { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-caption); color: var(--ink-3); }
+.es-console__cmd { font-family: var(--font-numeric); margin-left: auto; }
+.es-console__log {
+  font-family: var(--font-numeric); font-size: var(--fs-body-sm); line-height: 1.5;
+  background: var(--ink); color: var(--paper); border-radius: var(--r-md);
+  padding: var(--sp-3); margin: 0; max-height: 60vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
