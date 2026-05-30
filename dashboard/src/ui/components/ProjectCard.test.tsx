@@ -121,13 +121,13 @@ describe("ProjectCard branch control", () => {
 
   it("renders no branch control for a non-git project", () => {
     render(<ProjectCard p={base} />);
-    expect(screen.queryByRole("button", { name: /^branch:/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^main$/i })).toBeNull();
   });
 
   it("opening the panel lists branches and marks current", async () => {
     stubBranchFetch();
     render(<ProjectCard p={gitP()} />);
-    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^main$/i }));
     await waitFor(() => expect(screen.getByText("● main")).toBeTruthy());
     expect(screen.getByRole("button", { name: /^dev$/ })).toBeTruthy();
   });
@@ -135,7 +135,7 @@ describe("ProjectCard branch control", () => {
   it("clicking a branch posts a switch op", async () => {
     const fetchMock = stubBranchFetch();
     render(<ProjectCard p={gitP()} />);
-    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^main$/i }));
     const devBtn = await screen.findByRole("button", { name: /^dev$/ });
     fireEvent.click(devBtn);
     await waitFor(() => {
@@ -151,7 +151,7 @@ describe("ProjectCard branch control", () => {
   it("disables switch buttons when the tree is dirty", async () => {
     stubBranchFetch();
     render(<ProjectCard p={gitP({ dirty: true, uncommitted: 1 })} />);
-    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^main$/i }));
     const devBtn = (await screen.findByRole("button", { name: /^dev$/ })) as HTMLButtonElement;
     expect(devBtn.disabled).toBe(true);
   });
@@ -159,7 +159,7 @@ describe("ProjectCard branch control", () => {
   it("creates a branch from the typed name; Crear disabled when empty", async () => {
     const fetchMock = stubBranchFetch();
     render(<ProjectCard p={gitP()} />);
-    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^main$/i }));
     const crear = (await screen.findByRole("button", { name: /^crear$/i })) as HTMLButtonElement;
     expect(crear.disabled).toBe(true); // empty input
     fireEvent.change(screen.getByPlaceholderText(/nueva/i), { target: { value: "feature/z" } });
@@ -177,12 +177,12 @@ describe("ProjectCard branch control", () => {
   it("shows a warn banner when a branch op is refused (ok:false)", async () => {
     stubBranchFetch({ ok: false, output: "working tree no está limpio; commiteá o descartá los cambios para cambiar de branch" });
     render(<ProjectCard p={gitP()} />);
-    fireEvent.click(screen.getByRole("button", { name: /^branch:/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^main$/i }));
     const devBtn = await screen.findByRole("button", { name: /^dev$/ });
     fireEvent.click(devBtn);
     await waitFor(() => {
       const banner = screen.getByText(/no está limpio/);
-      expect(banner.className).toContain("es-banner--warn");
+      expect(banner.className).toContain("banner--warn");
     });
   });
 });
@@ -204,7 +204,7 @@ describe("ProjectCard github counts", () => {
     fireEvent.click(screen.getByRole("button", { name: /prs · issues/i }));
     await waitFor(() => expect(screen.getByText(/PRs: 2 · Issues: 5/)).toBeTruthy());
     expect(screen.getByText(/CI: ok/)).toBeTruthy();
-    expect(container.querySelector(".es-gh__ci .es-dot--ok")).toBeTruthy();
+    expect(container.querySelector(".ci .pdot--ok")).toBeTruthy();
     const get = (fetchMock.mock.calls as unknown[][]).find((c) => String(c[0]).endsWith("/api/projects/alpha/github"));
     expect(get).toBeTruthy();
   });
@@ -216,7 +216,7 @@ describe("ProjectCard github counts", () => {
     fireEvent.click(screen.getByRole("button", { name: /prs · issues/i }));
     await waitFor(() => expect(screen.getByText(/no disponible/i)).toBeTruthy());
     expect(screen.getByText(/CI: falló/)).toBeTruthy();
-    expect(container.querySelector(".es-gh__ci .es-dot--danger")).toBeTruthy();
+    expect(container.querySelector(".ci .pdot--danger")).toBeTruthy();
   });
 
   it("shows 'no disponible' and retries on reopen when the fetch throws (HTTP error)", async () => {
@@ -251,7 +251,7 @@ describe("ProjectCard deps status", () => {
     const { container } = render(<ProjectCard p={gitOkP()} />);
     fireEvent.click(screen.getByRole("button", { name: /^deps$/i }));
     await waitFor(() => expect(screen.getByText(/2 desactualizadas/)).toBeTruthy());
-    expect(container.querySelector(".es-deps__val .es-dot--warn")).toBeTruthy();
+    expect(container.querySelector(".link-pop__val .pdot--warn")).toBeTruthy();
     const get = (fetchMock.mock.calls as unknown[][]).find((c) => String(c[0]).endsWith("/api/projects/alpha/deps"));
     expect(get).toBeTruthy();
   });
@@ -262,7 +262,7 @@ describe("ProjectCard deps status", () => {
     const { container } = render(<ProjectCard p={gitOkP()} />);
     fireEvent.click(screen.getByRole("button", { name: /^deps$/i }));
     await waitFor(() => expect(screen.getByText(/al día/i)).toBeTruthy());
-    expect(container.querySelector(".es-deps__val .es-dot--ok")).toBeTruthy();
+    expect(container.querySelector(".link-pop__val .pdot--ok")).toBeTruthy();
   });
 
   it("shows the degraded message when not ok", async () => {
@@ -336,7 +336,7 @@ describe("ProjectCard git sync", () => {
     await waitFor(() => {
       const banner = screen.getByText(/Not possible to fast-forward/);
       expect(banner).toBeTruthy();
-      expect(banner.className).toContain("es-banner--warn");
+      expect(banner.className).toContain("banner--warn");
     });
   });
 });

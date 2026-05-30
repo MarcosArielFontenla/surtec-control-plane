@@ -267,6 +267,15 @@ select:focus, textarea:focus, .es-select:focus, .es-textarea:focus, .es-input:fo
 .link-pop__val { display:inline-flex; align-items:center; gap:6px; color: var(--fg2); }
 .link-pop__val .ci { display:inline-flex; align-items:center; gap:5px; margin-left:6px; }
 
+/* notes panel */
+.notes { display:inline-flex; }
+.notes-panel { display:flex; flex-direction:column; gap:6px; margin-top:8px; padding:10px; border:1px solid var(--border-soft); border-radius: var(--radius-md); background: rgba(6,13,22,0.35); width:100%; }
+.notes-item { display:flex; align-items:center; gap:8px; font-size: var(--text-sm); color: var(--fg2); }
+.notes-item--done span { text-decoration: line-through; color: var(--fg-muted); }
+.notes-del { margin-left:auto; background:none; border:none; color: var(--fg-muted); cursor:pointer; font-size:14px; line-height:1; }
+.notes-del:hover { color: var(--danger); }
+.notes-add { display:flex; gap:8px; }
+
 /* branch panel */
 .branches__panel { display:flex; flex-direction:column; gap:8px; padding:10px; border:1px solid var(--border-soft); border-radius: var(--radius-md); background: rgba(6,13,22,0.35); }
 .branches__note { font-family: var(--font-mono); font-size:10px; color: var(--ember-400); }

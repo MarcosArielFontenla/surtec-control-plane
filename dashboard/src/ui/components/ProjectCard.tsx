@@ -1,144 +1,95 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { GitBranch, Code2, Folder, ExternalLink, ArrowDownToLine, GitPullRequestArrow, ArrowUpFromLine } from "lucide-react";
 import type { ProjectView, GitStatus } from "../../../../lib/state/types";
 import { relativeTime } from "../relative-time";
 import { githubWebUrl } from "../../../../lib/github-url";
 import { openProject, gitSync, getBranches, branchOp, getGithubCounts, getDeps } from "../api";
 import { ProjectNotes } from "./ProjectNotes";
 
-function GitLine({ git }: { git: GitStatus | null }) {
+function GitLine({ git, onBranchClick }: { git: GitStatus | null; onBranchClick: () => void }) {
   if (!git) return null;
   if (!git.ok) {
-    return (
-      <div className="es-gitline">
-        <span className="es-dot es-dot--danger" />
-        <span>git: no disponible</span>
-      </div>
-    );
+    return <div className="git-line"><span className="dirty">git: no disponible</span></div>;
   }
   return (
-    <div className="es-gitline">
-      <span>{git.branch ?? "(detached)"}</span>
-      <span className={`es-dot ${git.dirty ? "es-dot--warn" : "es-dot--ok"}`} />
-      <span>{git.dirty ? `${git.uncommitted} sin commitear` : "limpio"}</span>
-      <span className="es-num">↑{git.ahead} ↓{git.behind}</span>
-      {git.last_commit && (
-        <span title={git.last_commit.at}>{git.last_commit.subject} · {relativeTime(git.last_commit.at)}</span>
-      )}
+    <div className="git-line">
+      <button type="button" className="branch" onClick={onBranchClick}><GitBranch />{git.branch ?? "(detached)"}</button>
+      <span className="sep">·</span>
+      <span className={git.dirty ? "dirty" : "clean"}>{git.dirty ? `${git.uncommitted} sin commitear` : "limpio"}</span>
+      <span className="sep">·</span>
+      <span className="ab">↑{git.ahead} ↓{git.behind}</span>
     </div>
   );
 }
 
-function GitSyncRow({ project }: { project: ProjectView }) {
-  const git = project.git;
+function useGitSync(project: ProjectView) {
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [confirmPush, setConfirmPush] = useState(false);
-  if (!git?.ok) return null;
-
   const run = (action: "fetch" | "pull" | "push") => {
-    setBusy(action);
-    setResult(null);
+    setBusy(action); setResult(null);
     gitSync(project.id, action)
       .then((r) => setResult({ ok: r.ok, text: r.output || (r.ok ? "ok" : "falló") }))
       .catch((e) => setResult({ ok: false, text: (e as Error).message }))
       .finally(() => { setBusy(null); setConfirmPush(false); });
   };
-
-  const ahead = git.ahead ?? 0;
-  return (
-    <div className="es-gitsync">
-      {confirmPush ? (
-        <div className="es-gitsync__confirm">
-          <span>Publicar {ahead} commit{ahead === 1 ? "" : "s"} a origin/{git.branch}?</span>
-          <button type="button" className="es-btn es-btn--accent" disabled={busy !== null} onClick={() => run("push")}>Confirmar</button>
-          <button type="button" className="es-btn es-btn--ghost" disabled={busy !== null} onClick={() => setConfirmPush(false)}>Cancelar</button>
-        </div>
-      ) : (
-        <>
-          <button type="button" className="es-btn es-btn--ghost" disabled={busy !== null} onClick={() => run("fetch")}>Fetch</button>
-          <button type="button" className="es-btn es-btn--ghost" disabled={busy !== null} onClick={() => run("pull")}>Pull</button>
-          <button type="button" className="es-btn es-btn--ghost" disabled={busy !== null || ahead === 0} onClick={() => setConfirmPush(true)}>Push</button>
-        </>
-      )}
-      {result && <div className={`es-banner ${result.ok ? "es-banner--ok" : "es-banner--warn"}`}>{result.text}</div>}
-    </div>
-  );
+  return { busy, result, confirmPush, setConfirmPush, run };
 }
 
-function BranchControl({ project }: { project: ProjectView }) {
+function BranchPanel({ project, onClose }: { project: ProjectView; onClose: () => void }) {
   const git = project.git;
-  const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
   const [current, setCurrent] = useState<string | null>(git?.ok ? git.branch : null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [newName, setNewName] = useState("");
-  if (!git?.ok) return null;
 
   const load = () => {
-    if (loading) return; // avoid overlapping fetches (toggle + post-op refresh)
+    if (loading) return;
     setLoading(true);
     getBranches(project.id)
       .then((b) => { setBranches(b.branches); setCurrent(b.current); })
       .catch((e) => setResult({ ok: false, text: (e as Error).message }))
       .finally(() => setLoading(false));
   };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []);
 
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    if (next) load();
-  };
+  if (!git?.ok) return null;
 
   const op = (operation: "switch" | "create", name: string) => {
-    setBusy(true);
-    setResult(null);
+    setBusy(true); setResult(null);
     branchOp(project.id, operation, name)
-      .then((r) => {
-        setResult({ ok: r.ok, text: r.output || (r.ok ? "ok" : "falló") });
-        if (operation === "create" && r.ok) setNewName("");
-        load();
-      })
+      .then((r) => { setResult({ ok: r.ok, text: r.output || (r.ok ? "ok" : "falló") }); if (operation === "create" && r.ok) setNewName(""); load(); })
       .catch((e) => setResult({ ok: false, text: (e as Error).message }))
       .finally(() => setBusy(false));
   };
 
   return (
-    <div className="es-branches">
-      <button type="button" className="es-btn es-btn--ghost" onClick={toggle}>
-        Branch: {git.branch ?? "(detached)"}
-      </button>
-      {open && (
-        <div className="es-branches__panel">
-          {git.dirty && <div className="es-branches__note">árbol sucio: commiteá o descartá para cambiar de branch</div>}
-          {loading ? (
-            <span className="es-empty">cargando…</span>
-          ) : (
-            <ul className="es-branches__list">
-              {branches.map((b) => (
-                <li key={b}>
-                  {b === current ? (
-                    <span className="es-branches__cur">● {b}</span>
-                  ) : (
-                    <button type="button" className="es-btn es-btn--ghost" disabled={busy || git.dirty} onClick={() => op("switch", b)}>{b}</button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="es-branches__create">
-            <input className="es-input" placeholder="nueva-branch" value={newName} onChange={(e) => setNewName(e.target.value)} />
-            <button type="button" className="es-btn es-btn--ghost" disabled={busy || newName.trim() === ""} onClick={() => op("create", newName.trim())}>Crear</button>
-          </div>
-          {result && <div className={`es-banner ${result.ok ? "es-banner--ok" : "es-banner--warn"}`}>{result.text}</div>}
-        </div>
+    <div className="branches__panel">
+      {git.dirty && <div className="branches__note">árbol sucio: commiteá o descartá para cambiar de branch</div>}
+      {loading ? <span className="empty-mini">cargando…</span> : (
+        <ul className="branches__list">
+          {branches.map((b) => (
+            <li key={b}>
+              {b === current ? <span className="branches__cur">● {b}</span>
+                : <button type="button" className="ghost-btn" disabled={busy || git.dirty} onClick={() => op("switch", b)}>{b}</button>}
+            </li>
+          ))}
+        </ul>
       )}
+      <div className="branches__create">
+        <input className="input" placeholder="nueva-branch" value={newName} onChange={(e) => setNewName(e.target.value)} />
+        <button type="button" className="ghost-btn" disabled={busy || newName.trim() === ""} onClick={() => op("create", newName.trim())}>Crear</button>
+      </div>
+      {result && <div className={`banner ${result.ok ? "banner--ok" : "banner--warn"}`}>{result.text}</div>}
+      <button type="button" className="ghost-btn" onClick={onClose}>Cerrar</button>
     </div>
   );
 }
 
-const CI_DOT: Record<string, string> = { passing: "es-dot--ok", failing: "es-dot--danger", running: "es-dot--info", none: "es-dot--muted", unknown: "es-dot--muted" };
+const CI_DOT: Record<string, string> = { passing: "ok", failing: "danger", running: "info", none: "muted", unknown: "muted" };
 const CI_LABEL: Record<string, string> = { passing: "ok", failing: "falló", running: "corriendo", none: "sin runs", unknown: "—" };
 
 function GithubCounts({ project }: { project: ProjectView }) {
@@ -148,41 +99,20 @@ function GithubCounts({ project }: { project: ProjectView }) {
   const [data, setData] = useState<{ ok: boolean; prs: number; issues: number; ci: "passing" | "failing" | "running" | "none" | "unknown"; error?: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   if (!gh) return null;
-
   const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    // Load once on first open. A server response (ok or ok:false) is kept in `data` and not refetched.
-    // A THROWN error (HTTP/network) goes to `err` only — leaving `data` null — so reopening retries it.
-    if (next && !data && !loading) {
-      setLoading(true);
-      setErr(null);
-      getGithubCounts(project.id)
-        .then(setData)
-        .catch((e) => setErr((e as Error).message))
-        .finally(() => setLoading(false));
-    }
+    const next = !open; setOpen(next);
+    if (next && !data && !loading) { setLoading(true); setErr(null); getGithubCounts(project.id).then(setData).catch((e) => setErr((e as Error).message)).finally(() => setLoading(false)); }
   };
-
   return (
-    <div className="es-gh">
-      <button type="button" className="es-btn es-btn--ghost" onClick={toggle}>PRs · Issues</button>
+    <span className="link-pop">
+      <button type="button" className="card-link-btn" onClick={toggle}>PRs · Issues</button>
       {open && (
-        <>
-          <span className="es-gh__counts" title={data?.error ?? err ?? undefined}>
-            {loading ? "cargando…"
-              : data ? (data.ok ? `PRs: ${data.prs} · Issues: ${data.issues}` : "GitHub: no disponible")
-              : err ? "GitHub: no disponible"
-              : null}
-          </span>
-          {data && (
-            <span className="es-gh__ci">
-              <span className={`es-dot ${CI_DOT[data.ci]}`} />CI: {CI_LABEL[data.ci]}
-            </span>
-          )}
-        </>
+        <span className="link-pop__val" title={data?.error ?? err ?? undefined}>
+          {loading ? "cargando…" : data ? (data.ok ? `PRs: ${data.prs} · Issues: ${data.issues}` : "GitHub: no disponible") : err ? "GitHub: no disponible" : null}
+          {data && <span className="ci"><span className={`pdot pdot--${CI_DOT[data.ci]}`} />CI: {CI_LABEL[data.ci]}</span>}
+        </span>
       )}
-    </div>
+    </span>
   );
 }
 
@@ -192,78 +122,80 @@ function DepsStatus({ project }: { project: ProjectView }) {
   const [data, setData] = useState<{ ok: boolean; outdated: number; error?: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   if (!project.git?.ok) return null;
-
   const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    if (next && !data && !loading) {
-      setLoading(true);
-      setErr(null);
-      getDeps(project.id)
-        .then(setData)
-        .catch((e) => setErr((e as Error).message))
-        .finally(() => setLoading(false));
-    }
+    const next = !open; setOpen(next);
+    if (next && !data && !loading) { setLoading(true); setErr(null); getDeps(project.id).then(setData).catch((e) => setErr((e as Error).message)).finally(() => setLoading(false)); }
   };
-
-  const dot = !data?.ok ? "es-dot--muted" : data.outdated > 0 ? "es-dot--warn" : "es-dot--ok";
-  const text = loading ? "cargando…"
-    : data ? (data.ok ? (data.outdated > 0 ? `${data.outdated} desactualizada${data.outdated === 1 ? "" : "s"}` : "al día") : (data.error ?? "Deps: no disponible"))
-    : err ? "Deps: no disponible"
-    : null;
-
+  const dot = !data?.ok ? "muted" : data.outdated > 0 ? "warn" : "ok";
+  const text = loading ? "cargando…" : data ? (data.ok ? (data.outdated > 0 ? `${data.outdated} desactualizada${data.outdated === 1 ? "" : "s"}` : "al día") : (data.error ?? "Deps: no disponible")) : err ? "Deps: no disponible" : null;
   return (
-    <div className="es-deps">
-      <button type="button" className="es-btn es-btn--ghost" onClick={toggle}>Deps</button>
-      {open && (
-        <span className="es-deps__val" title={data?.error ?? err ?? undefined}>
-          <span className={`es-dot ${dot}`} />{text}
-        </span>
-      )}
-    </div>
+    <span className="link-pop">
+      <button type="button" className="card-link-btn" onClick={toggle}>Deps</button>
+      {open && <span className="link-pop__val" title={data?.error ?? err ?? undefined}><span className={`pdot pdot--${dot}`} />{text}</span>}
+    </span>
   );
 }
 
 export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: string[] }) {
   const [openErr, setOpenErr] = useState<string | null>(null);
-  const open = (target: "vscode" | "folder") => {
-    setOpenErr(null);
-    openProject(p.id, target).catch((e) => setOpenErr((e as Error).message));
-  };
+  const [branchOpen, setBranchOpen] = useState(false);
+  const gs = useGitSync(p);
+  const open = (target: "vscode" | "folder") => { setOpenErr(null); openProject(p.id, target).catch((e) => setOpenErr((e as Error).message)); };
   const gh = githubWebUrl(p.repo);
+  const git = p.git;
+  const ahead = git?.ok ? (git.ahead ?? 0) : 0;
+  const canSync = !!git?.ok;
+
   return (
-    <div className="es-card">
-      <div className="es-card__head">
-        <span className="es-card__title">{p.id}</span>
-        <span className="es-chip">
-          <span className={`es-dot ${p.configured ? "es-dot--ok" : "es-dot--muted"}`} />
-          <span>{p.configured ? "configurado" : "sin configurar"}</span>
-        </span>
-        {running.length > 0 && (
-          <span className="es-chip es-chip--run">
-            {running.map((label) => (
-              <span key={label} className="es-run-ind">{`● ${label}`}</span>
-            ))}
+    <article className={`card${p.configured ? "" : " discovered"}`}>
+      <div className="card-top">
+        <h3 className="card-name">{p.id}</h3>
+        <span className={`pill ${p.configured ? "ok" : "todo"}`}><span className="dot" />{p.configured ? "configurado" : "sin configurar"}</span>
+      </div>
+
+      <GitLine git={git} onBranchClick={() => setBranchOpen((v) => !v)} />
+      {git?.ok && git.last_commit && (
+        <p className="commit" title={git.last_commit.at}>{git.last_commit.subject} <span className="when">· {relativeTime(git.last_commit.at)}</span></p>
+      )}
+
+      <div className="counts">
+        <span><b>{p.task_counts.inProgress}</b> en curso</span>
+        <span><b>{p.task_counts.finished}</b> hechas</span>
+        {running.map((label) => <span key={label} className="run-ind">{`● ${label}`}</span>)}
+      </div>
+
+      <div className="card-divider" />
+
+      <div className="actions">
+        <button type="button" className="ibtn primary" title="Abrir en VS Code" aria-label="VS Code" onClick={() => open("vscode")}><Code2 /> Code</button>
+        <button type="button" className="ibtn icon-only" title="Carpeta" aria-label="Carpeta" onClick={() => open("folder")}><Folder /></button>
+        {gh && <a className="ibtn icon-only" title="GitHub" aria-label="GitHub" href={gh} target="_blank" rel="noreferrer"><ExternalLink /></a>}
+        <span className="spacer" />
+        {canSync && !gs.confirmPush && (
+          <>
+            <button type="button" className="ibtn" title="Fetch" aria-label="Fetch" disabled={gs.busy !== null} onClick={() => gs.run("fetch")}><ArrowDownToLine /></button>
+            <button type="button" className="ibtn" title="Pull" aria-label="Pull" disabled={gs.busy !== null} onClick={() => gs.run("pull")}><GitPullRequestArrow /></button>
+            <button type="button" className="ibtn" title="Push" aria-label="Push" disabled={gs.busy !== null || ahead === 0} onClick={() => gs.setConfirmPush(true)}><ArrowUpFromLine /></button>
+          </>
+        )}
+        {canSync && gs.confirmPush && (
+          <span className="push-confirm">
+            <span>Publicar {ahead} commit{ahead === 1 ? "" : "s"} a origin/{git!.branch}?</span>
+            <button type="button" className="ibtn primary" disabled={gs.busy !== null} onClick={() => gs.run("push")}>Confirmar</button>
+            <button type="button" className="ibtn" onClick={() => gs.setConfirmPush(false)}>Cancelar</button>
           </span>
         )}
       </div>
-      <div className="t-caption">{p.status}{p.health ? ` · ${p.health}` : ""}</div>
-      <GitLine git={p.git} />
-      <div className="t-caption">
-        <span className="es-num">{p.task_counts.inProgress}</span> en curso · <span className="es-num">{p.task_counts.finished}</span> hechas
+      {gs.result && <div className={`banner ${gs.result.ok ? "banner--ok" : "banner--warn"}`}>{gs.result.text}</div>}
+
+      <div className="card-links">
+        <GithubCounts project={p} />
+        <DepsStatus project={p} />
+        <ProjectNotes projectId={p.id} />
       </div>
-      <div className="t-micro">{p.last_activity ? `últ. ${p.last_activity}` : "sin actividad"}</div>
-      <div className="es-card__actions">
-        <button type="button" className="es-btn es-btn--ghost" onClick={() => open("vscode")}>VS Code</button>
-        <button type="button" className="es-btn es-btn--ghost" onClick={() => open("folder")}>Carpeta</button>
-        {gh && <a className="es-link" href={gh} target="_blank" rel="noreferrer">GitHub</a>}
-      </div>
-      <GitSyncRow project={p} />
-      <BranchControl project={p} />
-      <GithubCounts project={p} />
-      <DepsStatus project={p} />
-      <ProjectNotes projectId={p.id} />
-      {openErr && <div className="es-banner es-banner--danger">{openErr}</div>}
-    </div>
+
+      {branchOpen && <BranchPanel project={p} onClose={() => setBranchOpen(false)} />}
+      {openErr && <div className="banner banner--danger">{openErr}</div>}
+    </article>
   );
 }

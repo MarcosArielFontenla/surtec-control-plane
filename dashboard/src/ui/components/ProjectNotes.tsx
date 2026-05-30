@@ -36,30 +36,30 @@ export function ProjectNotes({ projectId }: { projectId: string }) {
   };
 
   return (
-    <div className="es-notes">
-      <button type="button" className="es-btn es-btn--ghost" onClick={() => setOpen((o) => !o)}>
+    <span className="notes link-pop">
+      <button type="button" className="card-link-btn" onClick={() => setOpen((o) => !o)}>
         Notas{pending > 0 ? ` (${pending})` : ""}
       </button>
       {open && (
-        <div className="es-notes__panel">
+        <div className="notes-panel">
           {notes.map((n) => (
-            <div key={n.id} className={`es-notes__item${n.done ? " es-notes__item--done" : ""}`}>
+            <div key={n.id} className={`notes-item${n.done ? " notes-item--done" : ""}`}>
               <input type="checkbox" checked={n.done} disabled={busy} onChange={() => mutate(n.id, "toggle")} />
               <span>{n.text}</span>
-              <button type="button" className="es-notes__del" disabled={busy} onClick={() => mutate(n.id, "delete")} aria-label="borrar">×</button>
+              <button type="button" className="notes-del" disabled={busy} onClick={() => mutate(n.id, "delete")} aria-label="borrar">×</button>
             </div>
           ))}
-          <div className="es-notes__add">
+          <div className="notes-add">
             <input
-              className="es-input" placeholder="nueva nota" value={newText}
+              className="input" placeholder="nueva nota" value={newText}
               onChange={(e) => setNewText(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") add(); }}
             />
-            <button type="button" className="es-btn es-btn--ghost" disabled={busy || newText.trim() === ""} onClick={add}>Agregar</button>
+            <button type="button" className="ghost-btn" disabled={busy || newText.trim() === ""} onClick={add}>Agregar</button>
           </div>
-          {err && <div className="es-banner es-banner--danger">{err}</div>}
+          {err && <div className="banner banner--danger">{err}</div>}
         </div>
       )}
-    </div>
+    </span>
   );
 }
