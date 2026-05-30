@@ -357,6 +357,66 @@ describe("deps route", () => {
   });
 });
 
+describe("notes routes", () => {
+  let notesStateDir: string;
+  beforeEach(() => { notesStateDir = mkdtempSync(join(tmpdir(), "surtec-notes-state-")); process.env.SURTEC_STATE_DIR = notesStateDir; });
+  afterEach(() => { delete process.env.SURTEC_STATE_DIR; rmSync(notesStateDir, { recursive: true, force: true }); });
+
+  it("POST then GET round-trips a note; toggle then delete mutate it", async () => {
+    const app = createApp(process.cwd());
+    const add = await app.request("/api/projects/alpha/notes", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "do the thing" }),
+    });
+    expect(add.status).toBe(200);
+    const notes = ((await add.json()) as { notes: { id: string; done: boolean }[] }).notes;
+    expect(notes).toHaveLength(1);
+    const nid = notes[0].id;
+
+    const list = await app.request("/api/projects/alpha/notes");
+    expect(((await list.json()) as { notes: unknown[] }).notes).toHaveLength(1);
+
+    const tog = await app.request(`/api/projects/alpha/notes/${nid}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle" }),
+    });
+    expect((((await tog.json()) as { notes: { done: boolean }[] }).notes)[0].done).toBe(true);
+
+    const del = await app.request(`/api/projects/alpha/notes/${nid}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete" }),
+    });
+    expect(((await del.json()) as { notes: unknown[] }).notes).toHaveLength(0);
+  });
+
+  it("rejects an unsafe project id (contains '..') with 400", async () => {
+    const app = createApp(process.cwd());
+    const res = await app.request("/api/projects/a..b/notes");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects empty text with 400", async () => {
+    const app = createApp(process.cwd());
+    const res = await app.request("/api/projects/alpha/notes", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "   " }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects text over 500 chars with 400", async () => {
+    const app = createApp(process.cwd());
+    const res = await app.request("/api/projects/alpha/notes", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "a".repeat(501) }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an invalid action with 400", async () => {
+    const app = createApp(process.cwd());
+    const res = await app.request("/api/projects/alpha/notes/n1", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "nuke" }),
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("run routes", () => {
   it("GET /api/runs returns the manager list", async () => {
     const rec: RunRecord = { runId: "r1", projectId: "p", kind: "dev", command: "d",

@@ -120,3 +120,11 @@
 /* deps staleness */
 .es-deps { display: inline-flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
 .es-deps__val { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-caption); color: var(--ink-2); }
+
+/* project notes */
+.es-notes { display: flex; flex-direction: column; gap: var(--sp-1); margin-top: var(--sp-2); }
+.es-notes__panel { display: flex; flex-direction: column; gap: var(--sp-1); margin-top: var(--sp-1); }
+.es-notes__item { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-body-sm); }
+.es-notes__item--done { color: var(--ink-4); text-decoration: line-through; }
+.es-notes__add { display: flex; gap: var(--sp-2); }
+.es-notes__del { border: 0; background: transparent; color: var(--ink-3); cursor: pointer; font-size: var(--fs-body); }

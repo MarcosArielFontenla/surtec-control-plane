@@ -15,6 +15,7 @@ import { runGitSync, GitSyncError } from "./git-sync";
 import { validateBranchName, listBranches, switchBranch, createBranch, BranchError } from "./git-branch";
 import { readGithubCounts, readCiStatus, resolveRepoRef, createGithubCache, GithubError } from "./github-read";
 import { readDepsStatus, resolveDepsPath, createDepsCache, DepsError } from "./deps-read";
+import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../lib/state/notes";
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
@@ -203,6 +204,34 @@ export function createApp(
       if (err instanceof DepsError) return c.json({ error: err.message }, err.status as 404);
       return c.json({ error: (err as Error).message }, 500);
     }
+  });
+
+  app.get("/api/projects/:id/notes", (c) => {
+    const id = c.req.param("id");
+    if (!isSafeId(id)) return c.json({ error: "invalid id" }, 400);
+    return c.json({ notes: listNotes(id) });
+  });
+
+  app.post("/api/projects/:id/notes", async (c) => {
+    const id = c.req.param("id");
+    if (!isSafeId(id)) return c.json({ error: "invalid id" }, 400);
+    let body: { text?: string };
+    try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON body" }, 400); }
+    const text = String(body?.text ?? "").trim();
+    if (!text || text.length > 500) return c.json({ error: "invalid text" }, 400);
+    return c.json({ notes: addNote(id, text) });
+  });
+
+  app.post("/api/projects/:id/notes/:noteId", async (c) => {
+    const id = c.req.param("id");
+    const noteId = c.req.param("noteId");
+    if (!isSafeId(id) || !isSafeId(noteId)) return c.json({ error: "invalid id" }, 400);
+    let body: { action?: string };
+    try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON body" }, 400); }
+    const action = String(body?.action ?? "");
+    if (action === "toggle") return c.json({ notes: toggleNote(id, noteId) });
+    if (action === "delete") return c.json({ notes: deleteNote(id, noteId) });
+    return c.json({ error: `invalid action: ${action}` }, 400);
   });
 
   // --- Procesos (B.2): run project commands from the dashboard ---

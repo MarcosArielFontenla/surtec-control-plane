@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { OverviewModel, RunRecord, ProjectCommands, RunEvent } from "../../../lib/state/types";
+import type { Note } from "../../../lib/state/notes";
 
 export async function fetchOverview(): Promise<OverviewModel> {
   const res = await fetch("/api/overview");
@@ -199,4 +200,32 @@ export async function getDeps(id: string): Promise<{ ok: boolean; outdated: numb
   const res = await fetch(`/api/projects/${encodeURIComponent(id)}/deps`);
   if (!res.ok) throw new Error(`deps failed: ${res.status}`);
   return (await res.json()) as { ok: boolean; outdated: number; error?: string };
+}
+
+export async function getNotes(id: string): Promise<{ notes: Note[] }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/notes`);
+  if (!res.ok) throw new Error(`notes failed: ${res.status}`);
+  return (await res.json()) as { notes: Note[] };
+}
+
+export async function addNote(id: string, text: string): Promise<{ notes: Note[] }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/notes`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+  });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `add note failed: ${res.status}`);
+  }
+  return (await res.json()) as { notes: Note[] };
+}
+
+export async function mutateNote(id: string, noteId: string, action: "toggle" | "delete"): Promise<{ notes: Note[] }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/notes/${encodeURIComponent(noteId)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }),
+  });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `note ${action} failed: ${res.status}`);
+  }
+  return (await res.json()) as { notes: Note[] };
 }

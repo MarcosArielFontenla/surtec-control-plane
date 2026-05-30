@@ -5,7 +5,7 @@ import { join, dirname } from "node:path";
 import type { TaskRecord, ProjectStatusOverride } from "./types";
 import { tasksDir, projectsDir } from "./paths";
 
-function writeJsonAtomic(filePath: string, data: unknown): void {
+export function writeJsonAtomic(filePath: string, data: unknown): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp`;
   writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");

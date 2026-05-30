@@ -15,3 +15,7 @@ export function tasksDir(base: string = stateDir()): string {
 export function projectsDir(base: string = stateDir()): string {
   return join(base, "projects");
 }
+
+export function notesDir(base: string = stateDir()): string {
+  return join(base, "notes");
+}
