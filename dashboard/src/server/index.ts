@@ -11,6 +11,7 @@ import { loadProjectConfig } from "./portfolio-config";
 import { createTask, ValidationError } from "./dispatch";
 import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
 import { openProject, OpenError } from "./open-project";
+import { runGitSync, GitSyncError } from "./git-sync";
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
@@ -114,6 +115,26 @@ export function createApp(
       return c.json(openProject(repoRoot, c.req.param("id"), String(body?.target ?? "")));
     } catch (err) {
       if (err instanceof OpenError) return c.json({ error: err.message }, err.status as 400 | 404 | 500);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/projects/:id/git", async (c) => {
+    let body: { action?: string };
+    try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON body" }, 400); }
+    const id = c.req.param("id");
+    try {
+      const result = runGitSync(repoRoot, id, String(body?.action ?? ""));
+      if (result.ok) {
+        // Bust the cached status for this repo so ahead/behind refreshes on the next overview poll.
+        const root = process.env.SURTEC_PROJECTS_ROOT ?? dirname(repoRoot);
+        const ignore = [...DEFAULT_IGNORE, ...(process.env.SURTEC_PROJECTS_IGNORE ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
+        const proj = discoverProjects(root, ignore).find((p) => p.id === id);
+        if (proj) gitStatusCache.invalidate(proj.path);
+      }
+      return c.json(result);
+    } catch (err) {
+      if (err instanceof GitSyncError) return c.json({ error: err.message }, err.status as 400 | 404);
       return c.json({ error: (err as Error).message }, 500);
     }
   });
