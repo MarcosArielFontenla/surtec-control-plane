@@ -7,7 +7,7 @@ import * as api from "../api";
 afterEach(() => vi.restoreAllMocks());
 
 describe("BulkSync", () => {
-  it("Fetch all calls gitSync(id,'fetch') per repo and renders a row per repo", async () => {
+  it("Fetch all calls gitSync(id,'fetch') per repo and renders a dot per repo", async () => {
     const gitSync = vi.spyOn(api, "gitSync").mockResolvedValue({ ok: true, action: "fetch", output: "ok" });
     render(<BulkSync projectIds={["alpha", "beta"]} />);
     fireEvent.click(screen.getByRole("button", { name: /fetch all/i }));
@@ -15,8 +15,8 @@ describe("BulkSync", () => {
       expect(gitSync).toHaveBeenCalledWith("alpha", "fetch");
       expect(gitSync).toHaveBeenCalledWith("beta", "fetch");
     });
-    expect(screen.getByText("alpha")).toBeTruthy();
-    expect(screen.getByText("beta")).toBeTruthy();
+    expect(screen.getByTitle(/alpha/)).toBeTruthy();
+    expect(screen.getByTitle(/beta/)).toBeTruthy();
   });
 
   it("a repo that returns ok:false is shown failed; the others ok; the run continues", async () => {
@@ -27,9 +27,9 @@ describe("BulkSync", () => {
     render(<BulkSync projectIds={["alpha", "beta", "gamma"]} />);
     fireEvent.click(screen.getByRole("button", { name: /fetch all/i }));
     await waitFor(() => {
-      expect(screen.getByText("beta").closest("li")?.querySelector(".es-dot--danger")).toBeTruthy();
-      expect(screen.getByText("alpha").closest("li")?.querySelector(".es-dot--ok")).toBeTruthy();
-      expect(screen.getByText("gamma").closest("li")?.querySelector(".es-dot--ok")).toBeTruthy();
+      expect(screen.getByTitle(/beta/).classList.contains("pdot--danger")).toBe(true);
+      expect(screen.getByTitle(/alpha/).classList.contains("pdot--ok")).toBe(true);
+      expect(screen.getByTitle(/gamma/).classList.contains("pdot--ok")).toBe(true);
     });
   });
 
@@ -41,8 +41,8 @@ describe("BulkSync", () => {
     render(<BulkSync projectIds={["alpha", "beta", "gamma"]} />);
     fireEvent.click(screen.getByRole("button", { name: /fetch all/i }));
     await waitFor(() => {
-      expect(screen.getByText("beta").closest("li")?.querySelector(".es-dot--danger")).toBeTruthy();
-      expect(screen.getByText("gamma").closest("li")?.querySelector(".es-dot--ok")).toBeTruthy();
+      expect(screen.getByTitle(/beta/).classList.contains("pdot--danger")).toBe(true);
+      expect(screen.getByTitle(/gamma/).classList.contains("pdot--ok")).toBe(true);
     });
   });
 

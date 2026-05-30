@@ -1,11 +1,12 @@
 import { useState } from "react";
+import { ArrowDownToLine, GitPullRequestArrow } from "lucide-react";
 import { gitSync } from "../api";
 
 type RepoStatus = "idle" | "running" | "ok" | "failed";
 interface RepoResult { status: RepoStatus; output?: string }
 
 const DOT: Record<RepoStatus, string> = {
-  idle: "es-dot--muted", running: "es-dot--info", ok: "es-dot--ok", failed: "es-dot--danger",
+  idle: "muted", running: "info", ok: "ok", failed: "danger",
 };
 
 export function BulkSync({ projectIds }: { projectIds: string[] }) {
@@ -34,21 +35,20 @@ export function BulkSync({ projectIds }: { projectIds: string[] }) {
   const disabled = running || projectIds.length === 0;
   const rows = Object.entries(results);
   return (
-    <div className="es-bulk">
-      <div className="es-bulk__bar">
-        <span className="es-bulk__label">Sincronizar todo</span>
-        <button type="button" className="es-btn es-btn--ghost" disabled={disabled} onClick={() => run("fetch")}>Fetch all</button>
-        <button type="button" className="es-btn es-btn--ghost" disabled={disabled} onClick={() => run("pull")}>Pull all</button>
-      </div>
+    <div className="sync-actions">
+      <span className="lbl">Sincronizar</span>
+      <button type="button" className="ghost-btn" disabled={disabled} onClick={() => run("fetch")}>
+        <ArrowDownToLine /> Fetch all
+      </button>
+      <button type="button" className="ghost-btn" disabled={disabled} onClick={() => run("pull")}>
+        <GitPullRequestArrow /> Pull all
+      </button>
       {rows.length > 0 && (
-        <ul className="es-bulk__results">
+        <span className="sync-results">
           {rows.map(([id, r]) => (
-            <li key={id} className="es-bulk__row" title={r.output}>
-              <span className={`es-dot ${DOT[r.status]}`} />
-              <span>{id}</span>
-            </li>
+            <span key={id} className={`pdot pdot--${DOT[r.status]}`} title={`${id}${r.output ? `: ${r.output}` : ""}`} />
           ))}
-        </ul>
+        </span>
       )}
     </div>
   );
