@@ -56,5 +56,32 @@ export function listBranches(repoRoot: string, id: string, deps: GitBranchDeps =
   return { branches, current };
 }
 
-// TAIL_CHARS is used by Task 2 (switchBranch/createBranch); declared here to keep the module self-contained.
-void TAIL_CHARS;
+function combine(r: { stdout?: string | Buffer; stderr?: string | Buffer; error?: Error }): string {
+  return (asStr(r.stdout) + asStr(r.stderr) + (r.error ? r.error.message : "")).trim().slice(-TAIL_CHARS);
+}
+
+// Switches the main checkout to an EXISTING local branch. Refuses (ok:false, no switch) when the working
+// tree is dirty or the target branch does not exist. The caller (route) has already validated the name.
+export function switchBranch(repoRoot: string, id: string, name: string, deps: GitBranchDeps = {}): BranchOpResult {
+  const spawnSync = deps.spawnSync ?? nodeSpawnSync;
+  const path = resolvePath(repoRoot, id, deps);
+  const status = spawnSync("git", ["-C", path, "status", "--porcelain"], { encoding: "utf8", timeout: TIMEOUT_MS });
+  if (asStr(status.stdout).trim().length > 0) {
+    return { ok: false, output: "working tree no está limpio; commiteá o descartá los cambios para cambiar de branch" };
+  }
+  const { branches } = listBranches(repoRoot, id, deps);
+  if (!branches.includes(name)) {
+    return { ok: false, output: `la branch no existe: ${name}` };
+  }
+  const r = spawnSync("git", ["-C", path, "switch", name], { encoding: "utf8", timeout: TIMEOUT_MS });
+  return { ok: r.status === 0 && !r.error, output: combine(r) };
+}
+
+// Creates AND switches to a new branch from the current HEAD (safe even with a dirty tree — git carries
+// the changes to the new branch). The caller (route) has already validated the name.
+export function createBranch(repoRoot: string, id: string, name: string, deps: GitBranchDeps = {}): BranchOpResult {
+  const spawnSync = deps.spawnSync ?? nodeSpawnSync;
+  const path = resolvePath(repoRoot, id, deps);
+  const r = spawnSync("git", ["-C", path, "switch", "-c", name], { encoding: "utf8", timeout: TIMEOUT_MS });
+  return { ok: r.status === 0 && !r.error, output: combine(r) };
+}
