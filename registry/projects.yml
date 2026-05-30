@@ -29,6 +29,11 @@ projects:
       - documentation-writer
     sandbox:
       default: read-only
+    commands:
+      install: cd frontend && npm install
+      dev: cd frontend && npm run start
+      build: cd frontend && npm run build
+      test: cd frontend && npm test
     approval:
       before_merge: true
       before_deploy: true
@@ -71,6 +76,7 @@ projects:
       default: read-only
     commands:
       install: npm install
+      dev: npm run dev
       build: npm run build
       test: npm test
     approval:
@@ -95,6 +101,7 @@ projects:
       default: read-only
     commands:
       install: npm install
+      dev: npm run start
       build: npm run build
       test: npm test
     approval:
@@ -119,6 +126,7 @@ projects:
       default: read-only
     commands:
       install: npm install
+      dev: npm run start
       build: npm run build
       test: npm test
     approval:
@@ -141,6 +149,11 @@ projects:
       - documentation-writer
     sandbox:
       default: read-only
+    commands:
+      install: cd frontend && npm install
+      dev: cd frontend && npm run dev
+      build: cd frontend && npm run build
+      test: cd frontend && npm test
     approval:
       before_merge: true
       before_deploy: true
@@ -163,6 +176,7 @@ projects:
       default: read-only
     commands:
       install: npm install
+      dev: npm run start
       build: npm run build
       test: npm test
     approval:
@@ -187,6 +201,7 @@ projects:
       default: read-only
     commands:
       install: bun install
+      dev: bun run dev
       test: bun test
       lint: bun run lint
     approval:
@@ -211,6 +226,7 @@ projects:
       default: read-only
     commands:
       install: npm install
+      dev: npm run dev
       build: npm run build
       test: npm test
       lint: npm run lint
@@ -254,6 +270,11 @@ projects:
       - documentation-writer
     sandbox:
       default: read-only
+    commands:
+      install: cd frontend && npm install
+      dev: cd frontend && npm run dev
+      build: cd frontend && npm run build
+      test: cd frontend && npm test
     approval:
       before_merge: true
       before_deploy: true
