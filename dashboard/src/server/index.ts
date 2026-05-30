@@ -13,6 +13,7 @@ import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./revie
 import { openProject, OpenError } from "./open-project";
 import { runGitSync, GitSyncError } from "./git-sync";
 import { validateBranchName, listBranches, switchBranch, createBranch, BranchError } from "./git-branch";
+import { resolveRepoSlug, createGithubCache, GithubError } from "./github-read";
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
@@ -29,6 +30,7 @@ export function createApp(
   const app = new Hono();
 
   const gitStatusCache = createGitStatusCache();
+  const githubCache = createGithubCache();
 
   app.get("/api/overview", (c) => {
     try {
@@ -170,6 +172,17 @@ export function createApp(
       return c.json(result);
     } catch (err) {
       if (err instanceof BranchError) return c.json({ error: err.message }, err.status as 400 | 404);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get("/api/projects/:id/github", (c) => {
+    try {
+      const slug = resolveRepoSlug(repoRoot, c.req.param("id"));
+      if (!slug) return c.json({ ok: false, prs: 0, issues: 0, error: "no es un repo de GitHub" });
+      return c.json(githubCache.get(slug));
+    } catch (err) {
+      if (err instanceof GithubError) return c.json({ error: err.message }, err.status as 404);
       return c.json({ error: (err as Error).message }, 500);
     }
   });

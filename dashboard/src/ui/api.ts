@@ -186,3 +186,11 @@ export async function branchOp(
   }
   return (await res.json()) as { ok: boolean; output: string };
 }
+
+export async function getGithubCounts(
+  id: string,
+): Promise<{ ok: boolean; prs: number; issues: number; error?: string }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/github`);
+  if (!res.ok) throw new Error(`github failed: ${res.status}`);
+  return (await res.json()) as { ok: boolean; prs: number; issues: number; error?: string };
+}

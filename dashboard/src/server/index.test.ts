@@ -323,6 +323,24 @@ describe("branch routes", () => {
   });
 });
 
+describe("github route", () => {
+  it("GET /api/projects/:id/github for an unknown project → 404", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "surtec-gh-empty-"));
+    process.env.SURTEC_PROJECTS_ROOT = empty;
+    try {
+      const app = createApp(process.cwd());
+      const res = await app.request("/api/projects/__nope__/github");
+      expect(res.status).toBe(404);
+      // Assert it's OUR handler's JSON 404 (not Hono's default plain-text 404 for an unregistered route),
+      // which confirms the route is actually wired.
+      expect((await res.json()) as { error?: string }).toMatchObject({ error: expect.stringMatching(/unknown project/) });
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("run routes", () => {
   it("GET /api/runs returns the manager list", async () => {
     const rec: RunRecord = { runId: "r1", projectId: "p", kind: "dev", command: "d",

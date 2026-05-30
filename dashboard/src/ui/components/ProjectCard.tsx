@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ProjectView, GitStatus } from "../../../../lib/state/types";
 import { relativeTime } from "../relative-time";
 import { githubWebUrl } from "../../../../lib/github-url";
-import { openProject, gitSync, getBranches, branchOp } from "../api";
+import { openProject, gitSync, getBranches, branchOp, getGithubCounts } from "../api";
 
 function GitLine({ git }: { git: GitStatus | null }) {
   if (!git) return null;
@@ -137,6 +137,44 @@ function BranchControl({ project }: { project: ProjectView }) {
   );
 }
 
+function GithubCounts({ project }: { project: ProjectView }) {
+  const gh = githubWebUrl(project.repo);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<{ ok: boolean; prs: number; issues: number; error?: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  if (!gh) return null;
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    // Load once on first open. A server response (ok or ok:false) is kept in `data` and not refetched.
+    // A THROWN error (HTTP/network) goes to `err` only — leaving `data` null — so reopening retries it.
+    if (next && !data && !loading) {
+      setLoading(true);
+      setErr(null);
+      getGithubCounts(project.id)
+        .then(setData)
+        .catch((e) => setErr((e as Error).message))
+        .finally(() => setLoading(false));
+    }
+  };
+
+  return (
+    <div className="es-gh">
+      <button type="button" className="es-btn es-btn--ghost" onClick={toggle}>PRs · Issues</button>
+      {open && (
+        <span className="es-gh__counts" title={data?.error ?? err ?? undefined}>
+          {loading ? "cargando…"
+            : data ? (data.ok ? `PRs: ${data.prs} · Issues: ${data.issues}` : "GitHub: no disponible")
+            : err ? "GitHub: no disponible"
+            : null}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: string[] }) {
   const [openErr, setOpenErr] = useState<string | null>(null);
   const open = (target: "vscode" | "folder") => {
@@ -173,6 +211,7 @@ export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: str
       </div>
       <GitSyncRow project={p} />
       <BranchControl project={p} />
+      <GithubCounts project={p} />
       {openErr && <div className="es-banner es-banner--danger">{openErr}</div>}
     </div>
   );

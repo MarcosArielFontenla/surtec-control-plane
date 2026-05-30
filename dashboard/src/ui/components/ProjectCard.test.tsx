@@ -187,6 +187,47 @@ describe("ProjectCard branch control", () => {
   });
 });
 
+describe("ProjectCard github counts", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const ghP = (): ProjectView => ({ ...base, repo: "git@github.com:owner/repo.git" });
+
+  it("renders no PRs·Issues button for a non-github repo", () => {
+    render(<ProjectCard p={{ ...base, repo: null }} />);
+    expect(screen.queryByRole("button", { name: /prs · issues/i })).toBeNull();
+  });
+
+  it("loads and shows counts on click", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, prs: 2, issues: 5 }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectCard p={ghP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /prs · issues/i }));
+    await waitFor(() => expect(screen.getByText(/PRs: 2 · Issues: 5/)).toBeTruthy());
+    const get = (fetchMock.mock.calls as unknown[][]).find((c) => String(c[0]).endsWith("/api/projects/alpha/github"));
+    expect(get).toBeTruthy();
+  });
+
+  it("shows 'no disponible' when the read degraded (ok:false)", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: false, prs: 0, issues: 0, error: "gh auth required" }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectCard p={ghP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /prs · issues/i }));
+    await waitFor(() => expect(screen.getByText(/no disponible/i)).toBeTruthy());
+  });
+
+  it("shows 'no disponible' and retries on reopen when the fetch throws (HTTP error)", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: "boom" }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectCard p={ghP()} />);
+    const btn = screen.getByRole("button", { name: /prs · issues/i });
+    fireEvent.click(btn); // open + fetch (throws → err)
+    await waitFor(() => expect(screen.getByText(/no disponible/i)).toBeTruthy());
+    fireEvent.click(btn); // close
+    fireEvent.click(btn); // reopen → retries (data still null)
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+  });
+});
+
 describe("ProjectCard git sync", () => {
   afterEach(() => vi.unstubAllGlobals());
 

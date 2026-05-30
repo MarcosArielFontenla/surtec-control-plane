@@ -111,3 +111,7 @@
 .es-bulk__label { font-size: var(--fs-body-sm); font-weight: 600; }
 .es-bulk__results { display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); margin: 0; padding: 0; list-style: none; }
 .es-bulk__row { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-caption); color: var(--ink-2); }
+
+/* github counts */
+.es-gh { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
+.es-gh__counts { font-size: var(--fs-caption); color: var(--ink-2); }
