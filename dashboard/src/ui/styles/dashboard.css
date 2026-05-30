@@ -116,3 +116,7 @@
 .es-gh { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
 .es-gh__counts { font-size: var(--fs-caption); color: var(--ink-2); }
 .es-gh__ci { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-caption); color: var(--ink-2); }
+
+/* deps staleness */
+.es-deps { display: inline-flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-2); }
+.es-deps__val { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-caption); color: var(--ink-2); }

@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ProjectView, GitStatus } from "../../../../lib/state/types";
 import { relativeTime } from "../relative-time";
 import { githubWebUrl } from "../../../../lib/github-url";
-import { openProject, gitSync, getBranches, branchOp, getGithubCounts } from "../api";
+import { openProject, gitSync, getBranches, branchOp, getGithubCounts, getDeps } from "../api";
 
 function GitLine({ git }: { git: GitStatus | null }) {
   if (!git) return null;
@@ -185,6 +185,44 @@ function GithubCounts({ project }: { project: ProjectView }) {
   );
 }
 
+function DepsStatus({ project }: { project: ProjectView }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<{ ok: boolean; outdated: number; error?: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  if (!project.git?.ok) return null;
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && !data && !loading) {
+      setLoading(true);
+      setErr(null);
+      getDeps(project.id)
+        .then(setData)
+        .catch((e) => setErr((e as Error).message))
+        .finally(() => setLoading(false));
+    }
+  };
+
+  const dot = !data?.ok ? "es-dot--muted" : data.outdated > 0 ? "es-dot--warn" : "es-dot--ok";
+  const text = loading ? "cargando…"
+    : data ? (data.ok ? (data.outdated > 0 ? `${data.outdated} desactualizada${data.outdated === 1 ? "" : "s"}` : "al día") : (data.error ?? "Deps: no disponible"))
+    : err ? "Deps: no disponible"
+    : null;
+
+  return (
+    <div className="es-deps">
+      <button type="button" className="es-btn es-btn--ghost" onClick={toggle}>Deps</button>
+      {open && (
+        <span className="es-deps__val" title={data?.error ?? err ?? undefined}>
+          <span className={`es-dot ${dot}`} />{text}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: string[] }) {
   const [openErr, setOpenErr] = useState<string | null>(null);
   const open = (target: "vscode" | "folder") => {
@@ -222,6 +260,7 @@ export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: str
       <GitSyncRow project={p} />
       <BranchControl project={p} />
       <GithubCounts project={p} />
+      <DepsStatus project={p} />
       {openErr && <div className="es-banner es-banner--danger">{openErr}</div>}
     </div>
   );
