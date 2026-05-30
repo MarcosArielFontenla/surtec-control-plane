@@ -124,3 +124,73 @@ describe("ProcessManager.start", () => {
     expect(() => pm.start({ projectId: "p", kind: "dev", command: "d2", cwd: "/p" })).not.toThrow();
   });
 });
+
+describe("ProcessManager.stop", () => {
+  it("win32: calls taskkill /T /F and marks stopped", () => {
+    const child = fakeChild(4242);
+    const spawnSync = vi.fn();
+    const pm = createProcessManager({
+      spawn: vi.fn().mockReturnValue(child) as never,
+      spawnSync: spawnSync as never,
+      platform: "win32",
+      now: () => "2026-05-30T00:00:00.000Z",
+      newId: () => "run-1",
+    });
+    const rec = pm.start({ projectId: "p", kind: "dev", command: "d", cwd: "/p" });
+    pm.stop(rec.runId);
+    expect(spawnSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"]);
+    expect(pm.get(rec.runId)!.record.status).toBe("stopped");
+  });
+
+  it("posix: calls process.kill and marks stopped", () => {
+    const child = fakeChild(4243);
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+    const pm = createProcessManager({
+      spawn: vi.fn().mockReturnValue(child) as never,
+      spawnSync: vi.fn() as never,
+      platform: "linux",
+      now: () => "2026-05-30T00:00:00.000Z",
+      newId: () => "run-1",
+    });
+    const rec = pm.start({ projectId: "p", kind: "dev", command: "d", cwd: "/p" });
+    pm.stop(rec.runId);
+    expect(killSpy).toHaveBeenCalledWith(4243, "SIGTERM");
+    expect(pm.get(rec.runId)!.record.status).toBe("stopped");
+    killSpy.mockRestore();
+  });
+
+  it("stop on an unknown or already-finished run is a no-op", () => {
+    const child = fakeChild();
+    const pm = createProcessManager({
+      spawn: vi.fn().mockReturnValue(child) as never,
+      spawnSync: vi.fn() as never, platform: "linux",
+      now: () => "t", newId: () => "run-1",
+    });
+    expect(() => pm.stop("nope")).not.toThrow();
+    const rec = pm.start({ projectId: "p", kind: "dev", command: "d", cwd: "/p" });
+    child.emit("exit", 0);
+    expect(() => pm.stop(rec.runId)).not.toThrow();
+    expect(pm.get(rec.runId)!.record.status).toBe("exited"); // unchanged
+  });
+
+  it("really starts and stops a node child (host platform)", async () => {
+    const pm = createProcessManager(); // real spawn/spawnSync/platform
+    const cmd = `"${process.execPath}" -e "setInterval(()=>{}, 1000)"`;
+    const rec = pm.start({ projectId: "p", kind: "dev", command: cmd, cwd: process.cwd() });
+    expect(rec.status).toBe("running");
+    const done = new Promise<void>((resolve) => {
+      const unsub = pm.subscribe(rec.runId, (e) => { if (e.type === "status") { unsub(); resolve(); } });
+    });
+    pm.stop(rec.runId);
+    await done;
+    expect(["stopped", "failed", "exited"]).toContain(pm.get(rec.runId)!.record.status);
+  }, 15000);
+});
+
+describe("processManager singleton", () => {
+  it("is exported", async () => {
+    const mod = await import("./process-manager");
+    expect(mod.processManager).toBeDefined();
+    expect(typeof mod.processManager.start).toBe("function");
+  });
+});

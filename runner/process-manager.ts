@@ -118,7 +118,19 @@ export function createProcessManager(deps: Deps = {}): ProcessManager {
       return record;
     },
 
-    stop(_runId) { /* implemented in Task 4 */ },
+    stop(runId) {
+      const s = runs.get(runId);
+      if (!s || s.record.status !== "running") return;
+      const pid = s.record.pid;
+      if (pid != null) {
+        if (platform === "win32") {
+          spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
+        } else {
+          try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
+        }
+      }
+      finish(s, "stopped", null);
+    },
 
     get(runId) {
       const s = runs.get(runId);
@@ -143,5 +155,7 @@ export function createProcessManager(deps: Deps = {}): ProcessManager {
     },
   };
 
-  // singleton wiring lives in Task 4's final step (export const processManager)
 }
+
+// Module-level singleton used by the server.
+export const processManager: ProcessManager = createProcessManager();
