@@ -190,3 +190,10 @@ status per project (branch, dirty + uncommitted count, ahead/behind origin, last
 `registry/projects.yml` is now a config overlay matched by folder name — a discovered project without a
 registry entry is shown but not yet dispatchable. Ignore folders with `SURTEC_PROJECTS_IGNORE`
 (comma-separated). Git status is read-only and local (no fetch), cached ~15s.
+
+### Dashboard style
+
+The dashboard adopts the Estante design system (`Estante Design System/` in the repo root): tokens in
+`dashboard/src/ui/styles/estante-tokens.css`, component classes in `dashboard.css`, Geist + JetBrains Mono,
+a sidebar+topbar shell, hairline cards, pill controls, and status color-dots (no glyphs). Light mode for now
+(the tokens are dark-ready). Pure restyle — no behavior change.

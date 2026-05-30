@@ -2,16 +2,18 @@ import type { TaskView } from "../../../../lib/state/types";
 
 export function TaskList({ title, tasks }: { title: string; tasks: TaskView[] }) {
   return (
-    <section style={{ flex: 1 }}>
-      <h4>{title}</h4>
+    <section>
+      <h4 className="es-section__title">{title}</h4>
       {tasks.length === 0 ? (
-        <p style={{ color: "#999" }}>Nada por ahora.</p>
+        <p className="es-empty">Nada por ahora.</p>
       ) : (
-        <ul style={{ paddingLeft: 16 }}>
+        <ul className="es-list">
           {tasks.map((t) => (
-            <li key={t.id}>
-              <strong>{t.id}</strong> · {t.agent} · {t.title}
-              {t.outcome ? ` (${t.outcome})` : ` [${t.lifecycle}]`}
+            <li key={t.id} className="es-row">
+              <span className="es-row__id">{t.id}</span>
+              <span>{t.agent}</span>
+              <span>{t.title}</span>
+              <span className="es-chip">{t.outcome ?? t.lifecycle}</span>
             </li>
           ))}
         </ul>

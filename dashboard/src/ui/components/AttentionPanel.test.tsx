@@ -47,8 +47,8 @@ describe("AttentionPanel", () => {
         ]}
       />,
     );
-    expect(screen.getByText(/✓ verificado/)).toBeTruthy();
-    expect(screen.getByText(/✗ verificación falló/)).toBeTruthy();
-    expect(screen.getByText(/\(sin verificar\)/)).toBeTruthy();
+    expect(screen.getByText(/verificado/)).toBeTruthy();
+    expect(screen.getByText(/verificación falló/)).toBeTruthy();
+    expect(screen.getByText(/sin verificar/)).toBeTruthy();
   });
 });

@@ -1,37 +1,45 @@
 import type { ProjectView, GitStatus } from "../../../../lib/state/types";
+import { relativeTime } from "../relative-time";
 
 function GitLine({ git }: { git: GitStatus | null }) {
   if (!git) return null;
-  if (!git.ok) return <div style={{ fontSize: 12, color: "#b02a37" }}>git: no disponible</div>;
+  if (!git.ok) {
+    return (
+      <div className="es-gitline">
+        <span className="es-dot es-dot--danger" />
+        <span>git: no disponible</span>
+      </div>
+    );
+  }
   return (
-    <div style={{ fontSize: 12, color: "#555", display: "flex", gap: 8, flexWrap: "wrap" }}>
-      <span>⎇ {git.branch ?? "(detached)"}</span>
-      <span style={{ color: git.dirty ? "#b02a37" : "#198754" }}>
-        {git.dirty ? `● ${git.uncommitted} sin commitear` : "✓ limpio"}
-      </span>
-      <span>↑{git.ahead} ↓{git.behind}</span>
-      {git.last_commit && <span title={git.last_commit.at}>· {git.last_commit.subject}</span>}
+    <div className="es-gitline">
+      <span>{git.branch ?? "(detached)"}</span>
+      <span className={`es-dot ${git.dirty ? "es-dot--warn" : "es-dot--ok"}`} />
+      <span>{git.dirty ? `${git.uncommitted} sin commitear` : "limpio"}</span>
+      <span className="es-num">↑{git.ahead} ↓{git.behind}</span>
+      {git.last_commit && (
+        <span title={git.last_commit.at}>{git.last_commit.subject} · {relativeTime(git.last_commit.at)}</span>
+      )}
     </div>
   );
 }
 
 export function ProjectCard({ p }: { p: ProjectView }) {
   return (
-    <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, minWidth: 180 }}>
-      <strong>{p.id}</strong>{" "}
-      <small style={{ fontSize: 11, color: p.configured ? "#198754" : "#999" }}>
-        {p.configured ? "configurado" : "sin configurar"}
-      </small>
-      <div style={{ fontSize: 12, color: "#666" }}>
-        {p.status}{p.health ? ` · ${p.health}` : ""}
+    <div className="es-card">
+      <div className="es-card__head">
+        <span className="es-card__title">{p.id}</span>
+        <span className="es-chip">
+          <span className={`es-dot ${p.configured ? "es-dot--ok" : "es-dot--muted"}`} />
+          <span>{p.configured ? "configurado" : "sin configurar"}</span>
+        </span>
       </div>
+      <div className="t-caption">{p.status}{p.health ? ` · ${p.health}` : ""}</div>
       <GitLine git={p.git} />
-      <div style={{ fontSize: 12 }}>
-        {p.task_counts.inProgress} en curso · {p.task_counts.finished} hechas
+      <div className="t-caption">
+        <span className="es-num">{p.task_counts.inProgress}</span> en curso · <span className="es-num">{p.task_counts.finished}</span> hechas
       </div>
-      <div style={{ fontSize: 11, color: "#999" }}>
-        {p.last_activity ? `últ. ${p.last_activity}` : "sin actividad"}
-      </div>
+      <div className="t-micro">{p.last_activity ? `últ. ${p.last_activity}` : "sin actividad"}</div>
     </div>
   );
 }
