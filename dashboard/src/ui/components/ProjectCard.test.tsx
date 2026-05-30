@@ -214,6 +214,18 @@ describe("ProjectCard github counts", () => {
     fireEvent.click(screen.getByRole("button", { name: /prs · issues/i }));
     await waitFor(() => expect(screen.getByText(/no disponible/i)).toBeTruthy());
   });
+
+  it("shows 'no disponible' and retries on reopen when the fetch throws (HTTP error)", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: "boom" }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectCard p={ghP()} />);
+    const btn = screen.getByRole("button", { name: /prs · issues/i });
+    fireEvent.click(btn); // open + fetch (throws → err)
+    await waitFor(() => expect(screen.getByText(/no disponible/i)).toBeTruthy());
+    fireEvent.click(btn); // close
+    fireEvent.click(btn); // reopen → retries (data still null)
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+  });
 });
 
 describe("ProjectCard git sync", () => {

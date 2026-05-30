@@ -142,16 +142,20 @@ function GithubCounts({ project }: { project: ProjectView }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<{ ok: boolean; prs: number; issues: number; error?: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   if (!gh) return null;
 
   const toggle = () => {
     const next = !open;
     setOpen(next);
-    if (next && !data) {
+    // Load once on first open. A server response (ok or ok:false) is kept in `data` and not refetched.
+    // A THROWN error (HTTP/network) goes to `err` only — leaving `data` null — so reopening retries it.
+    if (next && !data && !loading) {
       setLoading(true);
+      setErr(null);
       getGithubCounts(project.id)
         .then(setData)
-        .catch((e) => setData({ ok: false, prs: 0, issues: 0, error: (e as Error).message }))
+        .catch((e) => setErr((e as Error).message))
         .finally(() => setLoading(false));
     }
   };
@@ -160,8 +164,11 @@ function GithubCounts({ project }: { project: ProjectView }) {
     <div className="es-gh">
       <button type="button" className="es-btn es-btn--ghost" onClick={toggle}>PRs · Issues</button>
       {open && (
-        <span className="es-gh__counts" title={data?.error}>
-          {loading ? "cargando…" : data?.ok ? `PRs: ${data.prs} · Issues: ${data.issues}` : "GitHub: no disponible"}
+        <span className="es-gh__counts" title={data?.error ?? err ?? undefined}>
+          {loading ? "cargando…"
+            : data ? (data.ok ? `PRs: ${data.prs} · Issues: ${data.issues}` : "GitHub: no disponible")
+            : err ? "GitHub: no disponible"
+            : null}
         </span>
       )}
     </div>
