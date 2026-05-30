@@ -180,7 +180,9 @@ export function createApp(
     try {
       const ref = resolveRepoRef(repoRoot, c.req.param("id"));
       if (!ref) return c.json({ ok: false, prs: 0, issues: 0, ci: "unknown", error: "no es un repo de GitHub" });
-      return c.json(githubCache.get(ref.slug, () => {
+      // Key by slug + branch so two projects sharing a GitHub slug but with different default branches
+      // never serve each other's CI run.
+      return c.json(githubCache.get(`${ref.slug}::${ref.branch}`, () => {
         const counts = readGithubCounts(ref.slug);
         const ci = readCiStatus(ref.slug, ref.branch);
         return { ...counts, ci: ci.state };
