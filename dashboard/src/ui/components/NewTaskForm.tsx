@@ -55,32 +55,32 @@ export function NewTaskForm() {
   };
 
   return (
-    <form onSubmit={onSubmit} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, marginBottom: 24 }}>
-      <h4 style={{ marginTop: 0 }}>Nueva tarea</h4>
-      {error && <div style={{ background: "#f8d7da", padding: 6, borderRadius: 6, marginBottom: 8 }}>{error}</div>}
-      {okMsg && <div style={{ background: "#d1e7dd", padding: 6, borderRadius: 6, marginBottom: 8 }}>{okMsg}</div>}
-      <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <select aria-label="Proyecto" value={project} onChange={(e) => onProjectChange(e.target.value)}>
+    <form onSubmit={onSubmit} className="es-form" style={{ marginBottom: 24 }}>
+      <h4 className="es-section__title" style={{ marginTop: 0 }}>Nueva tarea</h4>
+      {error && <div className="es-banner es-banner--danger">{error}</div>}
+      {okMsg && <div className="es-banner es-banner--ok">{okMsg}</div>}
+      <div className="es-form__row">
+        <select className="es-select" aria-label="Proyecto" value={project} onChange={(e) => onProjectChange(e.target.value)}>
           {options.map((p) => <option key={p.project} value={p.project}>{p.project}</option>)}
         </select>
-        <select aria-label="Agente" value={agent} onChange={(e) => setAgent(e.target.value)}>
+        <select className="es-select" aria-label="Agente" value={agent} onChange={(e) => setAgent(e.target.value)}>
           {agents.map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
-        <select aria-label="Modo" value={mode} onChange={(e) => setMode(e.target.value)}>
+        <select className="es-select" aria-label="Modo" value={mode} onChange={(e) => setMode(e.target.value)}>
           <option value="read-only">Analizar (read-only)</option>
           <option value="workspace-write">Implementar (workspace-write)</option>
           <option value="workspace-write-verify">Implementar + auto-fix (verify)</option>
         </select>
       </div>
       <textarea
+        className="es-textarea"
         name="instructions"
         placeholder="Instrucciones para el agente…"
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}
         rows={3}
-        style={{ width: "100%", boxSizing: "border-box", marginBottom: 8 }}
       />
-      <button type="submit" disabled={busy || !project || !agent || !instructions.trim()}>
+      <button type="submit" className="es-btn" disabled={busy || !project || !agent || !instructions.trim()}>
         {busy ? "Despachando…" : "Despachar"}
       </button>
     </form>
