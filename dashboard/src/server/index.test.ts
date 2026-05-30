@@ -184,4 +184,34 @@ describe("api", () => {
     const res = await app.request("/api/tasks/RV-3/approve", { method: "POST" });
     expect(res.status).toBe(400);
   });
+
+  it("open: 404 for an unknown project", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "surtec-open-empty-"));
+    process.env.SURTEC_PROJECTS_ROOT = empty;
+    try {
+      const app = createApp(root);
+      const res = await app.request("/api/projects/ghost/open", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: "vscode" }),
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("open: 400 for an invalid target", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "surtec-open-bad-"));
+    process.env.SURTEC_PROJECTS_ROOT = empty;
+    try {
+      const app = createApp(root);
+      const res = await app.request("/api/projects/whatever/open", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: "browser" }),
+      });
+      expect(res.status).toBe(400);
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
 });
