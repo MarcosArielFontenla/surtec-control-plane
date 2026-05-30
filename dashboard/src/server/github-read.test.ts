@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { readGithubCountsAtPath, resolveRepoPath, GithubError } from "./github-read";
+import { readGithubCountsAtPath, resolveRepoPath, GithubError, createGithubCache } from "./github-read";
 
 function routeGh(routes: { pr?: object; issue?: object }) {
   return vi.fn().mockImplementation((_cmd: string, args: string[]) => {
@@ -53,5 +53,21 @@ describe("resolveRepoPath", () => {
   });
   it("throws GithubError(404) for an unknown project", () => {
     expect(() => resolveRepoPath("/repo", "ghost", { discover: () => [], root: "/root" })).toThrow(GithubError);
+  });
+});
+
+describe("createGithubCache", () => {
+  it("caches within TTL, re-reads after TTL, and invalidate forces a re-read", () => {
+    let calls = 0;
+    let t = 0;
+    const value = { ok: true, prs: 1, issues: 1 };
+    const cache = createGithubCache({ read: () => { calls += 1; return value; }, ttlMs: 100, now: () => t });
+    cache.get("/p"); // calls = 1 (fresh)
+    cache.get("/p"); // calls = 1 (cached, within TTL)
+    t = 200;
+    cache.get("/p"); // calls = 2 (TTL expired)
+    cache.invalidate("/p");
+    cache.get("/p"); // calls = 3 (re-read after invalidate)
+    expect(calls).toBe(3);
   });
 });

@@ -55,3 +55,27 @@ export function resolveRepoPath(repoRoot: string, id: string, deps: ResolveDeps 
   if (!proj) throw new GithubError(`unknown project: ${id}`, 404);
   return proj.path;
 }
+
+export interface GithubCache { get(repoPath: string): GithubCounts; invalidate(repoPath: string): void }
+
+export function createGithubCache(opts: {
+  read?: (path: string) => GithubCounts; ttlMs?: number; now?: () => number;
+} = {}): GithubCache {
+  const read = opts.read ?? ((path: string) => readGithubCountsAtPath(path));
+  const ttlMs = opts.ttlMs ?? 60_000;
+  const now = opts.now ?? Date.now;
+  const cache = new Map<string, { value: GithubCounts; at: number }>();
+  return {
+    get(repoPath: string): GithubCounts {
+      const hit = cache.get(repoPath);
+      const t = now();
+      if (hit && t - hit.at < ttlMs) return hit.value;
+      const value = read(repoPath);
+      cache.set(repoPath, { value, at: t });
+      return value;
+    },
+    invalidate(repoPath: string): void {
+      cache.delete(repoPath);
+    },
+  };
+}
