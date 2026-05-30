@@ -56,7 +56,7 @@ export function AttentionPanel({ items }: { items: AttentionItem[] }) {
                       <span className={`es-dot ${v.dot}`} />
                       <span>{v.text}</span>
                     </span>
-                    <button type="button" className="es-btn" onClick={() => decide(a.task_id, "approve")}>Aprobar</button>
+                    <button type="button" className="es-btn es-btn--accent" onClick={() => decide(a.task_id, "approve")}>Aprobar</button>
                     <button type="button" className="es-btn es-btn--ghost" onClick={() => decide(a.task_id, "reject")}>Rechazar</button>
                   </>
                 )}
