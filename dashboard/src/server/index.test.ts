@@ -265,7 +265,7 @@ describe("run routes", () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ command: "build" }),
     });
-    expect([409, 400]).toContain(res.status); // 409 once expense-tracker-mvp has `build` (it does)
+    expect(res.status).toBe(409);
   });
 
   it("POST /api/runs/:id/stop → { ok: true }", async () => {
@@ -290,5 +290,24 @@ describe("run routes", () => {
     const app = createApp(process.cwd(), () => {}, fakeManager({ get: vi.fn().mockReturnValue(null) }));
     const res = await app.request("/api/runs/nope");
     expect(res.status).toBe(404);
+  });
+
+  it("SSE stream resolves via the race-guard when the run ends between get and subscribe", async () => {
+    const running: RunRecord = { runId: "r1", projectId: "p", kind: "dev", command: "d",
+      status: "running", pid: 1, startedAt: "t", endedAt: null, exitCode: null };
+    const ended: RunRecord = { ...running, status: "exited", endedAt: "t2", exitCode: 0 };
+    let calls = 0;
+    const get = vi.fn().mockImplementation(() => {
+      calls += 1;
+      // 1st call: snapshot (running). 2nd call: the in-guard re-check (already ended).
+      return { record: calls === 1 ? running : ended, log: "" };
+    });
+    const subscribe = vi.fn().mockReturnValue(() => {}); // never fires the callback
+    const app = createApp(process.cwd(), () => {}, fakeManager({ get, subscribe }));
+    const res = await app.request("/api/runs/r1/stream");
+    expect(res.status).toBe(200);
+    const text = await res.text(); // reading to completion proves the stream closed (no hang)
+    expect(text).toContain("event: snapshot");
+    expect(text).toContain("event: status");
   });
 });

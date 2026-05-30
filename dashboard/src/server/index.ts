@@ -181,6 +181,14 @@ export function createApp(
             .catch(() => { unsub(); resolve(); });
         });
         stream.onAbort(() => { unsub(); resolve(); });
+        // Guard against a race: the run may have terminated between the get() above
+        // and subscribe() here, in which case the terminal event already fired and we
+        // would otherwise hang. Re-check and emit the final status ourselves.
+        const after = pm.get(runId);
+        if (after && after.record.status !== "running") {
+          stream.writeSSE({ event: "status", data: JSON.stringify({ type: "status", record: after.record }) })
+            .finally(() => { unsub(); resolve(); });
+        }
       });
     }),
   );
