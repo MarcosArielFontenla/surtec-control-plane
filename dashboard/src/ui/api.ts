@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { OverviewModel } from "../../../lib/state/types";
+import type { OverviewModel, RunRecord, ProjectCommands, RunEvent } from "../../../lib/state/types";
 
 export async function fetchOverview(): Promise<OverviewModel> {
   const res = await fetch("/api/overview");
@@ -85,4 +85,68 @@ export async function openProject(id: string, target: "vscode" | "folder"): Prom
     const e = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(e.error ?? `open failed: ${res.status}`);
   }
+}
+
+export async function listRuns(): Promise<{ runs: RunRecord[] }> {
+  const res = await fetch("/api/runs");
+  if (!res.ok) throw new Error(`runs failed: ${res.status}`);
+  return (await res.json()) as { runs: RunRecord[] };
+}
+
+export async function getProjectCommands(
+  id: string,
+): Promise<{ commands: ProjectCommands; running: { dev: string | null; oneshot: string | null } }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/commands`);
+  if (!res.ok) throw new Error(`commands failed: ${res.status}`);
+  return (await res.json()) as { commands: ProjectCommands; running: { dev: string | null; oneshot: string | null } };
+}
+
+export async function runProject(id: string, command: string): Promise<{ runId: string }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ command }),
+  });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `run failed: ${res.status}`);
+  }
+  return (await res.json()) as { runId: string };
+}
+
+export async function stopRun(runId: string): Promise<void> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: "POST" });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `stop failed: ${res.status}`);
+  }
+}
+
+export async function getRun(runId: string): Promise<{ record: RunRecord; log: string }> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
+  if (!res.ok) throw new Error(`run failed: ${res.status}`);
+  return (await res.json()) as { record: RunRecord; log: string };
+}
+
+// Opens an SSE stream for a run. Calls the matching handler per event and returns a close() fn.
+export function streamRun(
+  runId: string,
+  on: { snapshot?: (s: { record: RunRecord; log: string }) => void; chunk?: (data: string) => void; status?: (r: RunRecord) => void },
+): () => void {
+  const es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`);
+  es.addEventListener("snapshot", (ev) => {
+    const e = JSON.parse((ev as MessageEvent).data) as Extract<RunEvent, { type: "snapshot" }>;
+    on.snapshot?.({ record: e.record, log: e.log });
+  });
+  es.addEventListener("chunk", (ev) => {
+    const e = JSON.parse((ev as MessageEvent).data) as Extract<RunEvent, { type: "chunk" }>;
+    on.chunk?.(e.data);
+  });
+  es.addEventListener("status", (ev) => {
+    const e = JSON.parse((ev as MessageEvent).data) as Extract<RunEvent, { type: "status" }>;
+    on.status?.(e.record);
+    es.close();
+  });
+  es.addEventListener("error", () => es.close());
+  return () => es.close();
 }
