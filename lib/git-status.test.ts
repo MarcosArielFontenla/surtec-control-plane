@@ -50,6 +50,27 @@ describe("readGitStatus", () => {
     expect(s.behind).toBe(0);
     rmSync(bare, { recursive: true, force: true });
   });
+  it("reports behind when the upstream is ahead (guards the [behind, ahead] order)", () => {
+    initRepo();
+    const bare = mkdtempSync(join(tmpdir(), "surtec-remote-"));
+    spawnSync("git", ["init", "--bare", "-b", "main", bare], { encoding: "utf8" });
+    git(dir, "remote", "add", "origin", bare);
+    git(dir, "push", "-u", "origin", "main");
+    // A second clone pushes a commit the local repo doesn't have, then local fetches it.
+    const clone2 = mkdtempSync(join(tmpdir(), "surtec-clone2-"));
+    spawnSync("git", ["clone", bare, clone2], { encoding: "utf8" });
+    writeFileSync(join(clone2, "d.txt"), "remote\n", "utf8");
+    git(clone2, "add", "-A");
+    git(clone2, "commit", "-m", "remote-commit");
+    git(clone2, "push", "origin", "main");
+    git(dir, "fetch", "origin"); // updates dir's origin/main ref only (no merge)
+    const s = readGitStatus(dir);
+    expect(s.behind).toBe(1);
+    expect(s.ahead).toBe(0);
+    rmSync(bare, { recursive: true, force: true });
+    rmSync(clone2, { recursive: true, force: true });
+  });
+
   it("returns ok:false for a non-repo directory", () => {
     const s = readGitStatus(dir);
     expect(s.ok).toBe(false);

@@ -42,4 +42,9 @@ describe("assemblePortfolio", () => {
     const config = new Map<string, ProjectConfig>([["alpha", { id: "alpha", allowed_agents: [] }]]);
     expect(assemblePortfolio(discovered, statusByPath, config).find((p) => p.id === "alpha")!.configured).toBe(false);
   });
+
+  it("leaves git null when statusByPath has no entry for the path", () => {
+    const out = assemblePortfolio(discovered, new Map(), new Map());
+    expect(out.find((p) => p.id === "alpha")!.git).toBeNull();
+  });
 });
