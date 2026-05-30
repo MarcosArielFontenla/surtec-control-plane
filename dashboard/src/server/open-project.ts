@@ -49,6 +49,9 @@ export function openProject(repoRoot: string, id: string, target: string, deps: 
   if (!proj) throw new OpenError(`unknown project: ${id}`, 404);
 
   const { command, args, shell } = resolveOpenCommand(target as OpenTarget, proj.path, platform, editorCmd);
+  if (shell && /[&|;<>^`$()\n\r]/.test(command)) {
+    throw new OpenError(`unsafe command: ${command}`, 400);
+  }
   try {
     const child = spawn(command, args, { detached: true, stdio: "ignore", shell });
     child.unref?.();

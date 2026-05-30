@@ -3,7 +3,6 @@ export function githubWebUrl(remote: string | null | undefined): string | null {
   if (!remote) return null;
   const s = remote.trim();
   const patterns = [
-    /^git@github\.com:([^/]+)\/(.+?)(?:\.git)?\/?$/i,
     /^(?:ssh:\/\/)?git@github\.com[:/]([^/]+)\/(.+?)(?:\.git)?\/?$/i,
     /^https?:\/\/(?:[^@/]+@)?github\.com\/([^/]+)\/(.+?)(?:\.git)?\/?$/i,
   ];

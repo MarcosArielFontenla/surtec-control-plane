@@ -25,4 +25,7 @@ describe("githubWebUrl", () => {
     expect(githubWebUrl(null)).toBeNull();
     expect(githubWebUrl("")).toBeNull();
   });
+  it("normalizes an http:// remote to https", () => {
+    expect(githubWebUrl("http://github.com/owner/repo.git")).toBe("https://github.com/owner/repo");
+  });
 });

@@ -47,4 +47,14 @@ describe("openProject", () => {
     try { openProject("/repo", "alpha", "vscode", { discover, spawn, platform: "linux", editorCmd: "code", root: "/root" }); expect.unreachable(); }
     catch (e) { expect((e as OpenError).status).toBe(500); expect((e as OpenError).message).toContain("ENOENT"); }
   });
+  it("rejects an editor command with shell metacharacters on win32", () => {
+    const spawn = vi.fn(() => ({ unref: vi.fn() }));
+    try {
+      openProject("/repo", "alpha", "vscode", { discover, spawn, platform: "win32", editorCmd: "code & calc", root: "/root" });
+      expect.unreachable();
+    } catch (e) {
+      expect((e as OpenError).status).toBe(400);
+    }
+    expect(spawn).not.toHaveBeenCalled();
+  });
 });
