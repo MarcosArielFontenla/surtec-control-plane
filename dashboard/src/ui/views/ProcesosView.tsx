@@ -3,7 +3,7 @@ import type { ProjectCommands } from "../../../../lib/state/types";
 import { getProjectCommands, runProject, stopRun } from "../api";
 import { RunConsole } from "../components/RunConsole";
 
-const ONESHOT_KEYS: (keyof ProjectCommands)[] = ["build", "test", "lint", "install"];
+const ONESHOT_KEYS: Exclude<keyof ProjectCommands, "dev">[] = ["build", "test", "lint", "install"];
 
 interface ProjectState {
   commands: ProjectCommands;
@@ -51,7 +51,7 @@ function ProjectRow({ id, onSelect }: { id: string; onSelect: (runId: string) =>
         <span className="es-proc-slot">
           {state.running.dev
             ? <>
-                <button type="button" className="es-btn es-btn--ghost" onClick={() => onSelect(state.running.dev!)}>● dev</button>
+                <button type="button" className="es-btn es-btn--ghost" title="Ver salida en consola" onClick={() => onSelect(state.running.dev!)}>● dev</button>
                 <button type="button" className="es-btn es-btn--accent" onClick={() => stop(state.running.dev!)}>Detener</button>
               </>
             : <button type="button" className="es-btn" onClick={() => run("dev")}>dev</button>}
@@ -61,7 +61,7 @@ function ProjectRow({ id, onSelect }: { id: string; onSelect: (runId: string) =>
         <span className="es-proc-slot">
           {state.running.oneshot
             ? <>
-                <button type="button" className="es-btn es-btn--ghost" onClick={() => onSelect(state.running.oneshot!)}>● en curso</button>
+                <button type="button" className="es-btn es-btn--ghost" title="Ver salida en consola" onClick={() => onSelect(state.running.oneshot!)}>● en curso</button>
                 <button type="button" className="es-btn es-btn--accent" onClick={() => stop(state.running.oneshot!)}>Detener</button>
               </>
             : oneshots.map((k) => (
