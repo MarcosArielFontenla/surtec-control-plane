@@ -197,22 +197,26 @@ describe("ProjectCard github counts", () => {
     expect(screen.queryByRole("button", { name: /prs · issues/i })).toBeNull();
   });
 
-  it("loads and shows counts on click", async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, prs: 2, issues: 5 }) }));
+  it("loads and shows counts + CI on click", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, prs: 2, issues: 5, ci: "passing" }) }));
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
-    render(<ProjectCard p={ghP()} />);
+    const { container } = render(<ProjectCard p={ghP()} />);
     fireEvent.click(screen.getByRole("button", { name: /prs · issues/i }));
     await waitFor(() => expect(screen.getByText(/PRs: 2 · Issues: 5/)).toBeTruthy());
+    expect(screen.getByText(/CI: ok/)).toBeTruthy();
+    expect(container.querySelector(".es-gh__ci .es-dot--ok")).toBeTruthy();
     const get = (fetchMock.mock.calls as unknown[][]).find((c) => String(c[0]).endsWith("/api/projects/alpha/github"));
     expect(get).toBeTruthy();
   });
 
-  it("shows 'no disponible' when the read degraded (ok:false)", async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: false, prs: 0, issues: 0, error: "gh auth required" }) }));
+  it("shows 'no disponible' for degraded counts but still shows CI (independent)", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: false, prs: 0, issues: 0, ci: "failing", error: "issues disabled" }) }));
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
-    render(<ProjectCard p={ghP()} />);
+    const { container } = render(<ProjectCard p={ghP()} />);
     fireEvent.click(screen.getByRole("button", { name: /prs · issues/i }));
     await waitFor(() => expect(screen.getByText(/no disponible/i)).toBeTruthy());
+    expect(screen.getByText(/CI: falló/)).toBeTruthy();
+    expect(container.querySelector(".es-gh__ci .es-dot--danger")).toBeTruthy();
   });
 
   it("shows 'no disponible' and retries on reopen when the fetch throws (HTTP error)", async () => {
