@@ -7,6 +7,7 @@ import { AttentionPanel } from "./components/AttentionPanel";
 import { NewTaskForm } from "./components/NewTaskForm";
 import { ProcesosView } from "./views/ProcesosView";
 import { useRuns } from "./useRuns";
+import { BulkSync } from "./components/BulkSync";
 
 export function App() {
   const { data, error } = useOverview();
@@ -46,6 +47,7 @@ export function App() {
                 <p className="es-empty">Cargando…</p>
               ) : (
                 <>
+                  <BulkSync projectIds={data.projects.filter((p) => p.git?.ok).map((p) => p.id)} />
                   <section>
                     <h4 className="es-section__title">Proyectos</h4>
                     <div className="es-cards">
