@@ -232,6 +232,48 @@ describe("ProjectCard github counts", () => {
   });
 });
 
+describe("ProjectCard deps status", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const gitOkP = (): ProjectView => ({
+    ...base,
+    git: { branch: "main", dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: true },
+  });
+
+  it("renders no Deps button for a repo without git", () => {
+    render(<ProjectCard p={base} />); // git: null
+    expect(screen.queryByRole("button", { name: /^deps$/i })).toBeNull();
+  });
+
+  it("loads and shows the outdated count on click", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, outdated: 2 }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    const { container } = render(<ProjectCard p={gitOkP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^deps$/i }));
+    await waitFor(() => expect(screen.getByText(/2 desactualizadas/)).toBeTruthy());
+    expect(container.querySelector(".es-deps__val .es-dot--warn")).toBeTruthy();
+    const get = (fetchMock.mock.calls as unknown[][]).find((c) => String(c[0]).endsWith("/api/projects/alpha/deps"));
+    expect(get).toBeTruthy();
+  });
+
+  it("shows 'al día' with an ok dot when nothing is outdated", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, outdated: 0 }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    const { container } = render(<ProjectCard p={gitOkP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^deps$/i }));
+    await waitFor(() => expect(screen.getByText(/al día/i)).toBeTruthy());
+    expect(container.querySelector(".es-deps__val .es-dot--ok")).toBeTruthy();
+  });
+
+  it("shows the degraded message when not ok", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: false, outdated: 0, error: "n/a (npm install)" }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectCard p={gitOkP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^deps$/i }));
+    await waitFor(() => expect(screen.getByText(/npm install/i)).toBeTruthy());
+  });
+});
+
 describe("ProjectCard git sync", () => {
   afterEach(() => vi.unstubAllGlobals());
 
