@@ -3,6 +3,7 @@ import type { ProjectView, GitStatus } from "../../../../lib/state/types";
 import { relativeTime } from "../relative-time";
 import { githubWebUrl } from "../../../../lib/github-url";
 import { openProject, gitSync, getBranches, branchOp, getGithubCounts, getDeps } from "../api";
+import { ProjectNotes } from "./ProjectNotes";
 
 function GitLine({ git }: { git: GitStatus | null }) {
   if (!git) return null;
@@ -261,6 +262,7 @@ export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: str
       <BranchControl project={p} />
       <GithubCounts project={p} />
       <DepsStatus project={p} />
+      <ProjectNotes projectId={p.id} />
       {openErr && <div className="es-banner es-banner--danger">{openErr}</div>}
     </div>
   );

@@ -312,9 +312,10 @@ describe("ProjectCard git sync", () => {
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
     render(<ProjectCard p={gitP({ ahead: 2 })} />);
     fireEvent.click(screen.getByRole("button", { name: /^push$/i }));
-    // confirm shown, nothing posted yet
+    // confirm shown, git push not posted yet
     expect(screen.getByText(/Publicar 2 commits a origin\/main/)).toBeTruthy();
-    expect(fetchMock).not.toHaveBeenCalled();
+    const gitCalls = () => (fetchMock.mock.calls as unknown[][]).filter((c) => String(c[0]).endsWith("/api/projects/alpha/git"));
+    expect(gitCalls().length).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: /confirmar/i }));
     await waitFor(() => {
       const calls = fetchMock.mock.calls as unknown[][];
