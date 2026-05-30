@@ -1,9 +1,14 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
+import { dirname } from "node:path";
 import { listTasks, listProjectOverrides, readTask } from "../../../lib/state/store";
 import { buildOverview } from "../../../lib/state/derive";
 import { loadRegistryProjects } from "./registry";
+import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
+import { createGitStatusCache } from "../../../lib/git-status-cache";
+import { assemblePortfolio } from "../../../lib/portfolio";
+import { loadProjectConfig } from "./portfolio-config";
 import { createTask, ValidationError } from "./dispatch";
 import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
 import { runTask } from "../../../runner/run-task";
@@ -19,13 +24,17 @@ export function createApp(
 ): Hono {
   const app = new Hono();
 
+  const gitStatusCache = createGitStatusCache();
+
   app.get("/api/overview", (c) => {
     try {
-      const overview = buildOverview(
-        loadRegistryProjects(repoRoot),
-        listTasks(),
-        listProjectOverrides(),
-      );
+      const root = process.env.SURTEC_PROJECTS_ROOT ?? dirname(repoRoot);
+      const ignore = [...DEFAULT_IGNORE, ...(process.env.SURTEC_PROJECTS_IGNORE ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
+      const discovered = discoverProjects(root, ignore);
+      const statusByPath = new Map(discovered.map((d) => [d.path, gitStatusCache.get(d.path)]));
+      const config = loadProjectConfig(repoRoot);
+      const portfolio = assemblePortfolio(discovered, statusByPath, config);
+      const overview = buildOverview(portfolio, listTasks(), listProjectOverrides());
       return c.json(overview);
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
