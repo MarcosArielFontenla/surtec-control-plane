@@ -323,6 +323,21 @@ describe("branch routes", () => {
   });
 });
 
+describe("github route", () => {
+  it("GET /api/projects/:id/github for an unknown project → 404", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "surtec-gh-empty-"));
+    process.env.SURTEC_PROJECTS_ROOT = empty;
+    try {
+      const app = createApp(process.cwd());
+      const res = await app.request("/api/projects/__nope__/github");
+      expect(res.status).toBe(404);
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("run routes", () => {
   it("GET /api/runs returns the manager list", async () => {
     const rec: RunRecord = { runId: "r1", projectId: "p", kind: "dev", command: "d",
