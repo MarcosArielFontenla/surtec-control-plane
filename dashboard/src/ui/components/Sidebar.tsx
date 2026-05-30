@@ -1,12 +1,19 @@
-export function Sidebar() {
-  const items = ["Overview", "Proyectos", "Tareas", "Atención"];
+export const NAV_ITEMS = ["Overview", "Procesos", "Proyectos", "Tareas", "Atención"] as const;
+export type NavItem = (typeof NAV_ITEMS)[number];
+
+export function Sidebar({ active, onSelect }: { active: NavItem; onSelect: (i: NavItem) => void }) {
   return (
     <aside className="es-side">
       <div className="es-side__brand">Surtec</div>
       <div className="es-side__group">Control plane</div>
       <nav className="es-side__nav">
-        {items.map((i, idx) => (
-          <button key={i} type="button" className={`es-nav-item${idx === 0 ? " es-nav-item--on" : ""}`}>
+        {NAV_ITEMS.map((i) => (
+          <button
+            key={i}
+            type="button"
+            className={`es-nav-item${i === active ? " es-nav-item--on" : ""}`}
+            onClick={() => onSelect(i)}
+          >
             {i}
           </button>
         ))}

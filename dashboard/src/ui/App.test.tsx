@@ -25,6 +25,9 @@ beforeEach(() => {
     if (String(url).endsWith("/api/dispatch-options")) {
       return { ok: true, status: 200, json: async () => ({ projects: [] }) };
     }
+    if (String(url).endsWith("/api/runs")) {
+      return { ok: true, status: 200, json: async () => ({ runs: [] }) };
+    }
     return { ok: true, status: 200, json: async () => overview };
   }) as unknown as typeof fetch);
 });
