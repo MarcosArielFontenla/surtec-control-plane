@@ -3,6 +3,7 @@ import { readGitStatus } from "./git-status";
 
 export interface GitStatusCache {
   get(repoPath: string): GitStatus;
+  invalidate(repoPath: string): void;
 }
 
 export function createGitStatusCache(opts: {
@@ -22,6 +23,9 @@ export function createGitStatusCache(opts: {
       const value = readStatus(repoPath);
       cache.set(repoPath, { value, at: t });
       return value;
+    },
+    invalidate(repoPath: string): void {
+      cache.delete(repoPath);
     },
   };
 }
