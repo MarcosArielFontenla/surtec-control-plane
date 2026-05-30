@@ -197,3 +197,11 @@ The dashboard adopts the Estante design system (`Estante Design System/` in the 
 `dashboard/src/ui/styles/estante-tokens.css`, component classes in `dashboard.css`, Geist + JetBrains Mono,
 a sidebar+topbar shell, hairline cards, pill controls, and status color-dots (no glyphs). Light mode for now
 (the tokens are dark-ready). Pure restyle — no behavior change.
+
+### Project actions
+
+Each project card has quick actions: **VS Code** and **Carpeta** ask the local server to open the project
+in your editor (`code`, override with `SURTEC_EDITOR_CMD`) or the OS file explorer — the client sends only
+the project id and the server resolves the real path from discovery (no client-supplied paths; the editor
+command rejects shell metacharacters). **GitHub** is a direct link derived from the project's git remote.
+(Running dev/build/test and git actions come next.)
