@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import { dirname } from "node:path";
 import { listTasks, listProjectOverrides, readTask } from "../../../lib/state/store";
 import { buildOverview } from "../../../lib/state/derive";
@@ -11,6 +12,8 @@ import { createTask, ValidationError } from "./dispatch";
 import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
 import { openProject, OpenError } from "./open-project";
 import { runTask } from "../../../runner/run-task";
+import { loadProjectCommands } from "../../../runner/project-commands";
+import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
 
 export function createApp(
   repoRoot: string = process.cwd(),
@@ -19,6 +22,7 @@ export function createApp(
       console.error(`runTask failed unexpectedly for ${id}:`, err);
     });
   },
+  pm: ProcessManager = processManager,
 ): Hono {
   const app = new Hono();
 
@@ -113,6 +117,73 @@ export function createApp(
       return c.json({ error: (err as Error).message }, 500);
     }
   });
+
+  // --- Procesos (B.2): run project commands from the dashboard ---
+  app.get("/api/runs", (c) => c.json({ runs: pm.list() }));
+
+  app.get("/api/projects/:id/commands", (c) => {
+    const id = c.req.param("id");
+    const commands = loadProjectCommands(repoRoot, id);
+    const running = pm.list().filter((r) => r.projectId === id && r.status === "running");
+    return c.json({
+      commands,
+      running: {
+        dev: running.find((r) => r.kind === "dev")?.runId ?? null,
+        oneshot: running.find((r) => r.kind === "oneshot")?.runId ?? null,
+      },
+    });
+  });
+
+  app.post("/api/projects/:id/run", async (c) => {
+    const id = c.req.param("id");
+    let body: { command?: string };
+    try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON body" }, 400); }
+    const key = String(body?.command ?? "");
+
+    const project = loadRegistryProjects(repoRoot).find((p) => p.id === id);
+    const cwd = project?.repo_path ?? null;
+    if (!cwd) return c.json({ error: `unknown project: ${id}` }, 404);
+
+    const command = (loadProjectCommands(repoRoot, id) as Record<string, string | undefined>)[key];
+    if (!key || !command) return c.json({ error: `command not configured: ${key}` }, 400);
+
+    const kind = key === "dev" ? "dev" : "oneshot";
+    try {
+      const rec = pm.start({ projectId: id, kind, command, cwd });
+      return c.json({ runId: rec.runId }, 201);
+    } catch (err) {
+      if (err instanceof SlotBusyError) return c.json({ error: err.message }, 409);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/runs/:runId/stop", (c) => {
+    pm.stop(c.req.param("runId"));
+    return c.json({ ok: true });
+  });
+
+  app.get("/api/runs/:runId", (c) => {
+    const r = pm.get(c.req.param("runId"));
+    return r ? c.json(r) : c.json({ error: "not found" }, 404);
+  });
+
+  app.get("/api/runs/:runId/stream", (c) =>
+    streamSSE(c, async (stream) => {
+      const runId = c.req.param("runId");
+      const snap = pm.get(runId);
+      if (!snap) { await stream.writeSSE({ event: "error", data: "not found" }); return; }
+      await stream.writeSSE({ event: "snapshot", data: JSON.stringify({ type: "snapshot", ...snap }) });
+      if (snap.record.status !== "running") return; // already terminal: snapshot is enough
+      await new Promise<void>((resolve) => {
+        const unsub = pm.subscribe(runId, (e) => {
+          stream.writeSSE({ event: e.type, data: JSON.stringify(e) })
+            .then(() => { if (e.type === "status") { unsub(); resolve(); } })
+            .catch(() => { unsub(); resolve(); });
+        });
+        stream.onAbort(() => { unsub(); resolve(); });
+      });
+    }),
+  );
 
   return app;
 }
