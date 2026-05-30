@@ -194,3 +194,9 @@ export async function getGithubCounts(
   if (!res.ok) throw new Error(`github failed: ${res.status}`);
   return (await res.json()) as { ok: boolean; prs: number; issues: number; ci: "passing" | "failing" | "running" | "none" | "unknown"; error?: string };
 }
+
+export async function getDeps(id: string): Promise<{ ok: boolean; outdated: number; error?: string }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/deps`);
+  if (!res.ok) throw new Error(`deps failed: ${res.status}`);
+  return (await res.json()) as { ok: boolean; outdated: number; error?: string };
+}

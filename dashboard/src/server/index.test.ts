@@ -341,6 +341,22 @@ describe("github route", () => {
   });
 });
 
+describe("deps route", () => {
+  it("GET /api/projects/:id/deps for an unknown project → 404 (our JSON handler)", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "surtec-deps-empty-"));
+    process.env.SURTEC_PROJECTS_ROOT = empty;
+    try {
+      const app = createApp(process.cwd());
+      const res = await app.request("/api/projects/__nope__/deps");
+      expect(res.status).toBe(404);
+      expect((await res.json()) as { error?: string }).toMatchObject({ error: expect.stringMatching(/unknown project/) });
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("run routes", () => {
   it("GET /api/runs returns the manager list", async () => {
     const rec: RunRecord = { runId: "r1", projectId: "p", kind: "dev", command: "d",

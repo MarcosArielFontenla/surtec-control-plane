@@ -14,6 +14,7 @@ import { openProject, OpenError } from "./open-project";
 import { runGitSync, GitSyncError } from "./git-sync";
 import { validateBranchName, listBranches, switchBranch, createBranch, BranchError } from "./git-branch";
 import { readGithubCounts, readCiStatus, resolveRepoRef, createGithubCache, GithubError } from "./github-read";
+import { readDepsStatus, resolveDepsPath, createDepsCache, DepsError } from "./deps-read";
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
@@ -31,6 +32,7 @@ export function createApp(
 
   const gitStatusCache = createGitStatusCache();
   const githubCache = createGithubCache();
+  const depsCache = createDepsCache();
 
   app.get("/api/overview", (c) => {
     try {
@@ -189,6 +191,16 @@ export function createApp(
       }));
     } catch (err) {
       if (err instanceof GithubError) return c.json({ error: err.message }, err.status as 404);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get("/api/projects/:id/deps", (c) => {
+    try {
+      const path = resolveDepsPath(repoRoot, c.req.param("id"));
+      return c.json(depsCache.get(path, () => readDepsStatus(path)));
+    } catch (err) {
+      if (err instanceof DepsError) return c.json({ error: err.message }, err.status as 404);
       return c.json({ error: (err as Error).message }, 500);
     }
   });
