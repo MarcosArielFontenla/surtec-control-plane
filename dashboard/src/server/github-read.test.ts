@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { readGithubCounts, resolveRepoSlug, createGithubCache, GithubError } from "./github-read";
+import { readGithubCounts, resolveRepoSlug, createGithubCache, GithubError, readCiStatus } from "./github-read";
 
 function routeGh(routes: { pr?: object; issue?: object }) {
   return vi.fn().mockImplementation((_cmd: string, args: string[]) => {
@@ -77,5 +77,43 @@ describe("createGithubCache", () => {
     cache.invalidate("owner/repo");
     cache.get("owner/repo"); // calls = 3 (re-read after invalidate)
     expect(calls).toBe(3);
+  });
+});
+
+describe("readCiStatus", () => {
+  it("queries gh run list with the exact argv and maps success → passing", () => {
+    const spawnSync = vi.fn().mockReturnValue({ status: 0, stdout: '[{"status":"completed","conclusion":"success"}]' });
+    expect(readCiStatus("owner/repo", "main", { spawnSync: spawnSync as never })).toEqual({ state: "passing" });
+    expect(spawnSync.mock.calls[0]).toEqual(["gh", ["run", "list", "--branch", "main", "--limit", "1", "--json", "status,conclusion", "-R", "owner/repo"], { encoding: "utf8", timeout: 20000 }]);
+  });
+
+  it("maps completed+failure → failing", () => {
+    const spawnSync = vi.fn().mockReturnValue({ status: 0, stdout: '[{"status":"completed","conclusion":"failure"}]' });
+    expect(readCiStatus("owner/repo", "main", { spawnSync: spawnSync as never }).state).toBe("failing");
+  });
+
+  it("maps an in-progress run → running", () => {
+    const spawnSync = vi.fn().mockReturnValue({ status: 0, stdout: '[{"status":"in_progress","conclusion":null}]' });
+    expect(readCiStatus("owner/repo", "main", { spawnSync: spawnSync as never }).state).toBe("running");
+  });
+
+  it("maps an empty run list → none", () => {
+    const spawnSync = vi.fn().mockReturnValue({ status: 0, stdout: "[]" });
+    expect(readCiStatus("owner/repo", "main", { spawnSync: spawnSync as never }).state).toBe("none");
+  });
+
+  it("maps a gh error → unknown", () => {
+    const spawnSync = vi.fn().mockReturnValue({ status: 1, stderr: "gh: no workflows" });
+    expect(readCiStatus("owner/repo", "main", { spawnSync: spawnSync as never }).state).toBe("unknown");
+  });
+
+  it("maps a spawn error → unknown", () => {
+    const spawnSync = vi.fn().mockReturnValue({ status: null, error: new Error("ENOENT") });
+    expect(readCiStatus("owner/repo", "main", { spawnSync: spawnSync as never }).state).toBe("unknown");
+  });
+
+  it("maps malformed JSON → unknown (no throw)", () => {
+    const spawnSync = vi.fn().mockReturnValue({ status: 0, stdout: "not json" });
+    expect(readCiStatus("owner/repo", "main", { spawnSync: spawnSync as never }).state).toBe("unknown");
   });
 });

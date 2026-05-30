@@ -8,6 +8,9 @@ export class GithubError extends Error {
 
 export interface GithubCounts { ok: boolean; prs: number; issues: number; error?: string }
 
+export type CiState = "passing" | "failing" | "running" | "none" | "unknown";
+export interface GithubOverview { ok: boolean; prs: number; issues: number; ci: CiState; error?: string }
+
 const TIMEOUT_MS = 20_000;
 const TAIL_CHARS = 2000;
 
@@ -45,6 +48,24 @@ export function readGithubCounts(slug: string, deps: SpawnDep = {}): GithubCount
   } catch {
     return { ok: false, prs: 0, issues: 0, error: "bad gh output" };
   }
+}
+
+// Reads the latest CI run state on a branch via read-only gh. Never throws — any failure → "unknown".
+export function readCiStatus(slug: string, branch: string, deps: SpawnDep = {}): { state: CiState } {
+  const spawnSync = deps.spawnSync ?? nodeSpawnSync;
+  const r = spawnSync("gh", ["run", "list", "--branch", branch, "--limit", "1", "--json", "status,conclusion", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS });
+  if (r.status !== 0 || r.error) return { state: "unknown" };
+  let arr: { status?: string; conclusion?: string | null }[];
+  try {
+    const parsed = JSON.parse(asStr(r.stdout));
+    arr = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return { state: "unknown" };
+  }
+  if (arr.length === 0) return { state: "none" };
+  const run = arr[0];
+  if (run.status === "completed") return { state: run.conclusion === "success" ? "passing" : "failing" };
+  return { state: "running" };
 }
 
 // Resolves a project id to its GitHub "owner/repo" slug FROM THE TRUSTED REGISTRY (the configured repo,
