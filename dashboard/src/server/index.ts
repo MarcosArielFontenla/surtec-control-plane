@@ -11,6 +11,7 @@ import { assemblePortfolio } from "../../../lib/portfolio";
 import { loadProjectConfig } from "./portfolio-config";
 import { createTask, ValidationError } from "./dispatch";
 import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
+import { openProject, OpenError } from "./open-project";
 import { runTask } from "../../../runner/run-task";
 import { reconcileRunning } from "../../../runner/reconcile";
 
@@ -97,6 +98,21 @@ export function createApp(
       // TaskNotFoundError extends ReviewError — check the subclass first (404 vs 400).
       if (err instanceof TaskNotFoundError) return c.json({ error: err.message }, 404);
       if (err instanceof ReviewError) return c.json({ error: err.message }, 400);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/projects/:id/open", async (c) => {
+    let body: { target?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    try {
+      return c.json(openProject(repoRoot, c.req.param("id"), String(body?.target ?? "")));
+    } catch (err) {
+      if (err instanceof OpenError) return c.json({ error: err.message }, err.status as 400 | 404 | 500);
       return c.json({ error: (err as Error).message }, 500);
     }
   });

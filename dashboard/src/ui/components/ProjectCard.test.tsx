@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ProjectCard } from "./ProjectCard";
 import type { ProjectView } from "../../../../lib/state/types";
 
@@ -47,5 +47,40 @@ describe("ProjectCard git status", () => {
     render(<ProjectCard p={base} />);
     expect(screen.queryByText(/no disponible/i)).toBeNull();
     expect(screen.queryByText(/limpio/i)).toBeNull();
+  });
+});
+
+describe("ProjectCard open actions", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders a GitHub link from the repo and opens VS Code", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    const p = { ...base, repo: "git@github.com:owner/repo.git" };
+    render(<ProjectCard p={p as any} />);
+
+    const link = screen.getByRole("link", { name: /github/i });
+    expect(link.getAttribute("href")).toBe("https://github.com/owner/repo");
+
+    fireEvent.click(screen.getByRole("button", { name: /vs code/i }));
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls as unknown[][];
+      const post = calls.find((c) => String(c[0]).endsWith("/api/projects/alpha/open"));
+      expect(post).toBeTruthy();
+      expect(JSON.parse((post![1] as RequestInit).body as string).target).toBe("vscode");
+    });
+  });
+
+  it("renders no GitHub link when repo is null", () => {
+    render(<ProjectCard p={{ ...base, repo: null } as any} />);
+    expect(screen.queryByRole("link", { name: /github/i })).toBeNull();
+  });
+
+  it("shows the error when opening fails", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: "code no está en el PATH" }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectCard p={{ ...base } as any} />);
+    fireEvent.click(screen.getByRole("button", { name: /vs code/i }));
+    await waitFor(() => expect(screen.getByText(/code no está en el PATH/)).toBeTruthy());
   });
 });

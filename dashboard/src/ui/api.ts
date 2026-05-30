@@ -74,3 +74,15 @@ export function approveTask(id: string): Promise<{ decision: unknown }> {
 export function rejectTask(id: string): Promise<{ decision: unknown }> {
   return decide(id, "reject");
 }
+
+export async function openProject(id: string, target: "vscode" | "folder"): Promise<void> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/open`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target }),
+  });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `open failed: ${res.status}`);
+  }
+}

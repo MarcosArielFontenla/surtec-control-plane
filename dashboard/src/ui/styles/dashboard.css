@@ -37,6 +37,10 @@
 .es-dot--muted { background: var(--ink-4); }
 .es-dot--info { background: var(--info); }
 
+.es-card__actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; margin-top: var(--sp-1); }
+.es-link { font-size: var(--fs-body-sm); color: var(--ink); text-decoration: none; }
+.es-link:hover { text-decoration: underline; }
+
 /* git line */
 .es-gitline { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); font-size: var(--fs-caption); color: var(--ink-3); }
 .es-num { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
