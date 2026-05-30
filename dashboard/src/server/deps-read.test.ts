@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { readDepsStatus, resolveDepsPath, DepsError } from "./deps-read";
+import { readDepsStatus, resolveDepsPath, DepsError, createDepsCache } from "./deps-read";
 
 describe("readDepsStatus", () => {
   it("counts outdated deps and ignores npm's exit-1-when-outdated; uses npm outdated --json at cwd", () => {
@@ -66,5 +66,22 @@ describe("resolveDepsPath", () => {
   });
   it("throws DepsError(404) for an unknown project", () => {
     expect(() => resolveDepsPath("/repo", "ghost", { discover: () => [], root: "/root" })).toThrow(DepsError);
+  });
+});
+
+describe("createDepsCache", () => {
+  it("computes on a miss, caches within TTL, re-computes after TTL, and invalidate forces a re-compute", () => {
+    let calls = 0;
+    let t = 0;
+    const value = { ok: true, outdated: 3 };
+    const cache = createDepsCache({ ttlMs: 100, now: () => t });
+    const compute = () => { calls += 1; return value; };
+    cache.get("/p", compute); // calls = 1 (fresh)
+    cache.get("/p", compute); // calls = 1 (cached, within TTL)
+    t = 200;
+    cache.get("/p", compute); // calls = 2 (TTL expired)
+    cache.invalidate("/p");
+    cache.get("/p", compute); // calls = 3 (re-compute after invalidate)
+    expect(calls).toBe(3);
   });
 });

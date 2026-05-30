@@ -54,3 +54,24 @@ export function resolveDepsPath(repoRoot: string, id: string, deps: ResolveDeps 
   if (!proj) throw new DepsError(`unknown project: ${id}`, 404);
   return proj.path;
 }
+
+export interface DepsCache { get(key: string, compute: () => DepsStatus): DepsStatus; invalidate(key: string): void }
+
+export function createDepsCache(opts: { ttlMs?: number; now?: () => number } = {}): DepsCache {
+  const ttlMs = opts.ttlMs ?? 300_000;
+  const now = opts.now ?? Date.now;
+  const cache = new Map<string, { value: DepsStatus; at: number }>();
+  return {
+    get(key: string, compute: () => DepsStatus): DepsStatus {
+      const hit = cache.get(key);
+      const t = now();
+      if (hit && t - hit.at < ttlMs) return hit.value;
+      const value = compute();
+      cache.set(key, { value, at: t });
+      return value;
+    },
+    invalidate(key: string): void {
+      cache.delete(key);
+    },
+  };
+}
