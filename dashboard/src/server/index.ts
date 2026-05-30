@@ -1,5 +1,3 @@
-import { serve } from "@hono/node-server";
-import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { dirname } from "node:path";
 import { listTasks, listProjectOverrides, readTask } from "../../../lib/state/store";
@@ -13,7 +11,6 @@ import { createTask, ValidationError } from "./dispatch";
 import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
 import { openProject, OpenError } from "./open-project";
 import { runTask } from "../../../runner/run-task";
-import { reconcileRunning } from "../../../runner/reconcile";
 
 export function createApp(
   repoRoot: string = process.cwd(),
@@ -120,13 +117,5 @@ export function createApp(
   return app;
 }
 
-// Entrypoint: only runs when executed directly (not when imported by tests).
-if (process.argv[1] && process.argv[1].endsWith("index.ts")) {
-  const interrupted = reconcileRunning();
-  if (interrupted > 0) console.log(`Reconciled ${interrupted} interrupted task(s) from a previous run.`);
-  const app = createApp();
-  app.use("/*", serveStatic({ root: "./dashboard/dist" }));
-  const port = Number(process.env.PORT ?? 4317);
-  serve({ fetch: app.fetch, port });
-  console.log(`Surtec Control Plane dashboard on http://localhost:${port}`);
-}
+// Server bootstrap lives in ./serve.ts (so this module only exports createApp and
+// imports cleanly in tests). `pnpm dev:api` / `pnpm start` run ./serve.ts.
