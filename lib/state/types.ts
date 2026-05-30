@@ -78,12 +78,25 @@ export interface ProjectStatusOverride {
   note?: string;
 }
 
+export interface GitStatus {
+  branch: string | null;
+  dirty: boolean;
+  uncommitted: number;
+  ahead: number;
+  behind: number;
+  last_commit: { hash: string; subject: string; at: string } | null;
+  ok: boolean;
+}
+
 export interface ProjectView {
   id: string;
   status: string;
   health: "ok" | "at-risk" | "blocked" | null;
   note: string | null;
   repo: string | null;
+  path: string | null;
+  configured: boolean;
+  git: GitStatus | null;
   last_activity: string | null;
   task_counts: { inProgress: number; finished: number };
 }

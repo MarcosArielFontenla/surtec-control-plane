@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { buildOverview, type RegistryProject } from "./derive";
+import { buildOverview } from "./derive";
+import type { PortfolioProject } from "../portfolio";
 import type { TaskRecord } from "./types";
 
-const registry: RegistryProject[] = [
-  { id: "stock-control", status: "active", repo: "git@github.com:surtec/stock-control.git" },
-  { id: "portfolio-site", status: "planned", repo: null },
+const registry: PortfolioProject[] = [
+  { id: "stock-control", status: "active", repo: "git@github.com:surtec/stock-control.git", path: "/p/stock-control", configured: true, git: null },
+  { id: "portfolio-site", status: "planned", repo: null, path: "/p/portfolio-site", configured: false, git: null },
 ];
 
 function rec(partial: Partial<TaskRecord> & { id: string; project: string }): TaskRecord {
@@ -120,6 +121,19 @@ describe("buildOverview", () => {
     const o = buildOverview(registry, [task], []);
     const item = o.attention.find((a) => a.task_id === "NR" && a.kind === "needs-review");
     expect(item?.verification).toBe("passed");
+  });
+
+  it("surfaces path, configured and git status on the project view", () => {
+    const projects: PortfolioProject[] = [
+      { id: "alpha", status: "active", repo: null, path: "/p/alpha", configured: true,
+        git: { branch: "main", dirty: true, uncommitted: 3, ahead: 1, behind: 0, last_commit: { hash: "abc123", subject: "wip", at: "2026-05-29T10:00:00Z" }, ok: true } },
+    ];
+    const o = buildOverview(projects, [], []);
+    const p = o.projects.find((x) => x.id === "alpha")!;
+    expect(p.path).toBe("/p/alpha");
+    expect(p.configured).toBe(true);
+    expect(p.git?.branch).toBe("main");
+    expect(p.git?.uncommitted).toBe(3);
   });
 
   it("builds attention from needs-review, awaiting-approval, risks and blockers", () => {

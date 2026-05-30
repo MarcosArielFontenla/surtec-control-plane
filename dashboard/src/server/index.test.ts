@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { createApp } from "./index";
 import { readTask } from "../../../lib/state/store";
 
@@ -40,13 +41,44 @@ afterEach(() => {
 
 describe("api", () => {
   it("GET /api/overview returns the four view arrays", async () => {
-    const app = createApp(root);
-    const res = await app.request("/api/overview");
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.projects.map((p: { id: string }) => p.id)).toEqual(["stock-control"]);
-    expect(body.inProgress.map((t: { id: string }) => t.id)).toEqual(["STK-1"]);
-    expect(body.history).toEqual([]);
+    const emptyRoot = mkdtempSync(join(tmpdir(), "surtec-ov-empty-"));
+    process.env.SURTEC_PROJECTS_ROOT = emptyRoot;
+    try {
+      const app = createApp(root);
+      const res = await app.request("/api/overview");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.projects).toEqual([]);
+      expect(body.inProgress.map((t: { id: string }) => t.id)).toEqual(["STK-1"]);
+      expect(body.history).toEqual([]);
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+      rmSync(emptyRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("overview returns discovered projects with git status", async () => {
+    const projectsRoot = mkdtempSync(join(tmpdir(), "surtec-ov-root-"));
+    const alpha = join(projectsRoot, "alpha");
+    mkdirSync(alpha, { recursive: true });
+    spawnSync("git", ["init", "-b", "main", alpha], { encoding: "utf8" });
+    writeFileSync(join(alpha, "f.txt"), "x\n", "utf8");
+    spawnSync("git", ["-C", alpha, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"]);
+    spawnSync("git", ["-C", alpha, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init"]);
+    process.env.SURTEC_PROJECTS_ROOT = projectsRoot;
+    try {
+      const app = createApp(root);
+      const res = await app.request("/api/overview");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const p = body.projects.find((x: { id: string }) => x.id === "alpha");
+      expect(p).toBeTruthy();
+      expect(p.git.branch).toBe("main");
+      expect(p.configured).toBe(false);
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+      rmSync(projectsRoot, { recursive: true, force: true });
+    }
   });
 
   it("GET /api/tasks/:id returns the record", async () => {

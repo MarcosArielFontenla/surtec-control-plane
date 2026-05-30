@@ -181,3 +181,12 @@ see failures, and fix its edits before finishing. Any other shell command is den
 `canUseTool` policy. This is the one place the "agent never runs shell" rule is relaxed, and only under
 this explicit per-task opt-in. read-only and plain workspace-write tasks never get shell. The runner
 still runs verification after the commit (see Self-verify) as the authoritative pass/fail record.
+
+### Portfolio discovery
+
+The dashboard auto-discovers your projects by scanning a root folder (default: the control plane's
+parent dir; override with `SURTEC_PROJECTS_ROOT`) for git repos at depth 1, and shows live local git
+status per project (branch, dirty + uncommitted count, ahead/behind origin, last commit). The
+`registry/projects.yml` is now a config overlay matched by folder name — a discovered project without a
+registry entry is shown but not yet dispatchable. Ignore folders with `SURTEC_PROJECTS_IGNORE`
+(comma-separated). Git status is read-only and local (no fetch), cached ~15s.
