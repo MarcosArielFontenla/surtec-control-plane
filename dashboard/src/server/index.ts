@@ -12,6 +12,7 @@ import { createTask, ValidationError } from "./dispatch";
 import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
 import { openProject, OpenError } from "./open-project";
 import { runGitSync, GitSyncError } from "./git-sync";
+import { validateBranchName, listBranches, switchBranch, createBranch, BranchError } from "./git-branch";
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
@@ -135,6 +136,40 @@ export function createApp(
       return c.json(result);
     } catch (err) {
       if (err instanceof GitSyncError) return c.json({ error: err.message }, err.status as 400 | 404);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get("/api/projects/:id/branches", (c) => {
+    try {
+      return c.json(listBranches(repoRoot, c.req.param("id")));
+    } catch (err) {
+      if (err instanceof BranchError) return c.json({ error: err.message }, err.status as 404);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/projects/:id/branch", async (c) => {
+    let body: { op?: string; name?: string };
+    try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON body" }, 400); }
+    const id = c.req.param("id");
+    const op = String(body?.op ?? "");
+    const name = String(body?.name ?? "");
+    if (op !== "switch" && op !== "create") return c.json({ error: `invalid op: ${op}` }, 400);
+    if (!validateBranchName(name)) return c.json({ error: `invalid branch name: ${name}` }, 400);
+    try {
+      const result = op === "switch"
+        ? switchBranch(repoRoot, id, name)
+        : createBranch(repoRoot, id, name);
+      if (result.ok) {
+        const root = process.env.SURTEC_PROJECTS_ROOT ?? dirname(repoRoot);
+        const ignore = [...DEFAULT_IGNORE, ...(process.env.SURTEC_PROJECTS_IGNORE ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
+        const proj = discoverProjects(root, ignore).find((p) => p.id === id);
+        if (proj) gitStatusCache.invalidate(proj.path);
+      }
+      return c.json(result);
+    } catch (err) {
+      if (err instanceof BranchError) return c.json({ error: err.message }, err.status as 400 | 404);
       return c.json({ error: (err as Error).message }, 500);
     }
   });
