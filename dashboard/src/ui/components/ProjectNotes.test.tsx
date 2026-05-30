@@ -54,4 +54,21 @@ describe("ProjectNotes", () => {
       expect(JSON.parse((post![1] as RequestInit).body as string).action).toBe("toggle");
     });
   });
+
+  it("deleting an item posts { action: 'delete' } and removes it", async () => {
+    const initial = [{ id: "1", text: "borrame", done: false, created_at: "t" }];
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (!init || init.method === undefined) return { ok: true, status: 200, json: async () => ({ notes: initial }) };
+      return { ok: true, status: 200, json: async () => ({ notes: [] }) };
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectNotes projectId="alpha" />);
+    fireEvent.click(await screen.findByRole("button", { name: /notas \(1\)/i }));
+    fireEvent.click(screen.getByRole("button", { name: /borrar/i }));
+    await waitFor(() => expect(screen.queryByText("borrame")).toBeNull());
+    const post = (fetchMock.mock.calls as unknown[][]).find(
+      (c) => (c[1] as RequestInit)?.method === "POST" && String(c[0]).endsWith("/api/projects/alpha/notes/1"),
+    );
+    expect(JSON.parse((post![1] as RequestInit).body as string).action).toBe("delete");
+  });
 });
