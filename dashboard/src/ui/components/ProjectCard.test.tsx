@@ -148,4 +148,19 @@ describe("ProjectCard git sync", () => {
       expect(JSON.parse((post![1] as RequestInit).body as string).action).toBe("push");
     });
   });
+
+  it("shows a warn banner with the git output when the action fails (ok:false)", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ ok: false, action: "pull", output: "fatal: Not possible to fast-forward, aborting." }),
+    }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectCard p={gitP({ behind: 1 })} />);
+    fireEvent.click(screen.getByRole("button", { name: /^pull$/i }));
+    await waitFor(() => {
+      const banner = screen.getByText(/Not possible to fast-forward/);
+      expect(banner).toBeTruthy();
+      expect(banner.className).toContain("es-banner--warn");
+    });
+  });
 });

@@ -50,7 +50,7 @@ function GitSyncRow({ project }: { project: ProjectView }) {
         <div className="es-gitsync__confirm">
           <span>Publicar {ahead} commit{ahead === 1 ? "" : "s"} a origin/{git.branch}?</span>
           <button type="button" className="es-btn es-btn--accent" disabled={busy !== null} onClick={() => run("push")}>Confirmar</button>
-          <button type="button" className="es-btn es-btn--ghost" onClick={() => setConfirmPush(false)}>Cancelar</button>
+          <button type="button" className="es-btn es-btn--ghost" disabled={busy !== null} onClick={() => setConfirmPush(false)}>Cancelar</button>
         </div>
       ) : (
         <>
