@@ -83,6 +83,14 @@
 .es-gitsync { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; margin-top: var(--sp-2); }
 .es-gitsync__confirm { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; font-size: var(--fs-caption); color: var(--ink-2); }
 
+/* branch control */
+.es-branches { margin-top: var(--sp-2); }
+.es-branches__panel { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-2); padding: var(--sp-3); background: var(--surface-2); border-radius: var(--r-md); }
+.es-branches__note { font-size: var(--fs-caption); color: var(--warn-700); }
+.es-branches__list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 2px; max-height: 160px; overflow: auto; }
+.es-branches__cur { font-size: var(--fs-body-sm); font-weight: 600; }
+.es-branches__create { display: flex; gap: var(--sp-2); }
+
 /* procesos / console */
 .es-row--proc { gap: var(--sp-3); }
 .es-proc-slot { display: inline-flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }

@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ProjectView, GitStatus } from "../../../../lib/state/types";
 import { relativeTime } from "../relative-time";
 import { githubWebUrl } from "../../../../lib/github-url";
-import { openProject, gitSync } from "../api";
+import { openProject, gitSync, getBranches, branchOp } from "../api";
 
 function GitLine({ git }: { git: GitStatus | null }) {
   if (!git) return null;
@@ -64,6 +64,78 @@ function GitSyncRow({ project }: { project: ProjectView }) {
   );
 }
 
+function BranchControl({ project }: { project: ProjectView }) {
+  const git = project.git;
+  const [open, setOpen] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [current, setCurrent] = useState<string | null>(git?.ok ? git.branch : null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [newName, setNewName] = useState("");
+  if (!git?.ok) return null;
+
+  const load = () => {
+    setLoading(true);
+    getBranches(project.id)
+      .then((b) => { setBranches(b.branches); setCurrent(b.current); })
+      .catch((e) => setResult({ ok: false, text: (e as Error).message }))
+      .finally(() => setLoading(false));
+  };
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next) load();
+  };
+
+  const op = (operation: "switch" | "create", name: string) => {
+    setBusy(true);
+    setResult(null);
+    branchOp(project.id, operation, name)
+      .then((r) => {
+        setResult({ ok: r.ok, text: r.output || (r.ok ? "ok" : "falló") });
+        if (operation === "create" && r.ok) setNewName("");
+        load();
+      })
+      .catch((e) => setResult({ ok: false, text: (e as Error).message }))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="es-branches">
+      <button type="button" className="es-btn es-btn--ghost" onClick={toggle}>
+        Branch: {current ?? "(detached)"}
+      </button>
+      {open && (
+        <div className="es-branches__panel">
+          {git.dirty && <div className="es-branches__note">árbol sucio: commiteá o descartá para cambiar de branch</div>}
+          {loading ? (
+            <span className="es-empty">cargando…</span>
+          ) : (
+            <ul className="es-branches__list">
+              {branches.map((b) => (
+                <li key={b}>
+                  {b === current ? (
+                    <span className="es-branches__cur">● {b}</span>
+                  ) : (
+                    <button type="button" className="es-btn es-btn--ghost" disabled={busy || git.dirty} onClick={() => op("switch", b)}>{b}</button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="es-branches__create">
+            <input className="es-input" placeholder="nueva-branch" value={newName} onChange={(e) => setNewName(e.target.value)} />
+            <button type="button" className="es-btn es-btn--ghost" disabled={busy || newName.trim() === ""} onClick={() => op("create", newName.trim())}>Crear</button>
+          </div>
+          {result && <div className={`es-banner ${result.ok ? "es-banner--ok" : "es-banner--warn"}`}>{result.text}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: string[] }) {
   const [openErr, setOpenErr] = useState<string | null>(null);
   const open = (target: "vscode" | "folder") => {
@@ -99,6 +171,7 @@ export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: str
         {gh && <a className="es-link" href={gh} target="_blank" rel="noreferrer">GitHub</a>}
       </div>
       <GitSyncRow project={p} />
+      <BranchControl project={p} />
       {openErr && <div className="es-banner es-banner--danger">{openErr}</div>}
     </div>
   );
