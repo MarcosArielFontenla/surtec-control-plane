@@ -112,4 +112,15 @@ describe("ProcessManager.start", () => {
     expect(pm.get("nope")).toBeNull();
     expect(() => pm.subscribe("nope", () => {})()).not.toThrow();
   });
+
+  it("marks failed and frees the slot when the child emits 'error' without 'exit'", () => {
+    const child = fakeChild();
+    const pm = makePM(vi.fn().mockReturnValue(child));
+    const rec = pm.start({ projectId: "p", kind: "dev", command: "d", cwd: "/bad" });
+    child.emit("error", new Error("spawn ENOENT"));
+    expect(pm.get(rec.runId)!.record.status).toBe("failed");
+    expect(pm.get(rec.runId)!.log).toContain("ENOENT");
+    // slot freed: a new dev start must NOT throw SlotBusyError
+    expect(() => pm.start({ projectId: "p", kind: "dev", command: "d2", cwd: "/p" })).not.toThrow();
+  });
 });

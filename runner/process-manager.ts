@@ -110,7 +110,10 @@ export function createProcessManager(deps: Deps = {}): ProcessManager {
       const onData = (d: unknown) => append(state, String(d));
       child.stdout?.on("data", onData);
       child.stderr?.on("data", onData);
-      child.on("error", (err: Error) => append(state, `error: ${err.message}\n`));
+      child.on("error", (err: Error) => {
+        append(state, `error: ${err.message}\n`);
+        finish(state, "failed", null); // idempotent if exit also fires
+      });
       child.on("exit", (code: number | null) => finish(state, code === 0 ? "exited" : "failed", code));
       return record;
     },
