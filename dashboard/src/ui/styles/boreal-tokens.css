@@ -1,0 +1,209 @@
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Hanken+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+
+/* ============================================================================
+   BOREAL — Winter Expeditions
+   colors_and_type.css — core color + type tokens
+   ----------------------------------------------------------------------------
+   Theme: moody alpine night. Deep night-navy grounds, glacier blues, frost
+   whites, a single warm EMBER accent (sunrise on snow / campfire glow), and a
+   cold AURORA mint used sparingly for life/positive signals.
+   Verbatim copy of "Boreal Design System/colors_and_type.css" (the source of truth).
+   ========================================================================== */
+
+:root {
+  /* ---- Brand: night / ink (cool near-blacks, blue-tinted) ---------------- */
+  --ink-950: #060D16;   /* deepest night, page base */
+  --ink-900: #0A1420;   /* primary dark surface */
+  --ink-850: #0E1B2A;
+  --ink-800: #122335;   /* raised dark surface */
+  --ink-700: #1A3047;   /* hairline borders on dark */
+  --ink-600: #244660;
+
+  /* ---- Brand: glacier (the core blue) ----------------------------------- */
+  --glacier-700: #1F4E70;
+  --glacier-600: #2C6791;
+  --glacier-500: #3C82B4;  /* PRIMARY brand blue */
+  --glacier-400: #5BA0CE;
+  --glacier-300: #86BEDF;
+
+  /* ---- Ice / frost (the lights) ----------------------------------------- */
+  --ice-300: #A9CFE4;
+  --ice-200: #C8E0ED;
+  --frost-100: #E6F1F7;
+  --frost-50:  #F3F9FC;
+  --snow:      #FFFFFF;
+
+  /* ---- Accent: ember (warm, used sparingly — CTAs, sunrise) ------------- */
+  --ember-600: #D2723A;
+  --ember-500: #E8884C;   /* ACCENT */
+  --ember-400: #F2A062;
+  --ember-glow: rgba(232,136,76,0.35);
+
+  /* ---- Accent: aurora (cold mint — success / positive only) ------------- */
+  --aurora-500: #45C49E;
+  --aurora-400: #63D6B2;
+
+  /* ---- Neutrals: cool slate (blue-tinted grays) ------------------------- */
+  --slate-900: #0F1722;
+  --slate-800: #1C2733;
+  --slate-700: #334256;
+  --slate-600: #4C5E73;
+  --slate-500: #6B7E93;
+  --slate-400: #93A4B6;
+  --slate-300: #BBC8D5;
+  --slate-200: #DCE5EC;
+  --slate-100: #EDF2F6;
+  --slate-50:  #F6F9FB;
+
+  /* ---- Semantic surfaces (dark theme is the brand default) -------------- */
+  --bg:          var(--ink-950);
+  --bg-raised:   var(--ink-900);
+  --bg-overlay:  var(--ink-800);
+  --surface-glass: rgba(18, 35, 53, 0.55);   /* frosted glass fill */
+  --surface-glass-light: rgba(230, 241, 247, 0.08);
+  --border:      var(--ink-700);
+  --border-soft: rgba(169, 207, 228, 0.14);
+  --border-glass: rgba(200, 224, 237, 0.22);
+
+  /* ---- Semantic text ---------------------------------------------------- */
+  --fg1: #F3F9FC;                       /* primary text on dark */
+  --fg2: rgba(230, 241, 247, 0.72);     /* secondary text */
+  --fg3: rgba(200, 224, 237, 0.50);     /* tertiary / captions */
+  --fg-muted: rgba(169, 207, 228, 0.34);
+  --fg-on-accent: #1A0E06;              /* text on ember */
+  --link: var(--glacier-300);
+
+  /* ---- Light-surface text (for frost/light panels) --------------------- */
+  --fg1-light: #0E1B2A;
+  --fg2-light: #44566A;
+  --fg3-light: #6B7E93;
+
+  /* ---- Semantic status -------------------------------------------------- */
+  --success: var(--aurora-500);
+  --warning: var(--ember-500);
+  --danger:  #E5705F;
+  --info:    var(--glacier-400);
+
+  /* ---- Brand gradients (frost atmosphere / aurora glow) ----------------- */
+  --grad-night:  linear-gradient(180deg, #0A1420 0%, #060D16 100%);
+  --grad-glacier: linear-gradient(135deg, #16293B 0%, #1F4E70 60%, #3C82B4 120%);
+  --grad-aurora: radial-gradient(120% 90% at 50% 0%, rgba(60,130,180,0.45) 0%, rgba(69,196,158,0.10) 38%, rgba(6,13,22,0) 70%);
+  --grad-sunrise: linear-gradient(180deg, rgba(232,136,76,0.0) 0%, rgba(232,136,76,0.18) 70%, rgba(232,136,76,0.30) 100%);
+  --grad-frost:  linear-gradient(160deg, #F3F9FC 0%, #C8E0ED 100%);
+  --grad-ember:  linear-gradient(135deg, #F2A062 0%, #E8884C 50%, #D2723A 100%);
+
+  /* ====================================================================== */
+  /* TYPOGRAPHY                                                              */
+  /* ====================================================================== */
+  --font-display: "Bricolage Grotesque", "Hanken Grotesk", system-ui, sans-serif;
+  --font-body: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono: "Space Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* Weights */
+  --w-regular: 400;
+  --w-medium: 500;
+  --w-semibold: 600;
+  --w-bold: 700;
+  --w-extrabold: 800;
+
+  /* Fluid display scale (hero / section heads) */
+  --text-hero:  clamp(3rem, 7.5vw, 6.5rem);   /* 48 → 104 */
+  --text-d1:    clamp(2.5rem, 5vw, 4.25rem);  /* 40 → 68  */
+  --text-d2:    clamp(2rem, 3.6vw, 3rem);     /* 32 → 48  */
+  --text-h1:    clamp(1.75rem, 2.6vw, 2.25rem);
+  --text-h2:    1.5rem;     /* 24 */
+  --text-h3:    1.25rem;    /* 20 */
+  --text-lg:    1.125rem;   /* 18 */
+  --text-base:  1rem;       /* 16 */
+  --text-sm:    0.875rem;   /* 14 */
+  --text-xs:    0.75rem;    /* 12 */
+
+  /* Line heights */
+  --lh-tight: 1.02;
+  --lh-snug: 1.12;
+  --lh-heading: 1.18;
+  --lh-body: 1.6;
+
+  /* Letter spacing */
+  --ls-tighter: -0.03em;
+  --ls-tight: -0.015em;
+  --ls-normal: 0;
+  --ls-wide: 0.04em;
+  --ls-eyebrow: 0.22em;    /* mono eyebrows / labels */
+
+  /* ====================================================================== */
+  /* SPACING — 4px base                                                      */
+  /* ====================================================================== */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+  --space-10: 128px;
+  --space-11: 160px;
+
+  /* ====================================================================== */
+  /* RADII                                                                   */
+  /* ====================================================================== */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 22px;
+  --radius-xl: 32px;
+  --radius-pill: 999px;
+
+  /* ====================================================================== */
+  /* ELEVATION — cool, navy-tinted shadows (never pure black)                */
+  /* ====================================================================== */
+  --shadow-sm:  0 1px 2px rgba(6,13,22,0.40);
+  --shadow-md:  0 8px 24px -8px rgba(6,13,22,0.55);
+  --shadow-lg:  0 24px 60px -18px rgba(6,13,22,0.65);
+  --shadow-xl:  0 40px 100px -28px rgba(6,13,22,0.72);
+  --shadow-frost: 0 16px 50px -16px rgba(60,130,180,0.30);   /* glacier glow */
+  --shadow-ember: 0 12px 34px -10px rgba(232,136,76,0.45);   /* CTA glow */
+  --shadow-inset-hair: inset 0 1px 0 rgba(230,241,247,0.10);
+
+  /* Frosted glass blur amounts */
+  --blur-glass: 18px;
+  --blur-heavy: 30px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 140ms;
+  --dur-base: 240ms;
+  --dur-slow: 480ms;
+}
+
+/* ============================================================================
+   SEMANTIC TYPE CLASSES — apply directly or copy patterns
+   ========================================================================== */
+.b-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--w-regular);
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  color: var(--glacier-300);
+}
+.b-hero {
+  font-family: var(--font-display);
+  font-size: var(--text-hero);
+  font-weight: var(--w-extrabold);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-tighter);
+  color: var(--fg1);
+}
+.b-display { font-family: var(--font-display); font-size: var(--text-d1); font-weight: var(--w-bold); line-height: var(--lh-snug); letter-spacing: var(--ls-tight); color: var(--fg1); }
+.b-h1 { font-family: var(--font-display); font-size: var(--text-h1); font-weight: var(--w-bold); line-height: var(--lh-heading); letter-spacing: var(--ls-tight); color: var(--fg1); }
+.b-h2 { font-family: var(--font-display); font-size: var(--text-h2); font-weight: var(--w-semibold); line-height: var(--lh-heading); letter-spacing: var(--ls-tight); color: var(--fg1); }
+.b-h3 { font-family: var(--font-body); font-size: var(--text-h3); font-weight: var(--w-semibold); line-height: var(--lh-heading); color: var(--fg1); }
+.b-lead { font-family: var(--font-body); font-size: var(--text-lg); font-weight: var(--w-regular); line-height: var(--lh-body); color: var(--fg2); }
+.b-body { font-family: var(--font-body); font-size: var(--text-base); font-weight: var(--w-regular); line-height: var(--lh-body); color: var(--fg2); }
+.b-small { font-family: var(--font-body); font-size: var(--text-sm); line-height: 1.5; color: var(--fg3); }
+.b-data { font-family: var(--font-mono); font-size: var(--text-sm); letter-spacing: 0.01em; color: var(--fg1); font-variant-numeric: tabular-nums; }
+.b-label { font-family: var(--font-mono); font-size: var(--text-xs); letter-spacing: var(--ls-wide); text-transform: uppercase; color: var(--fg3); }

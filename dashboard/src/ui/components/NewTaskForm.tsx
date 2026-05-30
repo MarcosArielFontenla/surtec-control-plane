@@ -80,7 +80,7 @@ export function NewTaskForm() {
         onChange={(e) => setInstructions(e.target.value)}
         rows={3}
       />
-      <button type="submit" className="es-btn" disabled={busy || !project || !agent || !instructions.trim()}>
+      <button type="submit" className="es-btn es-btn--accent" disabled={busy || !project || !agent || !instructions.trim()}>
         {busy ? "Despachando…" : "Despachar"}
       </button>
     </form>

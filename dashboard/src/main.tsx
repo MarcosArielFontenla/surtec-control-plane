@@ -1,4 +1,4 @@
-import "./ui/styles/estante-tokens.css";
+import "./ui/styles/boreal-tokens.css";
 import "./ui/styles/dashboard.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
