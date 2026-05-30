@@ -27,7 +27,7 @@ function GitLine({ git }: { git: GitStatus | null }) {
   );
 }
 
-export function ProjectCard({ p }: { p: ProjectView }) {
+export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: string[] }) {
   const [openErr, setOpenErr] = useState<string | null>(null);
   const open = (target: "vscode" | "folder") => {
     setOpenErr(null);
@@ -42,6 +42,13 @@ export function ProjectCard({ p }: { p: ProjectView }) {
           <span className={`es-dot ${p.configured ? "es-dot--ok" : "es-dot--muted"}`} />
           <span>{p.configured ? "configurado" : "sin configurar"}</span>
         </span>
+        {running.length > 0 && (
+          <span className="es-chip es-chip--run">
+            {running.map((label) => (
+              <span key={label} className="es-run-ind">{`● ${label}`}</span>
+            ))}
+          </span>
+        )}
       </div>
       <div className="t-caption">{p.status}{p.health ? ` · ${p.health}` : ""}</div>
       <GitLine git={p.git} />
