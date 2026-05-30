@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { readGithubCounts, resolveRepoSlug, createGithubCache, GithubError, readCiStatus } from "./github-read";
+import { readGithubCounts, resolveRepoRef, createGithubCache, GithubError, readCiStatus } from "./github-read";
 
 function routeGh(routes: { pr?: object; issue?: object }) {
   return vi.fn().mockImplementation((_cmd: string, args: string[]) => {
@@ -47,35 +47,43 @@ describe("readGithubCounts", () => {
   });
 });
 
-describe("resolveRepoSlug", () => {
-  it("resolves a configured project's repo to its owner/repo slug (from the registry, not the local remote)", () => {
-    const slug = resolveRepoSlug("/repo", "alpha", {
-      loadRegistry: () => [{ id: "alpha", repo: "https://github.com/MarcosArielFontenla/surtec-cli.git" }],
+describe("resolveRepoRef", () => {
+  it("resolves a github project to { slug, branch } from the registry", () => {
+    const ref = resolveRepoRef("/repo", "alpha", {
+      loadRegistry: () => [{ id: "alpha", repo: "https://github.com/MarcosArielFontenla/surtec-cli.git", default_branch: "dev" }],
     });
-    expect(slug).toBe("MarcosArielFontenla/surtec-cli");
+    expect(ref).toEqual({ slug: "MarcosArielFontenla/surtec-cli", branch: "dev" });
   });
 
-  it("returns null when the project exists but is not a GitHub repo", () => {
-    expect(resolveRepoSlug("/repo", "alpha", { loadRegistry: () => [{ id: "alpha", repo: null }] })).toBeNull();
+  it("defaults branch to main when default_branch is null", () => {
+    const ref = resolveRepoRef("/repo", "alpha", {
+      loadRegistry: () => [{ id: "alpha", repo: "git@github.com:owner/repo.git", default_branch: null }],
+    });
+    expect(ref).toEqual({ slug: "owner/repo", branch: "main" });
+  });
+
+  it("returns null for a non-github project", () => {
+    expect(resolveRepoRef("/repo", "alpha", { loadRegistry: () => [{ id: "alpha", repo: null, default_branch: null }] })).toBeNull();
   });
 
   it("throws GithubError(404) for an unknown project", () => {
-    expect(() => resolveRepoSlug("/repo", "ghost", { loadRegistry: () => [] })).toThrow(GithubError);
+    expect(() => resolveRepoRef("/repo", "ghost", { loadRegistry: () => [] })).toThrow(GithubError);
   });
 });
 
 describe("createGithubCache", () => {
-  it("caches within TTL, re-reads after TTL, and invalidate forces a re-read", () => {
+  it("computes on a miss, caches within TTL, re-computes after TTL, and invalidate forces a re-compute", () => {
     let calls = 0;
     let t = 0;
-    const value = { ok: true, prs: 1, issues: 1 };
-    const cache = createGithubCache({ read: () => { calls += 1; return value; }, ttlMs: 100, now: () => t });
-    cache.get("owner/repo"); // calls = 1 (fresh)
-    cache.get("owner/repo"); // calls = 1 (cached, within TTL)
+    const overview = { ok: true, prs: 1, issues: 1, ci: "passing" as const };
+    const cache = createGithubCache({ ttlMs: 100, now: () => t });
+    const compute = () => { calls += 1; return overview; };
+    cache.get("owner/repo", compute); // calls = 1 (fresh)
+    cache.get("owner/repo", compute); // calls = 1 (cached, within TTL)
     t = 200;
-    cache.get("owner/repo"); // calls = 2 (TTL expired)
+    cache.get("owner/repo", compute); // calls = 2 (TTL expired)
     cache.invalidate("owner/repo");
-    cache.get("owner/repo"); // calls = 3 (re-read after invalidate)
+    cache.get("owner/repo", compute); // calls = 3 (re-compute after invalidate)
     expect(calls).toBe(3);
   });
 });
