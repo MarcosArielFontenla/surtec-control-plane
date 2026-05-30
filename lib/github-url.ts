@@ -12,3 +12,10 @@ export function githubWebUrl(remote: string | null | undefined): string | null {
   }
   return null;
 }
+
+// Returns the "owner/repo" slug for a GitHub remote, or null when it is not a GitHub remote.
+// Used to query gh explicitly with `-R owner/repo` (deterministic; never infers a fork's upstream).
+export function githubRepoSlug(remote: string | null | undefined): string | null {
+  const url = githubWebUrl(remote);
+  return url ? url.replace(/^https:\/\/github\.com\//, "") : null;
+}

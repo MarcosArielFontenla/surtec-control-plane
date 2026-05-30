@@ -1,6 +1,6 @@
 import { spawnSync as nodeSpawnSync } from "node:child_process";
-import { dirname } from "node:path";
-import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
+import { loadRegistryProjects } from "./registry";
+import { githubRepoSlug } from "../../../lib/github-url";
 
 export class GithubError extends Error {
   constructor(message: string, public status: number) { super(message); this.name = "GithubError"; }
@@ -15,8 +15,7 @@ interface SpawnDep {
   spawnSync?: (command: string, args: string[], opts: object) => { status: number | null; stdout?: string; stderr?: string; error?: Error };
 }
 interface ResolveDeps {
-  discover?: (root: string, ignore?: string[]) => { id: string; path: string }[];
-  root?: string;
+  loadRegistry?: (repoRoot: string) => { id: string; repo: string | null }[];
 }
 
 function asStr(v: string | Buffer | undefined): string {
@@ -32,13 +31,14 @@ function countOf(stdout: string | Buffer | undefined): number {
   return Array.isArray(arr) ? arr.length : 0;
 }
 
-// Reads open PR + issue counts for a repo via read-only gh (fixed argv, no shell, cwd = repo path).
-// Never throws — gh failures (missing/unauth/non-github/disabled-issues/bad-output) yield { ok:false, error }.
-export function readGithubCountsAtPath(path: string, deps: SpawnDep = {}): GithubCounts {
+// Reads open PR + issue counts for an EXPLICIT "owner/repo" slug via read-only gh (fixed argv, no shell,
+// `-R slug` so gh never infers a fork's upstream from local remotes). Never throws — gh failures
+// (missing/unauth/non-github/disabled-issues/bad-output) yield { ok:false, error }.
+export function readGithubCounts(slug: string, deps: SpawnDep = {}): GithubCounts {
   const spawnSync = deps.spawnSync ?? nodeSpawnSync;
-  const pr = spawnSync("gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", "number"], { cwd: path, encoding: "utf8", timeout: TIMEOUT_MS });
+  const pr = spawnSync("gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS });
   if (pr.status !== 0 || pr.error) return { ok: false, prs: 0, issues: 0, error: ghErr(pr) };
-  const iss = spawnSync("gh", ["issue", "list", "--state", "open", "--limit", "100", "--json", "number"], { cwd: path, encoding: "utf8", timeout: TIMEOUT_MS });
+  const iss = spawnSync("gh", ["issue", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS });
   if (iss.status !== 0 || iss.error) return { ok: false, prs: 0, issues: 0, error: ghErr(iss) };
   try {
     return { ok: true, prs: countOf(pr.stdout), issues: countOf(iss.stdout) };
@@ -47,35 +47,36 @@ export function readGithubCountsAtPath(path: string, deps: SpawnDep = {}): Githu
   }
 }
 
-export function resolveRepoPath(repoRoot: string, id: string, deps: ResolveDeps = {}): string {
-  const discover = deps.discover ?? discoverProjects;
-  const root = deps.root ?? process.env.SURTEC_PROJECTS_ROOT ?? dirname(repoRoot);
-  const ignore = [...DEFAULT_IGNORE, ...(process.env.SURTEC_PROJECTS_IGNORE ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
-  const proj = discover(root, ignore).find((p) => p.id === id);
+// Resolves a project id to its GitHub "owner/repo" slug FROM THE TRUSTED REGISTRY (the configured repo,
+// e.g. origin — never a fork's upstream). Throws GithubError(404) for an unknown id; returns null when the
+// project exists but is not a GitHub repo.
+export function resolveRepoSlug(repoRoot: string, id: string, deps: ResolveDeps = {}): string | null {
+  const load = deps.loadRegistry ?? loadRegistryProjects;
+  const proj = load(repoRoot).find((p) => p.id === id);
   if (!proj) throw new GithubError(`unknown project: ${id}`, 404);
-  return proj.path;
+  return githubRepoSlug(proj.repo);
 }
 
-export interface GithubCache { get(repoPath: string): GithubCounts; invalidate(repoPath: string): void }
+export interface GithubCache { get(slug: string): GithubCounts; invalidate(slug: string): void }
 
 export function createGithubCache(opts: {
-  read?: (path: string) => GithubCounts; ttlMs?: number; now?: () => number;
+  read?: (slug: string) => GithubCounts; ttlMs?: number; now?: () => number;
 } = {}): GithubCache {
-  const read = opts.read ?? ((path: string) => readGithubCountsAtPath(path));
+  const read = opts.read ?? ((slug: string) => readGithubCounts(slug));
   const ttlMs = opts.ttlMs ?? 60_000;
   const now = opts.now ?? Date.now;
   const cache = new Map<string, { value: GithubCounts; at: number }>();
   return {
-    get(repoPath: string): GithubCounts {
-      const hit = cache.get(repoPath);
+    get(slug: string): GithubCounts {
+      const hit = cache.get(slug);
       const t = now();
       if (hit && t - hit.at < ttlMs) return hit.value;
-      const value = read(repoPath);
-      cache.set(repoPath, { value, at: t });
+      const value = read(slug);
+      cache.set(slug, { value, at: t });
       return value;
     },
-    invalidate(repoPath: string): void {
-      cache.delete(repoPath);
+    invalidate(slug: string): void {
+      cache.delete(slug);
     },
   };
 }

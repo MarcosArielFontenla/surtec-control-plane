@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { githubWebUrl } from "./github-url";
+import { githubWebUrl, githubRepoSlug } from "./github-url";
 
 describe("githubWebUrl", () => {
   it("converts an https remote with .git", () => {
@@ -27,5 +27,17 @@ describe("githubWebUrl", () => {
   });
   it("normalizes an http:// remote to https", () => {
     expect(githubWebUrl("http://github.com/owner/repo.git")).toBe("https://github.com/owner/repo");
+  });
+});
+
+describe("githubRepoSlug", () => {
+  it("returns owner/repo for github remotes (https/.git, ssh, no .git)", () => {
+    expect(githubRepoSlug("https://github.com/MarcosArielFontenla/surtec-cli.git")).toBe("MarcosArielFontenla/surtec-cli");
+    expect(githubRepoSlug("git@github.com:owner/repo.git")).toBe("owner/repo");
+    expect(githubRepoSlug("https://github.com/owner/repo")).toBe("owner/repo");
+  });
+  it("returns null for non-github / null", () => {
+    expect(githubRepoSlug("git@gitlab.com:owner/repo.git")).toBeNull();
+    expect(githubRepoSlug(null)).toBeNull();
   });
 });
