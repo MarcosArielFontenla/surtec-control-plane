@@ -8,12 +8,18 @@ const LABEL: Record<AttentionItem["kind"], string> = {
   risk: "Riesgo",
   blocker: "Bloqueo",
 };
+const TAG_CLASS: Record<AttentionItem["kind"], string> = {
+  "needs-review": "approve",
+  "awaiting-approval": "approve",
+  risk: "risk",
+  blocker: "block",
+};
 const TASK_KINDS: AttentionItem["kind"][] = ["needs-review", "awaiting-approval"];
 
-function verification(v: AttentionItem["verification"]): { text: string; dot: string } {
-  if (v === "passed") return { text: "verificado", dot: "es-dot--ok" };
-  if (v === "failed") return { text: "verificación falló", dot: "es-dot--danger" };
-  return { text: "sin verificar", dot: "es-dot--muted" };
+function verificationText(v: AttentionItem["verification"]): string {
+  if (v === "passed") return "verificado";
+  if (v === "failed") return "verificación falló";
+  return "sin verificar";
 }
 
 export function AttentionPanel({ items }: { items: AttentionItem[] }) {
@@ -36,35 +42,31 @@ export function AttentionPanel({ items }: { items: AttentionItem[] }) {
   };
 
   return (
-    <section>
-      <h4 className="es-section__title">Necesita tu atención</h4>
-      {error && <div className="es-banner es-banner--danger">{error}</div>}
+    <div className="panel" style={{ padding: "6px 18px" }}>
+      {error && <div className="banner banner--danger">{error}</div>}
       {items.length === 0 ? (
-        <p className="es-empty">Todo en orden.</p>
+        <p className="empty-mini" style={{ padding: "14px 0" }}>Todo en orden.</p>
       ) : (
-        <ul className="es-list">
+        <div className="attn-list">
           {items.map((a) => {
-            const v = verification(a.verification);
+            const isTask = TASK_KINDS.includes(a.kind);
             return (
-              <li key={`${a.task_id}-${a.kind}-${a.title}`} className="es-row">
-                <span className="es-chip">{LABEL[a.kind]}</span>
-                <span className="es-row__id">{a.task_id}</span>
-                <span>{a.title}</span>
-                {TASK_KINDS.includes(a.kind) && (
-                  <>
-                    <span className="es-chip">
-                      <span className={`es-dot ${v.dot}`} />
-                      <span>{v.text}</span>
-                    </span>
-                    <button type="button" className="es-btn es-btn--accent" onClick={() => decide(a.task_id, "approve")}>Aprobar</button>
-                    <button type="button" className="es-btn es-btn--ghost" onClick={() => decide(a.task_id, "reject")}>Rechazar</button>
-                  </>
+              <div key={`${a.task_id}-${a.kind}-${a.title}`} className="attn-item">
+                <span className={`tag ${TAG_CLASS[a.kind]}`}>{LABEL[a.kind]}</span>
+                <span className="attn-id">{a.task_id}</span>
+                <span className="attn-text">{a.title}</span>
+                {isTask && <span className="badge-mini">{verificationText(a.verification)}</span>}
+                {isTask && (
+                  <div className="attn-actions">
+                    <button type="button" className="mini-cta solid" onClick={() => decide(a.task_id, "approve")}>Aprobar</button>
+                    <button type="button" className="mini-cta outline" onClick={() => decide(a.task_id, "reject")}>Rechazar</button>
+                  </div>
                 )}
-              </li>
+              </div>
             );
           })}
-        </ul>
+        </div>
       )}
-    </section>
+    </div>
   );
 }
