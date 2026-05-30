@@ -229,6 +229,43 @@ describe("api", () => {
   });
 });
 
+describe("git sync route", () => {
+  it("POST /api/projects/:id/git with an invalid action → 400", async () => {
+    const app = createApp(process.cwd());
+    const res = await app.request("/api/projects/whatever/git", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "merge" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /api/projects/:id/git for an unknown project → 404", async () => {
+    // Pin discovery to an empty dir so no project resolves (mirror the /open 404 test in this file,
+    // which uses process.env.SURTEC_PROJECTS_ROOT + delete in finally — NOT vi.stubEnv).
+    const empty = mkdtempSync(join(tmpdir(), "surtec-git-empty-"));
+    process.env.SURTEC_PROJECTS_ROOT = empty;
+    try {
+      const app = createApp(process.cwd());
+      const res = await app.request("/api/projects/__nope__/git", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "fetch" }),
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /api/projects/:id/git with an invalid JSON body → 400", async () => {
+    const app = createApp(process.cwd());
+    const res = await app.request("/api/projects/whatever/git", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "not json",
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("run routes", () => {
   it("GET /api/runs returns the manager list", async () => {
     const rec: RunRecord = { runId: "r1", projectId: "p", kind: "dev", command: "d",

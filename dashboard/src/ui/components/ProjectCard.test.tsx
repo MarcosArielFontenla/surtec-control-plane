@@ -98,3 +98,69 @@ describe("ProjectCard open actions", () => {
     await waitFor(() => expect(screen.getByText(/code no está en el PATH/)).toBeTruthy());
   });
 });
+
+describe("ProjectCard git sync", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const gitP = (over: Partial<import("../../../../lib/state/types").GitStatus> = {}): ProjectView => ({
+    ...base,
+    git: { branch: "main", dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: true, ...over },
+  });
+
+  it("renders no git-sync row when the repo is not git-ok", () => {
+    render(<ProjectCard p={base} />); // git: null
+    expect(screen.queryByRole("button", { name: /^fetch$/i })).toBeNull();
+  });
+
+  it("Fetch posts gitSync(id,'fetch') and shows the output", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, action: "fetch", output: "Already up to date." }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectCard p={gitP()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls as unknown[][];
+      const post = calls.find((c) => String(c[0]).endsWith("/api/projects/alpha/git"));
+      expect(post).toBeTruthy();
+      expect(JSON.parse((post![1] as RequestInit).body as string).action).toBe("fetch");
+    });
+    await waitFor(() => expect(screen.getByText(/Already up to date/)).toBeTruthy());
+  });
+
+  it("Push is disabled when ahead is 0", () => {
+    render(<ProjectCard p={gitP({ ahead: 0 })} />);
+    const push = screen.getByRole("button", { name: /^push$/i }) as HTMLButtonElement;
+    expect(push.disabled).toBe(true);
+  });
+
+  it("Push asks for confirmation and only posts after Confirmar", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, action: "push", output: "pushed" }) }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectCard p={gitP({ ahead: 2 })} />);
+    fireEvent.click(screen.getByRole("button", { name: /^push$/i }));
+    // confirm shown, nothing posted yet
+    expect(screen.getByText(/Publicar 2 commits a origin\/main/)).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /confirmar/i }));
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls as unknown[][];
+      const post = calls.find((c) => String(c[0]).endsWith("/api/projects/alpha/git"));
+      expect(post).toBeTruthy();
+      expect(JSON.parse((post![1] as RequestInit).body as string).action).toBe("push");
+    });
+  });
+
+  it("shows a warn banner with the git output when the action fails (ok:false)", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ ok: false, action: "pull", output: "fatal: Not possible to fast-forward, aborting." }),
+    }));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    render(<ProjectCard p={gitP({ behind: 1 })} />);
+    fireEvent.click(screen.getByRole("button", { name: /^pull$/i }));
+    await waitFor(() => {
+      const banner = screen.getByText(/Not possible to fast-forward/);
+      expect(banner).toBeTruthy();
+      expect(banner.className).toContain("es-banner--warn");
+    });
+  });
+});

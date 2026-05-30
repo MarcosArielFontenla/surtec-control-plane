@@ -150,3 +150,18 @@ export function streamRun(
   es.addEventListener("error", () => es.close());
   return () => es.close();
 }
+
+export async function gitSync(
+  id: string, action: "fetch" | "pull" | "push",
+): Promise<{ ok: boolean; action: string; output: string }> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/git`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
+  });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `git ${action} failed: ${res.status}`);
+  }
+  return (await res.json()) as { ok: boolean; action: string; output: string };
+}
