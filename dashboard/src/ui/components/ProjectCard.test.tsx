@@ -50,6 +50,20 @@ describe("ProjectCard git status", () => {
   });
 });
 
+describe("ProjectCard running indicator", () => {
+  it("shows a running indicator when a run is active", () => {
+    const p: ProjectView = { ...base };
+    render(<ProjectCard p={p} running={["dev"]} />);
+    expect(screen.getByText("● dev")).toBeTruthy();
+  });
+
+  it("shows no running indicator when idle", () => {
+    const p: ProjectView = { ...base };
+    render(<ProjectCard p={p} running={[]} />);
+    expect(screen.queryByText(/●/)).toBeNull();
+  });
+});
+
 describe("ProjectCard open actions", () => {
   afterEach(() => vi.unstubAllGlobals());
 

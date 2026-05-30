@@ -1,10 +1,23 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createApp } from "./index";
 import { readTask } from "../../../lib/state/store";
+import type { ProcessManager } from "../../../runner/process-manager";
+import type { RunRecord } from "../../../lib/state/types";
+
+function fakeManager(over: Partial<ProcessManager> = {}): ProcessManager {
+  return {
+    start: vi.fn(),
+    stop: vi.fn(),
+    get: vi.fn().mockReturnValue(null),
+    list: vi.fn().mockReturnValue([]),
+    subscribe: vi.fn().mockReturnValue(() => {}),
+    ...over,
+  } as ProcessManager;
+}
 
 let root: string;
 let stateDir: string;
@@ -213,5 +226,88 @@ describe("api", () => {
       delete process.env.SURTEC_PROJECTS_ROOT;
       rmSync(empty, { recursive: true, force: true });
     }
+  });
+});
+
+describe("run routes", () => {
+  it("GET /api/runs returns the manager list", async () => {
+    const rec: RunRecord = { runId: "r1", projectId: "p", kind: "dev", command: "d",
+      status: "running", pid: 1, startedAt: "t", endedAt: null, exitCode: null };
+    const app = createApp(process.cwd(), () => {}, fakeManager({ list: vi.fn().mockReturnValue([rec]) }));
+    const res = await app.request("/api/runs");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ runs: [rec] });
+  });
+
+  it("POST /run with an unconfigured command → 400", async () => {
+    const app = createApp(process.cwd(), () => {}, fakeManager());
+    const res = await app.request("/api/projects/appointment-manager/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: "nope" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /run for an unknown project → 404", async () => {
+    const app = createApp(process.cwd(), () => {}, fakeManager());
+    const res = await app.request("/api/projects/__nope__/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: "dev" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /run that hits a busy slot → 409", async () => {
+    const { SlotBusyError } = await import("../../../runner/process-manager");
+    const start = vi.fn().mockImplementation(() => { throw new SlotBusyError("dev"); });
+    const app = createApp(process.cwd(), () => {}, fakeManager({ start }));
+    const res = await app.request("/api/projects/expense-tracker-mvp/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: "build" }),
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("POST /api/runs/:id/stop → { ok: true }", async () => {
+    const stop = vi.fn();
+    const app = createApp(process.cwd(), () => {}, fakeManager({ stop }));
+    const res = await app.request("/api/runs/r1/stop", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(stop).toHaveBeenCalledWith("r1");
+  });
+
+  it("GET /api/projects/:id/commands returns the registry map + running slots", async () => {
+    const app = createApp(process.cwd(), () => {}, fakeManager());
+    const res = await app.request("/api/projects/expense-tracker-mvp/commands");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { commands: Record<string, string>; running: object };
+    expect(body.commands.build).toBe("npm run build");
+    expect(body.running).toEqual({ dev: null, oneshot: null });
+  });
+
+  it("GET /api/runs/:id → 404 when unknown", async () => {
+    const app = createApp(process.cwd(), () => {}, fakeManager({ get: vi.fn().mockReturnValue(null) }));
+    const res = await app.request("/api/runs/nope");
+    expect(res.status).toBe(404);
+  });
+
+  it("SSE stream resolves via the race-guard when the run ends between get and subscribe", async () => {
+    const running: RunRecord = { runId: "r1", projectId: "p", kind: "dev", command: "d",
+      status: "running", pid: 1, startedAt: "t", endedAt: null, exitCode: null };
+    const ended: RunRecord = { ...running, status: "exited", endedAt: "t2", exitCode: 0 };
+    let calls = 0;
+    const get = vi.fn().mockImplementation(() => {
+      calls += 1;
+      // 1st call: snapshot (running). 2nd call: the in-guard re-check (already ended).
+      return { record: calls === 1 ? running : ended, log: "" };
+    });
+    const subscribe = vi.fn().mockReturnValue(() => {}); // never fires the callback
+    const app = createApp(process.cwd(), () => {}, fakeManager({ get, subscribe }));
+    const res = await app.request("/api/runs/r1/stream");
+    expect(res.status).toBe(200);
+    const text = await res.text(); // reading to completion proves the stream closed (no hang)
+    expect(text).toContain("event: snapshot");
+    expect(text).toContain("event: status");
   });
 });

@@ -127,3 +127,32 @@ export interface OverviewModel {
   history: TaskView[];
   attention: AttentionItem[];
 }
+
+// --- Process runs (B.2 "Procesos") ---
+export type RunKind = "dev" | "oneshot";
+export type RunStatus = "running" | "exited" | "failed" | "stopped";
+
+export interface RunRecord {
+  runId: string;
+  projectId: string;
+  kind: RunKind;
+  command: string;
+  status: RunStatus;
+  pid: number | null;
+  startedAt: string; // ISO
+  endedAt: string | null;
+  exitCode: number | null;
+}
+
+export type RunEvent =
+  | { type: "snapshot"; record: RunRecord; log: string }
+  | { type: "chunk"; data: string }
+  | { type: "status"; record: RunRecord };
+
+export interface ProjectCommands {
+  dev?: string;
+  build?: string;
+  test?: string;
+  lint?: string;
+  install?: string;
+}
