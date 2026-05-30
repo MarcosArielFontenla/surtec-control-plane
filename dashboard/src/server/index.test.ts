@@ -331,6 +331,9 @@ describe("github route", () => {
       const app = createApp(process.cwd());
       const res = await app.request("/api/projects/__nope__/github");
       expect(res.status).toBe(404);
+      // Assert it's OUR handler's JSON 404 (not Hono's default plain-text 404 for an unregistered route),
+      // which confirms the route is actually wired.
+      expect((await res.json()) as { error?: string }).toMatchObject({ error: expect.stringMatching(/unknown project/) });
     } finally {
       delete process.env.SURTEC_PROJECTS_ROOT;
       rmSync(empty, { recursive: true, force: true });
