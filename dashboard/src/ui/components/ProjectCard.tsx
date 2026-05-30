@@ -1,5 +1,8 @@
+import { useState } from "react";
 import type { ProjectView, GitStatus } from "../../../../lib/state/types";
 import { relativeTime } from "../relative-time";
+import { githubWebUrl } from "../../../../lib/github-url";
+import { openProject } from "../api";
 
 function GitLine({ git }: { git: GitStatus | null }) {
   if (!git) return null;
@@ -25,6 +28,12 @@ function GitLine({ git }: { git: GitStatus | null }) {
 }
 
 export function ProjectCard({ p }: { p: ProjectView }) {
+  const [openErr, setOpenErr] = useState<string | null>(null);
+  const open = (target: "vscode" | "folder") => {
+    setOpenErr(null);
+    openProject(p.id, target).catch((e) => setOpenErr((e as Error).message));
+  };
+  const gh = githubWebUrl(p.repo);
   return (
     <div className="es-card">
       <div className="es-card__head">
@@ -40,6 +49,12 @@ export function ProjectCard({ p }: { p: ProjectView }) {
         <span className="es-num">{p.task_counts.inProgress}</span> en curso · <span className="es-num">{p.task_counts.finished}</span> hechas
       </div>
       <div className="t-micro">{p.last_activity ? `últ. ${p.last_activity}` : "sin actividad"}</div>
+      <div className="es-card__actions">
+        <button type="button" className="es-btn es-btn--ghost" onClick={() => open("vscode")}>VS Code</button>
+        <button type="button" className="es-btn es-btn--ghost" onClick={() => open("folder")}>Carpeta</button>
+        {gh && <a className="es-link" href={gh} target="_blank" rel="noreferrer">GitHub</a>}
+      </div>
+      {openErr && <div className="es-banner es-banner--danger">{openErr}</div>}
     </div>
   );
 }
