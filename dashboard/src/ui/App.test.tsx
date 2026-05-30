@@ -7,7 +7,8 @@ import type { OverviewModel } from "../../../lib/state/types";
 const overview: OverviewModel = {
   projects: [{
     id: "stock-control", status: "active", health: "ok", note: null,
-    repo: null, last_activity: "2026-05-28T11:15:00Z",
+    repo: null, path: null, configured: false, git: null,
+    last_activity: "2026-05-28T11:15:00Z",
     task_counts: { inProgress: 1, finished: 1 },
   }],
   inProgress: [{
