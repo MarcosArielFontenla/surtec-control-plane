@@ -340,6 +340,17 @@ select:focus, textarea:focus, .es-select:focus, .es-textarea:focus, .es-input:fo
 .st.failed { color: var(--danger); background: rgba(229,112,95,0.1); }
 .st.completed { color: var(--aurora-400); background: rgba(69,196,158,0.1); }
 
+/* procesos view + console */
+.proc-row { display:flex; align-items:center; gap:10px; padding:10px 2px; border-bottom:1px solid var(--border-soft); flex-wrap:wrap; }
+.proc-row:last-child { border:none; }
+.proc-slot { display:inline-flex; gap:6px; align-items:center; }
+.console { border:1px solid var(--border-soft); border-radius: var(--radius-md); overflow:hidden; background: var(--ink-950); }
+.console-bar { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--border-soft); font-family: var(--font-mono); font-size:11px; color: var(--fg2); }
+.console-status { text-transform:uppercase; letter-spacing:.04em; }
+.console-exit, .console-cmd { color: var(--fg-muted); }
+.console-cmd { margin-left:auto; }
+.console-log { font-family: var(--font-mono); font-size:12px; line-height:1.5; color: var(--frost-100); background: var(--ink-950); padding:14px; margin:0; max-height:420px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+
 /* banners (inline action feedback) */
 .banner { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-sm); border: 1px solid transparent; }
 .banner--ok { background: rgba(69,196,158,0.08); border-color: rgba(69,196,158,0.28); color: var(--aurora-400); }

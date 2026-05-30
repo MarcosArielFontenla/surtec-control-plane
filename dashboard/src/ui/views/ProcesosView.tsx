@@ -37,57 +37,57 @@ function ProjectRow({ id, onSelect }: { id: string; onSelect: (runId: string) =>
     try { await stopRun(runId); await refresh(); } catch (e) { setErr((e as Error).message); }
   };
 
-  if (!state) return <li className="es-row"><span className="es-row__id">{id}</span><span className="es-empty">cargando…</span></li>;
+  if (!state) return <div className="proc-row"><span className="hid">{id}</span><span className="empty-mini">cargando…</span></div>;
 
   const cmds = state.commands;
   const oneshots = ONESHOT_KEYS.filter((k) => cmds[k]);
   const hasAny = Boolean(cmds.dev) || oneshots.length > 0;
 
   return (
-    <li className="es-row es-row--proc">
-      <span className="es-row__id">{id}</span>
-      {!hasAny && <span className="es-empty">sin comandos configurados</span>}
+    <div className="proc-row">
+      <span className="hid">{id}</span>
+      {!hasAny && <span className="empty-mini">sin comandos configurados</span>}
       {cmds.dev && (
-        <span className="es-proc-slot">
+        <span className="proc-slot">
           {state.running.dev
             ? <>
-                <button type="button" className="es-btn es-btn--ghost" title="Ver salida en consola" onClick={() => onSelect(state.running.dev!)}>● dev</button>
-                <button type="button" className="es-btn es-btn--accent" onClick={() => stop(state.running.dev!)}>Detener</button>
+                <button type="button" className="ibtn" title="Ver salida en consola" onClick={() => onSelect(state.running.dev!)}>● dev</button>
+                <button type="button" className="ibtn primary" onClick={() => stop(state.running.dev!)}>Detener</button>
               </>
-            : <button type="button" className="es-btn" onClick={() => run("dev")}>dev</button>}
+            : <button type="button" className="ibtn primary" onClick={() => run("dev")}>dev</button>}
         </span>
       )}
       {oneshots.length > 0 && (
-        <span className="es-proc-slot">
+        <span className="proc-slot">
           {state.running.oneshot
             ? <>
-                <button type="button" className="es-btn es-btn--ghost" title="Ver salida en consola" onClick={() => onSelect(state.running.oneshot!)}>● en curso</button>
-                <button type="button" className="es-btn es-btn--accent" onClick={() => stop(state.running.oneshot!)}>Detener</button>
+                <button type="button" className="ibtn" title="Ver salida en consola" onClick={() => onSelect(state.running.oneshot!)}>● en curso</button>
+                <button type="button" className="ibtn primary" onClick={() => stop(state.running.oneshot!)}>Detener</button>
               </>
             : oneshots.map((k) => (
-                <button key={k} type="button" className="es-btn es-btn--ghost" onClick={() => run(k)}>{k}</button>
+                <button key={k} type="button" className="ibtn" onClick={() => run(k)}>{k}</button>
               ))}
         </span>
       )}
-      {err && <span className="es-banner es-banner--danger">{err}</span>}
-    </li>
+      {err && <span className="banner banner--danger">{err}</span>}
+    </div>
   );
 }
 
 export function ProcesosView({ projectIds }: { projectIds: string[] }) {
   const [selected, setSelected] = useState<string | null>(null);
   return (
-    <section className="es-cols">
-      <div style={{ flex: 1 }}>
-        <h4 className="es-section__title">Procesos</h4>
-        <ul className="es-list">
+    <div className="two-col">
+      <div>
+        <div className="section-head"><h2>Procesos</h2><span className="meta">{projectIds.length} repos</span></div>
+        <div className="panel" style={{ padding: "6px 18px" }}>
           {projectIds.map((id) => <ProjectRow key={id} id={id} onSelect={setSelected} />)}
-        </ul>
+        </div>
       </div>
-      <div style={{ flex: 1 }}>
-        <h4 className="es-section__title">Consola</h4>
-        {selected ? <RunConsole runId={selected} /> : <p className="es-empty">Elegí un proceso para ver su salida.</p>}
+      <div>
+        <div className="section-head"><h2>Consola</h2></div>
+        {selected ? <RunConsole runId={selected} /> : <div className="empty"><p>Elegí un proceso para ver su salida.</p></div>}
       </div>
-    </section>
+    </div>
   );
 }
