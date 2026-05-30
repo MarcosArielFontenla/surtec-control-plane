@@ -8,6 +8,9 @@ export class GithubError extends Error {
 
 export interface GithubCounts { ok: boolean; prs: number; issues: number; error?: string }
 
+export type CiState = "passing" | "failing" | "running" | "none" | "unknown";
+export interface GithubOverview { ok: boolean; prs: number; issues: number; ci: CiState; error?: string }
+
 const TIMEOUT_MS = 20_000;
 const TAIL_CHARS = 2000;
 
@@ -15,7 +18,7 @@ interface SpawnDep {
   spawnSync?: (command: string, args: string[], opts: object) => { status: number | null; stdout?: string; stderr?: string; error?: Error };
 }
 interface ResolveDeps {
-  loadRegistry?: (repoRoot: string) => { id: string; repo: string | null }[];
+  loadRegistry?: (repoRoot: string) => { id: string; repo: string | null; default_branch?: string | null }[];
 }
 
 function asStr(v: string | Buffer | undefined): string {
@@ -47,36 +50,53 @@ export function readGithubCounts(slug: string, deps: SpawnDep = {}): GithubCount
   }
 }
 
-// Resolves a project id to its GitHub "owner/repo" slug FROM THE TRUSTED REGISTRY (the configured repo,
-// e.g. origin — never a fork's upstream). Throws GithubError(404) for an unknown id; returns null when the
-// project exists but is not a GitHub repo.
-export function resolveRepoSlug(repoRoot: string, id: string, deps: ResolveDeps = {}): string | null {
+// Reads the latest CI run state on a branch via read-only gh. Never throws — any failure → "unknown".
+export function readCiStatus(slug: string, branch: string, deps: SpawnDep = {}): { state: CiState } {
+  const spawnSync = deps.spawnSync ?? nodeSpawnSync;
+  const r = spawnSync("gh", ["run", "list", "--branch", branch, "--limit", "1", "--json", "status,conclusion", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS });
+  if (r.status !== 0 || r.error) return { state: "unknown" };
+  let arr: { status?: string; conclusion?: string | null }[];
+  try {
+    const parsed = JSON.parse(asStr(r.stdout));
+    arr = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return { state: "unknown" };
+  }
+  if (arr.length === 0) return { state: "none" };
+  const run = arr[0];
+  if (run.status === "completed") return { state: run.conclusion === "success" ? "passing" : "failing" };
+  return { state: "running" };
+}
+
+// Resolves a project id to its GitHub { slug, branch } FROM THE TRUSTED REGISTRY (the configured repo +
+// default branch — never a fork's upstream). Throws GithubError(404) for an unknown id; returns null when
+// the project exists but is not a GitHub repo.
+export function resolveRepoRef(repoRoot: string, id: string, deps: ResolveDeps = {}): { slug: string; branch: string } | null {
   const load = deps.loadRegistry ?? loadRegistryProjects;
   const proj = load(repoRoot).find((p) => p.id === id);
   if (!proj) throw new GithubError(`unknown project: ${id}`, 404);
-  return githubRepoSlug(proj.repo);
+  const slug = githubRepoSlug(proj.repo);
+  if (!slug) return null;
+  return { slug, branch: proj.default_branch ?? "main" };
 }
 
-export interface GithubCache { get(slug: string): GithubCounts; invalidate(slug: string): void }
+export interface GithubCache { get(key: string, compute: () => GithubOverview): GithubOverview; invalidate(key: string): void }
 
-export function createGithubCache(opts: {
-  read?: (slug: string) => GithubCounts; ttlMs?: number; now?: () => number;
-} = {}): GithubCache {
-  const read = opts.read ?? ((slug: string) => readGithubCounts(slug));
+export function createGithubCache(opts: { ttlMs?: number; now?: () => number } = {}): GithubCache {
   const ttlMs = opts.ttlMs ?? 60_000;
   const now = opts.now ?? Date.now;
-  const cache = new Map<string, { value: GithubCounts; at: number }>();
+  const cache = new Map<string, { value: GithubOverview; at: number }>();
   return {
-    get(slug: string): GithubCounts {
-      const hit = cache.get(slug);
+    get(key: string, compute: () => GithubOverview): GithubOverview {
+      const hit = cache.get(key);
       const t = now();
       if (hit && t - hit.at < ttlMs) return hit.value;
-      const value = read(slug);
-      cache.set(slug, { value, at: t });
+      const value = compute();
+      cache.set(key, { value, at: t });
       return value;
     },
-    invalidate(slug: string): void {
-      cache.delete(slug);
+    invalidate(key: string): void {
+      cache.delete(key);
     },
   };
 }

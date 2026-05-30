@@ -137,11 +137,14 @@ function BranchControl({ project }: { project: ProjectView }) {
   );
 }
 
+const CI_DOT: Record<string, string> = { passing: "es-dot--ok", failing: "es-dot--danger", running: "es-dot--info", none: "es-dot--muted", unknown: "es-dot--muted" };
+const CI_LABEL: Record<string, string> = { passing: "ok", failing: "falló", running: "corriendo", none: "sin runs", unknown: "—" };
+
 function GithubCounts({ project }: { project: ProjectView }) {
   const gh = githubWebUrl(project.repo);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<{ ok: boolean; prs: number; issues: number; error?: string } | null>(null);
+  const [data, setData] = useState<{ ok: boolean; prs: number; issues: number; ci: "passing" | "failing" | "running" | "none" | "unknown"; error?: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   if (!gh) return null;
 
@@ -164,12 +167,19 @@ function GithubCounts({ project }: { project: ProjectView }) {
     <div className="es-gh">
       <button type="button" className="es-btn es-btn--ghost" onClick={toggle}>PRs · Issues</button>
       {open && (
-        <span className="es-gh__counts" title={data?.error ?? err ?? undefined}>
-          {loading ? "cargando…"
-            : data ? (data.ok ? `PRs: ${data.prs} · Issues: ${data.issues}` : "GitHub: no disponible")
-            : err ? "GitHub: no disponible"
-            : null}
-        </span>
+        <>
+          <span className="es-gh__counts" title={data?.error ?? err ?? undefined}>
+            {loading ? "cargando…"
+              : data ? (data.ok ? `PRs: ${data.prs} · Issues: ${data.issues}` : "GitHub: no disponible")
+              : err ? "GitHub: no disponible"
+              : null}
+          </span>
+          {data && (
+            <span className="es-gh__ci">
+              <span className={`es-dot ${CI_DOT[data.ci]}`} />CI: {CI_LABEL[data.ci]}
+            </span>
+          )}
+        </>
       )}
     </div>
   );

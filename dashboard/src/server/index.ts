@@ -13,7 +13,7 @@ import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./revie
 import { openProject, OpenError } from "./open-project";
 import { runGitSync, GitSyncError } from "./git-sync";
 import { validateBranchName, listBranches, switchBranch, createBranch, BranchError } from "./git-branch";
-import { resolveRepoSlug, createGithubCache, GithubError } from "./github-read";
+import { readGithubCounts, readCiStatus, resolveRepoRef, createGithubCache, GithubError } from "./github-read";
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
@@ -178,9 +178,15 @@ export function createApp(
 
   app.get("/api/projects/:id/github", (c) => {
     try {
-      const slug = resolveRepoSlug(repoRoot, c.req.param("id"));
-      if (!slug) return c.json({ ok: false, prs: 0, issues: 0, error: "no es un repo de GitHub" });
-      return c.json(githubCache.get(slug));
+      const ref = resolveRepoRef(repoRoot, c.req.param("id"));
+      if (!ref) return c.json({ ok: false, prs: 0, issues: 0, ci: "unknown", error: "no es un repo de GitHub" });
+      // Key by slug + branch so two projects sharing a GitHub slug but with different default branches
+      // never serve each other's CI run.
+      return c.json(githubCache.get(`${ref.slug}::${ref.branch}`, () => {
+        const counts = readGithubCounts(ref.slug);
+        const ci = readCiStatus(ref.slug, ref.branch);
+        return { ...counts, ci: ci.state };
+      }));
     } catch (err) {
       if (err instanceof GithubError) return c.json({ error: err.message }, err.status as 404);
       return c.json({ error: (err as Error).message }, 500);
