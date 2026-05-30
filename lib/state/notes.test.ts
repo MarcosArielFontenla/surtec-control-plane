@@ -58,4 +58,12 @@ describe("notes CRUD", () => {
       { id: "2", text: "b", done: true, created_at: "t" },
     ])).toBe(1);
   });
+
+  it("backstop: addNote throws on an unsafe id (defense-in-depth)", () => {
+    expect(() => addNote("../x", "t", dir, { idFn: () => "n", now: () => "t" })).toThrow(/unsafe/);
+  });
+
+  it("listNotes returns [] for an unsafe id (no throw)", () => {
+    expect(listNotes("../x", dir)).toEqual([]);
+  });
 });

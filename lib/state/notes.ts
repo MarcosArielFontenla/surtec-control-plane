@@ -15,6 +15,9 @@ export function isSafeId(s: string): boolean {
 }
 
 function notePath(projectId: string, dir: string): string {
+  // Defense-in-depth backstop: routes already validate isSafeId, but the store must be safe in isolation —
+  // a future caller that forgets the guard must not be able to escape the notes dir via the filename.
+  if (!isSafeId(projectId)) throw new Error(`unsafe project id: ${projectId}`);
   return join(dir, `${projectId}.json`);
 }
 
