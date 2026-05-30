@@ -14,3 +14,6 @@ coverage
 /state/
 dashboard/dist
 
+# Dev-only Playwright screenshots (visual-iteration artifacts)
+.shots/
+
