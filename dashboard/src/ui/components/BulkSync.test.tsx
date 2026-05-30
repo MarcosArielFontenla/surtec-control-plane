@@ -33,6 +33,19 @@ describe("BulkSync", () => {
     });
   });
 
+  it("a repo whose gitSync throws (HTTP error) is shown failed; the run continues", async () => {
+    vi.spyOn(api, "gitSync").mockImplementation(async (id: string) => {
+      if (id === "beta") throw new Error("git fetch failed: 500");
+      return { ok: true, action: "fetch", output: "ok" };
+    });
+    render(<BulkSync projectIds={["alpha", "beta", "gamma"]} />);
+    fireEvent.click(screen.getByRole("button", { name: /fetch all/i }));
+    await waitFor(() => {
+      expect(screen.getByText("beta").closest("li")?.querySelector(".es-dot--danger")).toBeTruthy();
+      expect(screen.getByText("gamma").closest("li")?.querySelector(".es-dot--ok")).toBeTruthy();
+    });
+  });
+
   it("Pull all sends 'pull' and disables the buttons while running", async () => {
     let resolve!: (v: { ok: boolean; action: string; output: string }) => void;
     vi.spyOn(api, "gitSync").mockReturnValue(new Promise((r) => { resolve = r; }));

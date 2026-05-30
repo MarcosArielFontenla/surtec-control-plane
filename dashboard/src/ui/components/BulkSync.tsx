@@ -43,7 +43,7 @@ export function BulkSync({ projectIds }: { projectIds: string[] }) {
       {rows.length > 0 && (
         <ul className="es-bulk__results">
           {rows.map(([id, r]) => (
-            <li key={id} className="es-bulk__row" title={r.output ?? ""}>
+            <li key={id} className="es-bulk__row" title={r.output}>
               <span className={`es-dot ${DOT[r.status]}`} />
               <span>{id}</span>
             </li>
