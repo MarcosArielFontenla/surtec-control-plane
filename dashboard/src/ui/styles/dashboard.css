@@ -354,6 +354,18 @@ select:focus, textarea:focus, .es-select:focus, .es-textarea:focus, .es-input:fo
 .console-cmd { margin-left:auto; }
 .console-log { font-family: var(--font-mono); font-size:12px; line-height:1.5; color: var(--frost-100); background: var(--ink-950); padding:14px; margin:0; max-height:420px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
 
+/* issues inbox */
+.issue-row { display:flex; align-items:center; gap:12px; padding:11px 2px; border-bottom:1px solid var(--border-soft); flex-wrap:wrap; }
+.issue-row:last-child { border:none; }
+.issue-repo { font-family: var(--font-mono); font-size:11px; color: var(--glacier-300); white-space:nowrap; }
+.issue-num { font-family: var(--font-mono); font-size:11px; color: var(--fg-muted); }
+.issue-title { flex:1; min-width:200px; display:inline-flex; align-items:center; gap:6px; font-size: var(--text-sm); color: var(--fg1); text-decoration:none; }
+.issue-title:hover { color: var(--glacier-300); }
+.issue-title svg { width:12px; height:12px; opacity:.6; }
+.issue-labels { display:inline-flex; gap:5px; flex-wrap:wrap; }
+.issue-author { font-family: var(--font-mono); font-size:11px; color: var(--fg-muted); }
+.issue-when { font-family: var(--font-mono); font-size:11px; color: var(--fg3); white-space:nowrap; }
+
 /* banners (inline action feedback) */
 .banner { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-sm); border: 1px solid transparent; }
 .banner--ok { background: rgba(69,196,158,0.08); border-color: rgba(69,196,158,0.28); color: var(--aurora-400); }
