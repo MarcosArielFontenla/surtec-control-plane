@@ -39,6 +39,7 @@ describe("loadRegistryProjects", () => {
         allowed_agents: ["backend-engineer", "qa-reviewer"],
         repo_path: "~/dev/surtec/stock-control",
         default_branch: "main",
+        deploy_url: null,
       },
       {
         id: "portfolio-site",
@@ -47,6 +48,7 @@ describe("loadRegistryProjects", () => {
         allowed_agents: [],
         repo_path: null,
         default_branch: null,
+        deploy_url: null,
       },
     ]);
   });
