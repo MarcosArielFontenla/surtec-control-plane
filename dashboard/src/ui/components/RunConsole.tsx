@@ -28,18 +28,18 @@ export function RunConsole({ runId }: { runId: string }) {
   }, [log]);
 
   const status = record?.status ?? "running";
-  const dot = status === "running" ? "es-dot--info"
-    : status === "exited" ? "es-dot--ok" : "es-dot--danger";
+  const dot = status === "running" ? "info"
+    : status === "exited" ? "ok" : "danger";
 
   return (
-    <div className="es-console">
-      <div className="es-console__bar">
-        <span className={`es-dot ${dot}`} />
-        <span className="es-console__status">{STATUS_LABEL[status]}</span>
-        {record?.exitCode != null && <span className="es-num">exit {record.exitCode}</span>}
-        {record && <span className="es-console__cmd">{record.command}</span>}
+    <div className="console">
+      <div className="console-bar">
+        <span className={`pdot pdot--${dot}`} />
+        <span className="console-status">{STATUS_LABEL[status]}</span>
+        {record?.exitCode != null && <span className="console-exit">exit {record.exitCode}</span>}
+        {record && <span className="console-cmd">{record.command}</span>}
       </div>
-      <pre className="es-console__log" ref={preRef}>{log}</pre>
+      <pre className="console-log" ref={preRef}>{log}</pre>
     </div>
   );
 }

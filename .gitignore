@@ -17,3 +17,7 @@ dashboard/dist
 # Dev-only Playwright screenshots (visual-iteration artifacts)
 .shots/
 
+# Design reference artifacts (the standalone mockup + its decoded bundle)
+/extracted-design/
+/Surtec Control Plane (standalone).html
+

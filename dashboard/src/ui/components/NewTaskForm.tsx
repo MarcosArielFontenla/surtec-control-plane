@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { Zap, Send } from "lucide-react";
 import { fetchDispatchOptions, createTask, type DispatchOptions } from "../api";
+import { BulkSync } from "./BulkSync";
 
-export function NewTaskForm() {
+export function NewTaskForm({ bulkProjectIds }: { bulkProjectIds: string[] }) {
   const [options, setOptions] = useState<DispatchOptions["projects"]>([]);
   const [project, setProject] = useState("");
   const [agent, setAgent] = useState("");
@@ -55,34 +57,41 @@ export function NewTaskForm() {
   };
 
   return (
-    <form onSubmit={onSubmit} className="es-form">
-      <h4 className="es-section__title">Nueva tarea</h4>
-      {error && <div className="es-banner es-banner--danger">{error}</div>}
-      {okMsg && <div className="es-banner es-banner--ok">{okMsg}</div>}
-      <div className="es-form__row">
-        <select className="es-select" aria-label="Proyecto" value={project} onChange={(e) => onProjectChange(e.target.value)}>
-          {options.map((p) => <option key={p.project} value={p.project}>{p.project}</option>)}
-        </select>
-        <select className="es-select" aria-label="Agente" value={agent} onChange={(e) => setAgent(e.target.value)}>
-          {agents.map((a) => <option key={a} value={a}>{a}</option>)}
-        </select>
-        <select className="es-select" aria-label="Modo" value={mode} onChange={(e) => setMode(e.target.value)}>
-          <option value="read-only">Analizar (read-only)</option>
-          <option value="workspace-write">Implementar (workspace-write)</option>
-          <option value="workspace-write-verify">Implementar + auto-fix (verify)</option>
-        </select>
+    <form onSubmit={onSubmit} className="panel task-panel">
+      <div className="task-head">
+        <div className="ttl"><Zap /> Nueva tarea</div>
+        <BulkSync projectIds={bulkProjectIds} />
       </div>
-      <textarea
-        className="es-textarea"
-        name="instructions"
-        placeholder="Instrucciones para el agente…"
-        value={instructions}
-        onChange={(e) => setInstructions(e.target.value)}
-        rows={3}
-      />
-      <button type="submit" className="es-btn es-btn--accent" disabled={busy || !project || !agent || !instructions.trim()}>
-        {busy ? "Despachando…" : "Despachar"}
-      </button>
+      {error && <div className="banner banner--danger">{error}</div>}
+      {okMsg && <div className="banner banner--ok">{okMsg}</div>}
+      <div className="task-row">
+        <div className="field">
+          <label>Repositorio</label>
+          <select aria-label="Proyecto" value={project} onChange={(e) => onProjectChange(e.target.value)}>
+            {options.map((p) => <option key={p.project} value={p.project}>{p.project}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Agente</label>
+          <select aria-label="Agente" value={agent} onChange={(e) => setAgent(e.target.value)}>
+            {agents.map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Modo</label>
+          <select aria-label="Modo" value={mode} onChange={(e) => setMode(e.target.value)}>
+            <option value="read-only">Analizar (read-only)</option>
+            <option value="workspace-write">Implementar (workspace-write)</option>
+            <option value="workspace-write-verify">Implementar + auto-fix (verify)</option>
+          </select>
+        </div>
+      </div>
+      <div className="task-foot">
+        <textarea name="instructions" placeholder="Instrucciones para el agente…" value={instructions} onChange={(e) => setInstructions(e.target.value)} />
+        <button type="submit" className="cta" disabled={busy || !project || !agent || !instructions.trim()}>
+          <Send /> {busy ? "Despachando…" : "Despachar"}
+        </button>
+      </div>
     </form>
   );
 }

@@ -15,7 +15,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("NewTaskForm", () => {
   it("loads options and dispatches a task with the entered instructions", async () => {
-    render(<NewTaskForm />);
+    render(<NewTaskForm bulkProjectIds={[]} />);
     await waitFor(() => expect(screen.getByText("backend-engineer")).toBeTruthy());
 
     const textarea = screen.getByPlaceholderText(/instrucciones/i) as HTMLTextAreaElement;
@@ -37,7 +37,7 @@ describe("NewTaskForm", () => {
   });
 
   it("dispatches workspace-write when the Implementar mode is selected", async () => {
-    render(<NewTaskForm />);
+    render(<NewTaskForm bulkProjectIds={[]} />);
     await waitFor(() => expect(screen.getByText("backend-engineer")).toBeTruthy());
 
     fireEvent.change(screen.getByLabelText("Modo"), { target: { value: "workspace-write" } });
@@ -55,7 +55,7 @@ describe("NewTaskForm", () => {
   });
 
   it("dispatches self_verify when the auto-fix (verify) mode is selected", async () => {
-    render(<NewTaskForm />);
+    render(<NewTaskForm bulkProjectIds={[]} />);
     await waitFor(() => expect(screen.getByText("backend-engineer")).toBeTruthy());
 
     fireEvent.change(screen.getByLabelText("Modo"), { target: { value: "workspace-write-verify" } });
@@ -80,7 +80,7 @@ describe("NewTaskForm", () => {
       return { ok: false, status: 400, json: async () => ({ error: "agent not allowed" }) } as Response;
     }) as unknown as typeof fetch);
 
-    render(<NewTaskForm />);
+    render(<NewTaskForm bulkProjectIds={[]} />);
     await waitFor(() => expect(screen.getByText("backend-engineer")).toBeTruthy());
     fireEvent.change(screen.getByPlaceholderText(/instrucciones/i), { target: { value: "do it" } });
     fireEvent.click(screen.getByRole("button", { name: /despachar/i }));
