@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { GitBranch, Code2, Folder, ExternalLink, ArrowDownToLine, GitPullRequestArrow, ArrowUpFromLine } from "lucide-react";
-import type { ProjectView, GitStatus } from "../../../../lib/state/types";
+import type { ProjectView, GitStatus, DeployHealth } from "../../../../lib/state/types";
 import { relativeTime } from "../relative-time";
 import { githubWebUrl } from "../../../../lib/github-url";
-import { openProject, gitSync, getBranches, branchOp, getGithubCounts, getDeps } from "../api";
+import { openProject, gitSync, getBranches, branchOp, getGithubCounts, getDeps, getDeploy } from "../api";
 import { ProjectNotes } from "./ProjectNotes";
 
 function GitLine({ git, onBranchClick }: { git: GitStatus | null; onBranchClick: () => void }) {
@@ -136,6 +136,25 @@ function DepsStatus({ project }: { project: ProjectView }) {
   );
 }
 
+function DeployStatus({ projectId }: { projectId: string }) {
+  const [data, setData] = useState<DeployHealth | null>(null);
+  useEffect(() => {
+    let active = true;
+    getDeploy(projectId).then((d) => { if (active) setData(d); }).catch(() => {});
+    return () => { active = false; };
+  }, [projectId]);
+  if (!data || !data.configured) return null;
+  const dot = data.state === "up" ? "ok" : data.state === "degraded" ? "warn" : "danger";
+  const label = data.state === "up" ? "up" : data.state === "degraded" ? `HTTP ${data.status}` : "down";
+  return (
+    <div className="deploy-row">
+      <span className={`pdot pdot--${dot}`} />
+      <span>Deploy: {label}{data.ms != null ? ` · ${data.ms}ms` : ""}</span>
+      {data.url && <a className="card-link-btn" href={data.url} target="_blank" rel="noreferrer">abrir sitio</a>}
+    </div>
+  );
+}
+
 export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: string[] }) {
   const [openErr, setOpenErr] = useState<string | null>(null);
   const [branchOpen, setBranchOpen] = useState(false);
@@ -157,6 +176,8 @@ export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: str
       {git?.ok && git.last_commit && (
         <p className="commit" title={git.last_commit.at}>{git.last_commit.subject} <span className="when">· {relativeTime(git.last_commit.at)}</span></p>
       )}
+
+      <DeployStatus projectId={p.id} />
 
       <div className="counts">
         <span><b>{p.task_counts.inProgress}</b> en curso</span>

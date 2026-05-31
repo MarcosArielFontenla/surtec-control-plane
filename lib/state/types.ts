@@ -175,3 +175,14 @@ export interface CommitActivity { kind: "commit"; at: string; project: string; h
 export interface TaskActivity { kind: "task"; at: string; project: string; taskId: string; agent: string; title: string; state: string }
 export type ActivityItem = CommitActivity | TaskActivity;
 export interface ActivityFeed { items: ActivityItem[] }
+
+// --- C.1 deploy health-check ---
+export type DeployState = "up" | "degraded" | "down";
+export interface DeployHealth {
+  configured: boolean;
+  url: string | null;
+  state: DeployState | null;
+  status: number | null;
+  ms: number | null;
+  error?: string;
+}

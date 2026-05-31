@@ -17,6 +17,7 @@ import { readGithubCounts, readCiStatus, resolveRepoRef, createGithubCache, Gith
 import { readDepsStatus, resolveDepsPath, createDepsCache, DepsError } from "./deps-read";
 import { createInboxCache, readInbox } from "./github-inbox";
 import { createActivityCache, buildActivityFeed } from "./activity-read";
+import { createDeployCache, readDeployHealth, resolveDeployUrl, DeployError } from "./deploy-read";
 import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../lib/state/notes";
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
@@ -38,6 +39,7 @@ export function createApp(
   const depsCache = createDepsCache();
   const inboxCache = createInboxCache();
   const activityCache = createActivityCache();
+  const deployCache = createDeployCache();
 
   app.get("/api/overview", (c) => {
     try {
@@ -212,6 +214,18 @@ export function createApp(
     try {
       return c.json(activityCache.get("activity", () => buildActivityFeed(repoRoot)));
     } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get("/api/projects/:id/deploy", async (c) => {
+    try {
+      const url = resolveDeployUrl(repoRoot, c.req.param("id"));
+      if (!url) return c.json({ configured: false, url: null, state: null, status: null, ms: null });
+      const h = await deployCache.get(url, () => readDeployHealth(url));
+      return c.json({ configured: true, url, ...h });
+    } catch (err) {
+      if (err instanceof DeployError) return c.json({ error: err.message }, err.status as 404);
       return c.json({ error: (err as Error).message }, 500);
     }
   });

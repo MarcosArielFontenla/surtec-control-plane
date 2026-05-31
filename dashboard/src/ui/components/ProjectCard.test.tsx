@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ProjectCard } from "./ProjectCard";
+import * as api from "../api";
 import type { ProjectView } from "../../../../lib/state/types";
 
 const base: ProjectView = {
@@ -338,5 +339,24 @@ describe("ProjectCard git sync", () => {
       expect(banner).toBeTruthy();
       expect(banner.className).toContain("banner--warn");
     });
+  });
+});
+
+describe("ProjectCard deploy health", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("shows the deploy dot, label and 'abrir sitio' link when configured + up", async () => {
+    vi.spyOn(api, "getDeploy").mockResolvedValue({ configured: true, url: "https://alpha.up.railway.app", state: "up", status: 200, ms: 120 });
+    render(<ProjectCard p={base} />);
+    await waitFor(() => expect(screen.getByText(/up/)).toBeTruthy());
+    const link = screen.getByRole("link", { name: /abrir sitio/i });
+    expect(link.getAttribute("href")).toBe("https://alpha.up.railway.app");
+  });
+
+  it("renders no deploy control when the project is not configured for deploy", async () => {
+    vi.spyOn(api, "getDeploy").mockResolvedValue({ configured: false, url: null, state: null, status: null, ms: null });
+    render(<ProjectCard p={base} />);
+    await waitFor(() => expect(api.getDeploy).toHaveBeenCalled());
+    expect(screen.queryByRole("link", { name: /abrir sitio/i })).toBeNull();
   });
 });

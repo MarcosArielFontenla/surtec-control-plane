@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed } from "../../../lib/state/types";
+import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth } from "../../../lib/state/types";
 import type { Note } from "../../../lib/state/notes";
 
 export async function fetchOverview(): Promise<OverviewModel> {
@@ -40,6 +40,12 @@ export async function getActivity(): Promise<ActivityFeed> {
   const res = await fetch("/api/activity");
   if (!res.ok) throw new Error(`activity failed: ${res.status}`);
   return (await res.json()) as ActivityFeed;
+}
+
+export async function getDeploy(id: string): Promise<DeployHealth> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/deploy`);
+  if (!res.ok) throw new Error(`deploy failed: ${res.status}`);
+  return (await res.json()) as DeployHealth;
 }
 
 export interface DispatchOptions {

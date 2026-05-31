@@ -5,6 +5,10 @@
 # default_branch, allowed_agents, sandbox, commands. A discovered project with no
 # entry here is shown but "sin configurar" (not dispatchable).
 #
+# `deploy_url` (optional): the project's public deployed URL (e.g. its Railway URL). When set, the
+#   dashboard shows a read-only health-check (up/degraded/down) on the card. Leave unset to hide it.
+#   Example:  deploy_url: https://my-app.up.railway.app
+#
 # Generated 2026-05-29 from discovery + git remotes + package.json, with policy:
 #   sandbox.default = read-only (agents analyze only; opt a project into
 #   workspace-write to let them edit), allowed_agents = standard engineering subset.

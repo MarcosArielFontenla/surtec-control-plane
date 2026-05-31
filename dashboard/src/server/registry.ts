@@ -10,6 +10,7 @@ interface RegistryDoc {
     local_path?: string;
     allowed_agents?: string[];
     default_branch?: string;
+    deploy_url?: string;
   }>;
 }
 
@@ -24,5 +25,6 @@ export function loadRegistryProjects(repoRoot: string = process.cwd()): Registry
     allowed_agents: v?.allowed_agents ?? [],
     repo_path: v?.local_path ?? null,
     default_branch: v?.default_branch ?? null,
+    deploy_url: v?.deploy_url ?? null,
   }));
 }
