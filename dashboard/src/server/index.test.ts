@@ -510,3 +510,13 @@ describe("GET /api/inbox", () => {
     expect(Array.isArray(body.repos)).toBe(true);
   });
 });
+
+describe("GET /api/activity", () => {
+  it("returns the activity feed shape and never 500s", async () => {
+    const app = createApp(root);
+    const res = await app.request("/api/activity");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body.items)).toBe(true);
+  });
+});
