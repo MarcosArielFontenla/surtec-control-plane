@@ -186,3 +186,14 @@ export interface DeployHealth {
   ms: number | null;
   error?: string;
 }
+
+// --- C.2 Railway deploy status ---
+export type RailwayState = "success" | "building" | "deploying" | "failed" | "crashed" | "removed" | "sleeping" | "skipped" | "waiting" | "queued" | "unknown";
+export interface RailwayStatus {
+  configured: boolean;
+  ok: boolean;
+  state: RailwayState | null;
+  at: string | null;
+  url: string | null;
+  error?: string;
+}

@@ -11,6 +11,7 @@ export interface RegistryProject {
   repo_path?: string | null;
   default_branch?: string | null;
   deploy_url?: string | null;
+  railway?: { project_id: string; service_id: string; environment_id: string } | null;
 }
 
 function toTaskView(t: TaskRecord): TaskView {
