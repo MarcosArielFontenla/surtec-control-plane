@@ -37,10 +37,10 @@ export function IssuesView() {
         </select>
       </div>
 
-      {error && <div className="banner banner--warn">No pude leer los issues ({error}).</div>}
-      {allFailed && <div className="banner banner--danger">GitHub no disponible (¿gh instalado y autenticado?).</div>}
+      {error && <div className="banner banner--warn view-note">No pude leer los issues ({error}).</div>}
+      {allFailed && <div className="banner banner--danger view-note">GitHub no disponible (¿gh instalado y autenticado?).</div>}
       {!allFailed && failed.length > 0 && (
-        <div className="banner banner--warn">No se pudo leer: {failed.map((r) => r.id).join(", ")}.</div>
+        <div className="banner banner--warn view-note">No se pudo leer: {failed.map((r) => r.id).join(", ")}.</div>
       )}
 
       {!inbox && !error ? (
