@@ -3,7 +3,6 @@ agents:
     name: Product Manager
     type: product
     description: Defines scope, priorities, user stories, and acceptance criteria.
-    codex_agent_file: agents/codex/product-manager.toml
     default_sandbox: read-only
     allowed_task_types:
       - discovery
@@ -18,7 +17,6 @@ agents:
     name: Tech Lead
     type: engineering
     description: Reviews architecture, sequencing, technical risk, and implementation plans.
-    codex_agent_file: agents/codex/tech-lead.toml
     default_sandbox: workspace-write
     allowed_task_types:
       - architecture-review
@@ -34,7 +32,6 @@ agents:
     name: Backend Engineer
     type: engineering
     description: Implements backend services, APIs, jobs, integrations, and persistence changes.
-    codex_agent_file: agents/codex/backend-engineer.toml
     default_sandbox: workspace-write
     allowed_task_types:
       - backend-implementation
@@ -50,7 +47,6 @@ agents:
     name: Frontend Engineer
     type: engineering
     description: Implements user interfaces, client-side behavior, accessibility, and frontend tests.
-    codex_agent_file: agents/codex/frontend-engineer.toml
     default_sandbox: workspace-write
     allowed_task_types:
       - frontend-implementation
@@ -65,7 +61,6 @@ agents:
     name: QA Reviewer
     type: quality
     description: Builds test plans, reviews coverage, and validates acceptance criteria.
-    codex_agent_file: agents/codex/qa-reviewer.toml
     default_sandbox: read-only
     allowed_task_types:
       - test-plan
@@ -78,7 +73,6 @@ agents:
     name: Security Reviewer
     type: security
     description: Reviews threat models, secrets exposure, permissions, and security-sensitive changes.
-    codex_agent_file: agents/codex/security-reviewer.toml
     default_sandbox: read-only
     allowed_task_types:
       - threat-model
@@ -92,7 +86,6 @@ agents:
     name: DevOps Engineer
     type: operations
     description: Reviews CI, deployment safety, infrastructure scripts, logs, and rollback plans.
-    codex_agent_file: agents/codex/devops-engineer.toml
     default_sandbox: workspace-write
     allowed_task_types:
       - ci-change
@@ -108,7 +101,6 @@ agents:
     name: Reality Checker
     type: review
     description: Challenges assumptions, identifies missing facts, and highlights overreach.
-    codex_agent_file: agents/codex/reality-checker.toml
     default_sandbox: read-only
     allowed_task_types:
       - assumption-review
@@ -121,7 +113,6 @@ agents:
     name: Documentation Writer
     type: documentation
     description: Creates and updates docs, runbooks, usage guides, and release notes.
-    codex_agent_file: agents/codex/documentation-writer.toml
     default_sandbox: workspace-write
     allowed_task_types:
       - documentation
@@ -134,7 +125,6 @@ agents:
     name: Argentine Legal Reviewer
     type: legal
     description: Performs initial Argentine legal review drafts for human lawyer validation.
-    codex_agent_file: agents/codex/legal-reviewer-ar.toml
     default_sandbox: read-only
     allowed_task_types:
       - legal-review
