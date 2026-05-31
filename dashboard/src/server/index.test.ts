@@ -520,3 +520,17 @@ describe("GET /api/activity", () => {
     expect(Array.isArray(body.items)).toBe(true);
   });
 });
+
+describe("GET /api/projects/:id/deploy", () => {
+  it("returns { configured:false } when the project has no deploy_url", async () => {
+    const app = createApp(root);
+    const res = await app.request("/api/projects/stock-control/deploy");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ configured: false });
+  });
+  it("404s for an unknown project", async () => {
+    const app = createApp(root);
+    const res = await app.request("/api/projects/nope/deploy");
+    expect(res.status).toBe(404);
+  });
+});
