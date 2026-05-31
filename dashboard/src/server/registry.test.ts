@@ -40,6 +40,7 @@ describe("loadRegistryProjects", () => {
         repo_path: "~/dev/surtec/stock-control",
         default_branch: "main",
         deploy_url: null,
+        railway: null,
       },
       {
         id: "portfolio-site",
@@ -49,6 +50,7 @@ describe("loadRegistryProjects", () => {
         repo_path: null,
         default_branch: null,
         deploy_url: null,
+        railway: null,
       },
     ]);
   });

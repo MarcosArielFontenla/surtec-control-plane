@@ -360,3 +360,21 @@ describe("ProjectCard deploy health", () => {
     expect(screen.queryByRole("link", { name: /abrir sitio/i })).toBeNull();
   });
 });
+
+describe("ProjectCard railway deploy", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("shows the railway state + relative time + link when configured", async () => {
+    vi.spyOn(api, "getRailway").mockResolvedValue({ configured: true, ok: true, state: "success", at: "2026-05-30T10:00:00Z", url: "https://x.up.railway.app" });
+    render(<ProjectCard p={base} />);
+    await waitFor(() => expect(screen.getByText(/Railway: success/)).toBeTruthy());
+    expect(screen.getByRole("link", { name: /ver deploy/i }).getAttribute("href")).toBe("https://x.up.railway.app");
+  });
+
+  it("renders no railway line when not configured", async () => {
+    vi.spyOn(api, "getRailway").mockResolvedValue({ configured: false, ok: false, state: null, at: null, url: null });
+    render(<ProjectCard p={base} />);
+    await waitFor(() => expect(api.getRailway).toHaveBeenCalled());
+    expect(screen.queryByText(/Railway:/)).toBeNull();
+  });
+});

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { GitBranch, Code2, Folder, ExternalLink, ArrowDownToLine, GitPullRequestArrow, ArrowUpFromLine } from "lucide-react";
-import type { ProjectView, GitStatus, DeployHealth } from "../../../../lib/state/types";
+import type { ProjectView, GitStatus, DeployHealth, RailwayStatus, RailwayState } from "../../../../lib/state/types";
 import { relativeTime } from "../relative-time";
 import { githubWebUrl } from "../../../../lib/github-url";
-import { openProject, gitSync, getBranches, branchOp, getGithubCounts, getDeps, getDeploy } from "../api";
+import { openProject, gitSync, getBranches, branchOp, getGithubCounts, getDeps, getDeploy, getRailway } from "../api";
 import { ProjectNotes } from "./ProjectNotes";
 
 function GitLine({ git, onBranchClick }: { git: GitStatus | null; onBranchClick: () => void }) {
@@ -155,6 +155,28 @@ function DeployStatus({ projectId }: { projectId: string }) {
   );
 }
 
+const RAILWAY_DOT: Record<RailwayState, string> = {
+  success: "ok", building: "info", deploying: "info", queued: "info", waiting: "info",
+  failed: "danger", crashed: "danger", removed: "muted", sleeping: "muted", skipped: "muted", unknown: "muted",
+};
+
+function RailwayLine({ projectId }: { projectId: string }) {
+  const [data, setData] = useState<RailwayStatus | null>(null);
+  useEffect(() => {
+    let active = true;
+    getRailway(projectId).then((d) => { if (active) setData(d); }).catch(() => {});
+    return () => { active = false; };
+  }, [projectId]);
+  if (!data || !data.configured || !data.ok || !data.state) return null;
+  return (
+    <div className="deploy-row">
+      <span className={`pdot pdot--${RAILWAY_DOT[data.state]}`} />
+      <span>Railway: {data.state}{data.at ? ` · ${relativeTime(data.at)}` : ""}</span>
+      {data.url && <a className="card-link-btn" href={data.url} target="_blank" rel="noreferrer">ver deploy</a>}
+    </div>
+  );
+}
+
 export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: string[] }) {
   const [openErr, setOpenErr] = useState<string | null>(null);
   const [branchOpen, setBranchOpen] = useState(false);
@@ -178,6 +200,7 @@ export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: str
       )}
 
       <DeployStatus projectId={p.id} />
+      <RailwayLine projectId={p.id} />
 
       <div className="counts">
         <span><b>{p.task_counts.inProgress}</b> en curso</span>
