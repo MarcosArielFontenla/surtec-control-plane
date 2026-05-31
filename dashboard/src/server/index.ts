@@ -16,6 +16,7 @@ import { validateBranchName, listBranches, switchBranch, createBranch, BranchErr
 import { readGithubCounts, readCiStatus, resolveRepoRef, createGithubCache, GithubError } from "./github-read";
 import { readDepsStatus, resolveDepsPath, createDepsCache, DepsError } from "./deps-read";
 import { createInboxCache, readInbox } from "./github-inbox";
+import { createActivityCache, buildActivityFeed } from "./activity-read";
 import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../lib/state/notes";
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
@@ -36,6 +37,7 @@ export function createApp(
   const githubCache = createGithubCache();
   const depsCache = createDepsCache();
   const inboxCache = createInboxCache();
+  const activityCache = createActivityCache();
 
   app.get("/api/overview", (c) => {
     try {
@@ -201,6 +203,14 @@ export function createApp(
   app.get("/api/inbox", async (c) => {
     try {
       return c.json(await inboxCache.get("inbox", () => readInbox(repoRoot)));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get("/api/activity", (c) => {
+    try {
+      return c.json(activityCache.get("activity", () => buildActivityFeed(repoRoot)));
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }

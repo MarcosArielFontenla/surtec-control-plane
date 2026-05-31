@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox } from "../../../lib/state/types";
+import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed } from "../../../lib/state/types";
 import type { Note } from "../../../lib/state/notes";
 
 export async function fetchOverview(): Promise<OverviewModel> {
@@ -34,6 +34,12 @@ export async function getInbox(): Promise<Inbox> {
   const res = await fetch("/api/inbox");
   if (!res.ok) throw new Error(`inbox failed: ${res.status}`);
   return (await res.json()) as Inbox;
+}
+
+export async function getActivity(): Promise<ActivityFeed> {
+  const res = await fetch("/api/activity");
+  if (!res.ok) throw new Error(`activity failed: ${res.status}`);
+  return (await res.json()) as ActivityFeed;
 }
 
 export interface DispatchOptions {

@@ -11,7 +11,7 @@ type SpawnSync = (cmd: string, args: string[], opts: object) => { status: number
 export interface CommitRow { hash: string; shortHash: string; subject: string; at: string; author: string }
 
 // Reads recent commits from a repo via read-only LOCAL git (no network). Never throws → [].
-export function readRecentCommits(repoPath: string, limit = 8, spawnSync: SpawnSync = nodeSpawnSync): CommitRow[] {
+export function readRecentCommits(repoPath: string, limit = 8, spawnSync: SpawnSync = nodeSpawnSync as unknown as SpawnSync): CommitRow[] {
   const r = spawnSync("git", ["-C", repoPath, "log", "-n", String(limit), "--format=%H%x00%h%x00%s%x00%cI%x00%an"], { encoding: "utf8", timeout: TIMEOUT_MS });
   if (r.status !== 0 || r.error || !r.stdout) return [];
   const out: CommitRow[] = [];
