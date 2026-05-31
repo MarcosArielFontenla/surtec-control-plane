@@ -156,3 +156,16 @@ export interface ProjectCommands {
   lint?: string;
   install?: string;
 }
+
+// --- D.2 cross-project GitHub-issue inbox ---
+export interface IssueItem {
+  number: number;
+  title: string;
+  url: string;
+  updatedAt: string;
+  labels: string[];
+  author: string | null;
+}
+export interface RepoStatus { id: string; slug: string; ok: boolean; error?: string }
+export type InboxItem = IssueItem & { projectId: string; slug: string };
+export interface Inbox { items: InboxItem[]; repos: RepoStatus[] }
