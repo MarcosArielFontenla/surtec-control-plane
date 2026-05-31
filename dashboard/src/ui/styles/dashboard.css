@@ -384,6 +384,8 @@ select:focus, textarea:focus, .es-select:focus, .es-textarea:focus, .es-input:fo
 
 /* banners (inline action feedback) */
 .banner { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-sm); border: 1px solid transparent; }
+/* view-level banner: breathing room before the panel/list below it */
+.view-note { margin-bottom: var(--space-4); }
 .banner--ok { background: rgba(69,196,158,0.08); border-color: rgba(69,196,158,0.28); color: var(--aurora-400); }
 .banner--warn { background: rgba(232,136,76,0.08); border-color: rgba(232,136,76,0.3); color: var(--ember-400); }
 .banner--danger { background: rgba(229,112,95,0.08); border-color: rgba(229,112,95,0.32); color: var(--danger); }

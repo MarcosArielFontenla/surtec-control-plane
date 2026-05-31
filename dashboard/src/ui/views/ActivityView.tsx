@@ -34,7 +34,7 @@ export function ActivityView() {
         <button type="button" className={`seg-btn${filter === "task" ? " on" : ""}`} onClick={() => setFilter("task")}>Tareas</button>
       </div>
 
-      {error && <div className="banner banner--warn">No pude leer la actividad ({error}).</div>}
+      {error && <div className="banner banner--warn view-note">No pude leer la actividad ({error}).</div>}
 
       {!feed && !error ? (
         <p className="empty-mini">cargando actividad…</p>
