@@ -18,6 +18,7 @@ import { readDepsStatus, resolveDepsPath, createDepsCache, DepsError } from "./d
 import { createInboxCache, readInbox } from "./github-inbox";
 import { createActivityCache, buildActivityFeed } from "./activity-read";
 import { createDeployCache, readDeployHealth, resolveDeployUrl, DeployError } from "./deploy-read";
+import { createRailwayCache, readRailwayDeploy, resolveRailway, RailwayError } from "./railway-read";
 import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../lib/state/notes";
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
@@ -40,6 +41,7 @@ export function createApp(
   const inboxCache = createInboxCache();
   const activityCache = createActivityCache();
   const deployCache = createDeployCache();
+  const railwayCache = createRailwayCache();
 
   app.get("/api/overview", (c) => {
     try {
@@ -226,6 +228,19 @@ export function createApp(
       return c.json({ configured: true, url, ...h });
     } catch (err) {
       if (err instanceof DeployError) return c.json({ error: err.message }, err.status as 404);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get("/api/projects/:id/railway", async (c) => {
+    try {
+      const ids = resolveRailway(repoRoot, c.req.param("id"));
+      const token = process.env.RAILWAY_TOKEN;
+      if (!ids || !token) return c.json({ configured: false, ok: false, state: null, at: null, url: null });
+      const r = await railwayCache.get(ids.service_id, () => readRailwayDeploy(ids, token));
+      return c.json({ configured: true, ...r });
+    } catch (err) {
+      if (err instanceof RailwayError) return c.json({ error: err.message }, err.status as 404);
       return c.json({ error: (err as Error).message }, 500);
     }
   });

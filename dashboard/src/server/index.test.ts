@@ -534,3 +534,17 @@ describe("GET /api/projects/:id/deploy", () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe("GET /api/projects/:id/railway", () => {
+  it("returns { configured:false } when the project has no railway block", async () => {
+    const app = createApp(root);
+    const res = await app.request("/api/projects/stock-control/railway");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ configured: false });
+  });
+  it("404s for an unknown project", async () => {
+    const app = createApp(root);
+    const res = await app.request("/api/projects/nope/railway");
+    expect(res.status).toBe(404);
+  });
+});

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth } from "../../../lib/state/types";
+import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth, RailwayStatus } from "../../../lib/state/types";
 import type { Note } from "../../../lib/state/notes";
 
 export async function fetchOverview(): Promise<OverviewModel> {
@@ -46,6 +46,12 @@ export async function getDeploy(id: string): Promise<DeployHealth> {
   const res = await fetch(`/api/projects/${encodeURIComponent(id)}/deploy`);
   if (!res.ok) throw new Error(`deploy failed: ${res.status}`);
   return (await res.json()) as DeployHealth;
+}
+
+export async function getRailway(id: string): Promise<RailwayStatus> {
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/railway`);
+  if (!res.ok) throw new Error(`railway failed: ${res.status}`);
+  return (await res.json()) as RailwayStatus;
 }
 
 export interface DispatchOptions {
