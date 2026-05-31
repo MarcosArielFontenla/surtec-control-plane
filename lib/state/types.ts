@@ -169,3 +169,9 @@ export interface IssueItem {
 export interface RepoStatus { id: string; slug: string; ok: boolean; error?: string }
 export type InboxItem = IssueItem & { projectId: string; slug: string };
 export interface Inbox { items: InboxItem[]; repos: RepoStatus[] }
+
+// --- D.3 cross-project activity feed ---
+export interface CommitActivity { kind: "commit"; at: string; project: string; hash: string; subject: string; author: string }
+export interface TaskActivity { kind: "task"; at: string; project: string; taskId: string; agent: string; title: string; state: string }
+export type ActivityItem = CommitActivity | TaskActivity;
+export interface ActivityFeed { items: ActivityItem[] }
