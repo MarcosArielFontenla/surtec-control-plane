@@ -12,8 +12,6 @@ import { ActivityView } from "./views/ActivityView";
 import { useRuns } from "./useRuns";
 import { deriveKpis, deriveSummary } from "./derive-kpis";
 
-const ANCHOR: Partial<Record<NavItem, string>> = { Proyectos: "sec-proyectos", Tareas: "sec-tareas", "Atención": "sec-atencion" };
-
 export function App() {
   const { data, error } = useOverview();
   const { runs } = useRuns();
@@ -31,19 +29,12 @@ export function App() {
   const view: "Overview" | "Procesos" | "Issues" | "Actividad" =
     nav === "Procesos" ? "Procesos" : nav === "Issues" ? "Issues" : nav === "Actividad" ? "Actividad" : "Overview";
 
-  const onSelect = (item: NavItem) => {
-    if (item === "Overview" || item === "Procesos" || item === "Issues" || item === "Actividad") { setNav(item); return; }
-    setNav("Overview");
-    const id = ANCHOR[item];
-    if (id) requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }));
-  };
-
   const activeProjectIds = data ? data.projects.filter((p) => p.configured).map((p) => p.id) : [];
   const gitProjectIds = data ? data.projects.filter((p) => p.git?.ok).map((p) => p.id) : [];
 
   return (
     <div className="app">
-      <Sidebar active={nav} onSelect={onSelect} summary={summary} connected={!error} />
+      <Sidebar active={nav} onSelect={setNav} summary={summary} connected={!error} />
       <main className="main">
         <header className="topbar">
           <div className="topbar-left">
@@ -69,16 +60,16 @@ export function App() {
               {error && <div className="banner banner--warn">No pude refrescar ({error}); mostrando el último estado conocido.</div>}
               {!data ? <p className="empty-mini">Cargando…</p> : (
                 <>
-                  <div className="section-head" id="sec-proyectos"><h2>Proyectos</h2><span className="meta">{data.projects.length} repos</span></div>
+                  <div className="section-head"><h2>Proyectos</h2><span className="meta">{data.projects.length} repos</span></div>
                   <section className="proj-grid">
                     {data.projects.map((p) => <ProjectCard key={p.id} p={p} running={runningByProject.get(p.id) ?? []} />)}
                   </section>
                   <div className="two-col">
-                    <div id="sec-atencion">
+                    <div>
                       <div className="section-head"><h2>Necesita tu atención</h2><span className="meta">{data.attention.length} ítems</span></div>
                       <AttentionPanel items={data.attention} />
                     </div>
-                    <div id="sec-tareas">
+                    <div>
                       <InProgressColumn inProgress={data.inProgress} history={data.history} />
                     </div>
                   </div>
