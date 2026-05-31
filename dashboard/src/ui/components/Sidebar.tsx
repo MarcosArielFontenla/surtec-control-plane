@@ -1,14 +1,15 @@
-import { LayoutDashboard, Cpu, Inbox, FolderGit2, ListChecks, Bell, type LucideIcon } from "lucide-react";
+import { LayoutDashboard, Cpu, Inbox, Activity, FolderGit2, ListChecks, Bell, type LucideIcon } from "lucide-react";
 import { BrandMark } from "./BrandMark";
 import type { Summary } from "../derive-kpis";
 
-export const NAV_ITEMS = ["Overview", "Procesos", "Issues", "Proyectos", "Tareas", "Atención"] as const;
+export const NAV_ITEMS = ["Overview", "Procesos", "Issues", "Actividad", "Proyectos", "Tareas", "Atención"] as const;
 export type NavItem = (typeof NAV_ITEMS)[number];
 
 const NAV_ICON: Record<NavItem, LucideIcon> = {
   Overview: LayoutDashboard,
   Procesos: Cpu,
   Issues: Inbox,
+  Actividad: Activity,
   Proyectos: FolderGit2,
   Tareas: ListChecks,
   "Atención": Bell,
