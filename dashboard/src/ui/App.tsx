@@ -7,6 +7,7 @@ import { NewTaskForm } from "./components/NewTaskForm";
 import { KpiStrip } from "./components/KpiStrip";
 import { InProgressColumn } from "./components/InProgressColumn";
 import { ProcesosView } from "./views/ProcesosView";
+import { IssuesView } from "./views/IssuesView";
 import { useRuns } from "./useRuns";
 import { deriveKpis, deriveSummary } from "./derive-kpis";
 
@@ -26,10 +27,11 @@ export function App() {
 
   const summary = data ? deriveSummary(data) : { total: 0, configured: 0, unconfigured: 0, attention: 0 };
   const kpis = data ? deriveKpis(data, runs) : null;
-  const view: "Overview" | "Procesos" = nav === "Procesos" ? "Procesos" : "Overview";
+  const view: "Overview" | "Procesos" | "Issues" =
+    nav === "Procesos" ? "Procesos" : nav === "Issues" ? "Issues" : "Overview";
 
   const onSelect = (item: NavItem) => {
-    if (item === "Overview" || item === "Procesos") { setNav(item); return; }
+    if (item === "Overview" || item === "Procesos" || item === "Issues") { setNav(item); return; }
     setNav("Overview");
     const id = ANCHOR[item];
     if (id) requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -44,7 +46,7 @@ export function App() {
       <main className="main">
         <header className="topbar">
           <div className="topbar-left">
-            <h1>{view === "Procesos" ? "Procesos" : "Estado vivo"}</h1>
+            <h1>{view === "Procesos" ? "Procesos" : view === "Issues" ? "Issues" : "Estado vivo"}</h1>
             <span className="sub">{summary.total} repos · {data?.inProgress.length ?? 0} tareas activas</span>
           </div>
           <span className={`live${error ? " live--down" : ""}`}>
@@ -55,6 +57,8 @@ export function App() {
         <div className="wrap">
           {view === "Procesos" ? (
             <ProcesosView projectIds={activeProjectIds} />
+          ) : view === "Issues" ? (
+            <IssuesView />
           ) : (
             <>
               {kpis && <KpiStrip kpis={kpis} />}

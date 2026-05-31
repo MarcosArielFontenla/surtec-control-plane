@@ -499,3 +499,14 @@ describe("run routes", () => {
     expect(text).toContain("event: status");
   });
 });
+
+describe("GET /api/inbox", () => {
+  it("returns the aggregated inbox shape and never 500s with no GitHub repos", async () => {
+    const app = createApp(root);
+    const res = await app.request("/api/inbox");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body.items)).toBe(true);
+    expect(Array.isArray(body.repos)).toBe(true);
+  });
+});

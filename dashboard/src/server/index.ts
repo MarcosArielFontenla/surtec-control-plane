@@ -15,6 +15,7 @@ import { runGitSync, GitSyncError } from "./git-sync";
 import { validateBranchName, listBranches, switchBranch, createBranch, BranchError } from "./git-branch";
 import { readGithubCounts, readCiStatus, resolveRepoRef, createGithubCache, GithubError } from "./github-read";
 import { readDepsStatus, resolveDepsPath, createDepsCache, DepsError } from "./deps-read";
+import { createInboxCache, readInbox } from "./github-inbox";
 import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../lib/state/notes";
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
@@ -34,6 +35,7 @@ export function createApp(
   const gitStatusCache = createGitStatusCache();
   const githubCache = createGithubCache();
   const depsCache = createDepsCache();
+  const inboxCache = createInboxCache();
 
   app.get("/api/overview", (c) => {
     try {
@@ -192,6 +194,14 @@ export function createApp(
       }));
     } catch (err) {
       if (err instanceof GithubError) return c.json({ error: err.message }, err.status as 404);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get("/api/inbox", async (c) => {
+    try {
+      return c.json(await inboxCache.get("inbox", () => readInbox(repoRoot)));
+    } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }
   });

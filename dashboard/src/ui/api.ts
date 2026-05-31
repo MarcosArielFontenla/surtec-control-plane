@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { OverviewModel, RunRecord, ProjectCommands, RunEvent } from "../../../lib/state/types";
+import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox } from "../../../lib/state/types";
 import type { Note } from "../../../lib/state/notes";
 
 export async function fetchOverview(): Promise<OverviewModel> {
@@ -28,6 +28,12 @@ export function useOverview(intervalMs = 3000): { data: OverviewModel | null; er
   }, [intervalMs]);
 
   return { data, error };
+}
+
+export async function getInbox(): Promise<Inbox> {
+  const res = await fetch("/api/inbox");
+  if (!res.ok) throw new Error(`inbox failed: ${res.status}`);
+  return (await res.json()) as Inbox;
 }
 
 export interface DispatchOptions {
