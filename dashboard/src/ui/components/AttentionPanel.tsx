@@ -22,7 +22,7 @@ function verificationText(v: AttentionItem["verification"]): string {
   return "sin verificar";
 }
 
-export function AttentionPanel({ items }: { items: AttentionItem[] }) {
+export function AttentionPanel({ items, onOpenTask }: { items: AttentionItem[]; onOpenTask?: (id: string) => void }) {
   const [error, setError] = useState<string | null>(null);
 
   const decide = async (id: string, action: "approve" | "reject") => {
@@ -53,7 +53,9 @@ export function AttentionPanel({ items }: { items: AttentionItem[] }) {
             return (
               <div key={`${a.task_id}-${a.kind}-${a.title}`} className="attn-item">
                 <span className={`tag ${TAG_CLASS[a.kind]}`}>{LABEL[a.kind]}</span>
-                <span className="attn-id">{a.task_id}</span>
+                {onOpenTask
+                  ? <button type="button" className="task-link attn-id" onClick={() => onOpenTask(a.task_id)}>{a.task_id}</button>
+                  : <span className="attn-id">{a.task_id}</span>}
                 <span className="attn-text">{a.title}</span>
                 {isTask && <span className="badge-mini">{verificationText(a.verification)}</span>}
                 {isTask && (

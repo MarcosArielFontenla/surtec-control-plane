@@ -9,7 +9,7 @@ describe("Sidebar", () => {
   it("renders brand, nav items and the derived Resumen", () => {
     render(<Sidebar active="Overview" onSelect={() => {}} summary={summary} connected />);
     expect(screen.getByText("Surtec")).toBeInTheDocument();
-    for (const item of ["Overview", "Procesos", "Issues", "Actividad"]) {
+    for (const item of ["Hoy", "Overview", "Procesos", "Issues", "Actividad"]) {
       expect(screen.getByRole("button", { name: new RegExp(item) })).toBeInTheDocument();
     }
     expect(screen.getByText("14")).toBeInTheDocument();

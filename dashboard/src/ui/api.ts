@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth, RailwayStatus } from "../../../lib/state/types";
+import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth, RailwayStatus, TaskDetailModel, TodayModel } from "../../../lib/state/types";
 import type { Note } from "../../../lib/state/notes";
 
 let sessionTokenPromise: Promise<string> | null = null;
@@ -57,6 +57,40 @@ export function useOverview(intervalMs = 3000): { data: OverviewModel | null; er
   }, [intervalMs]);
 
   return { data, error };
+}
+
+export async function fetchToday(): Promise<TodayModel> {
+  const res = await fetch("/api/today");
+  if (!res.ok) throw new Error(`today failed: ${res.status}`);
+  return (await res.json()) as TodayModel;
+}
+
+export function useToday(intervalMs = 3000): { data: TodayModel | null; error: string | null } {
+  const [data, setData] = useState<TodayModel | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const tick = async () => {
+      try {
+        const next = await fetchToday();
+        if (active) { setData(next); setError(null); }
+      } catch (reason) {
+        if (active) setError((reason as Error).message);
+      }
+    };
+    void tick();
+    const handle = setInterval(tick, intervalMs);
+    return () => { active = false; clearInterval(handle); };
+  }, [intervalMs]);
+
+  return { data, error };
+}
+
+export async function fetchTaskDetail(id: string): Promise<TaskDetailModel> {
+  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/detail`);
+  if (!res.ok) throw new Error(`task detail failed: ${res.status}`);
+  return (await res.json()) as TaskDetailModel;
 }
 
 export async function getInbox(): Promise<Inbox> {

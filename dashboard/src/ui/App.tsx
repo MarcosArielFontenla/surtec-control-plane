@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useOverview } from "./api";
+import { useOverview, useToday } from "./api";
 import { Sidebar, type NavItem } from "./components/Sidebar";
 import { ProjectCard } from "./components/ProjectCard";
 import { AttentionPanel } from "./components/AttentionPanel";
@@ -9,13 +9,17 @@ import { InProgressColumn } from "./components/InProgressColumn";
 import { ProcesosView } from "./views/ProcesosView";
 import { IssuesView } from "./views/IssuesView";
 import { ActivityView } from "./views/ActivityView";
+import { TodayView } from "./views/TodayView";
+import { TaskDetailView } from "./views/TaskDetailView";
 import { useRuns } from "./useRuns";
 import { deriveKpis, deriveSummary } from "./derive-kpis";
 
 export function App() {
   const { data, error } = useOverview();
+  const today = useToday();
   const { runs } = useRuns();
-  const [nav, setNav] = useState<NavItem>("Overview");
+  const [nav, setNav] = useState<NavItem>("Hoy");
+  const [selectedTask, setSelectedTask] = useState<string | null>(null);
 
   const runningByProject = new Map<string, string[]>();
   for (const r of runs) {
@@ -26,28 +30,31 @@ export function App() {
 
   const summary = data ? deriveSummary(data) : { total: 0, configured: 0, unconfigured: 0, attention: 0 };
   const kpis = data ? deriveKpis(data, runs) : null;
-  const view: "Overview" | "Procesos" | "Issues" | "Actividad" =
-    nav === "Procesos" ? "Procesos" : nav === "Issues" ? "Issues" : nav === "Actividad" ? "Actividad" : "Overview";
+  const view: NavItem = nav;
 
   const activeProjectIds = data ? data.projects.filter((p) => p.configured).map((p) => p.id) : [];
   const gitProjectIds = data ? data.projects.filter((p) => p.git?.ok).map((p) => p.id) : [];
 
   return (
     <div className="app">
-      <Sidebar active={nav} onSelect={setNav} summary={summary} connected={!error} />
+      <Sidebar active={nav} onSelect={(item) => { setNav(item); setSelectedTask(null); }} summary={summary} connected={!error && !today.error} />
       <main className="main">
         <header className="topbar">
           <div className="topbar-left">
-            <h1>{view === "Procesos" ? "Procesos" : view === "Issues" ? "Issues" : view === "Actividad" ? "Actividad" : "Estado vivo"}</h1>
-            <span className="sub">{summary.total} repos · {data?.inProgress.length ?? 0} tareas activas</span>
+            <h1>{selectedTask ? "Detalle de tarea" : view === "Overview" ? "Estado vivo" : view}</h1>
+            <span className="sub">{selectedTask ?? `${summary.total} repos · ${data?.inProgress.length ?? 0} tareas activas`}</span>
           </div>
-          <span className={`live${error ? " live--down" : ""}`}>
-            <span className="dot" />{error ? "Sin conexión" : "En vivo"}
+          <span className={`live${error || today.error ? " live--down" : ""}`}>
+            <span className="dot" />{error || today.error ? "Sin conexión" : "En vivo"}
           </span>
         </header>
 
         <div className="wrap">
-          {view === "Procesos" ? (
+          {selectedTask ? (
+            <TaskDetailView taskId={selectedTask} onBack={() => setSelectedTask(null)} />
+          ) : view === "Hoy" ? (
+            <TodayView data={today.data} error={today.error} onOpenTask={setSelectedTask} />
+          ) : view === "Procesos" ? (
             <ProcesosView projectIds={activeProjectIds} />
           ) : view === "Issues" ? (
             <IssuesView />
@@ -67,10 +74,10 @@ export function App() {
                   <div className="two-col">
                     <div>
                       <div className="section-head"><h2>Necesita tu atención</h2><span className="meta">{data.attention.length} ítems</span></div>
-                      <AttentionPanel items={data.attention} />
+                      <AttentionPanel items={data.attention} onOpenTask={setSelectedTask} />
                     </div>
                     <div>
-                      <InProgressColumn inProgress={data.inProgress} history={data.history} />
+                      <InProgressColumn inProgress={data.inProgress} history={data.history} onOpenTask={setSelectedTask} />
                     </div>
                   </div>
                 </>

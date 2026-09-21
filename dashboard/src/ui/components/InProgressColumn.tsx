@@ -5,7 +5,7 @@ import { cancelTask, retryTask } from "../api";
 
 const ST: Record<string, string> = { completed: "completed", failed: "failed", cancelled: "failed" };
 
-export function InProgressColumn({ inProgress, history }: { inProgress: TaskView[]; history: TaskView[] }) {
+export function InProgressColumn({ inProgress, history, onOpenTask }: { inProgress: TaskView[]; history: TaskView[]; onOpenTask?: (id: string) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,7 +37,7 @@ export function InProgressColumn({ inProgress, history }: { inProgress: TaskView
         <div className="panel" style={{ padding: "6px 18px" }}>
           {inProgress.map((t) => (
             <div key={t.id} className="hist-row">
-              <span className="hid">{t.id}</span><span className="agent">{t.agent}</span>
+              <button type="button" className="task-link hid" onClick={() => onOpenTask?.(t.id)}>{t.id}</button><span className="agent">{t.agent}</span>
               <span className="htext">{t.title}</span>
               <span className="st">{t.outcome ?? t.lifecycle} · {t.attempts}/{t.max_attempts}</span>
               <button type="button" className="mini-cta outline" disabled={busy === t.id || t.cancel_requested_at !== null} onClick={() => control(t, "cancel")}>
@@ -52,7 +52,7 @@ export function InProgressColumn({ inProgress, history }: { inProgress: TaskView
           <span className="b-label">Historial reciente</span>
           {history.map((t) => (
             <div key={t.id} className="hist-row">
-              <span className="hid">{t.id}</span><span className="agent">{t.agent}</span>
+              <button type="button" className="task-link hid" onClick={() => onOpenTask?.(t.id)}>{t.id}</button><span className="agent">{t.agent}</span>
               <span className="htext">{t.title}</span>
               <span className={`st ${ST[t.outcome ?? ""] ?? ""}`}>{t.outcome ?? t.lifecycle}</span>
               {(t.outcome === "failed" || t.outcome === "cancelled") && t.attempts < t.max_attempts && (
