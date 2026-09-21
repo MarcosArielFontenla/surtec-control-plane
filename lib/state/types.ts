@@ -75,6 +75,7 @@ export interface TaskFailure {
   kind: TaskFailureKind;
   message: string;
   at: string;
+  run_id: string;
 }
 
 export interface TaskOrchestration {

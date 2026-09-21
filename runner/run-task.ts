@@ -154,7 +154,7 @@ export async function runTask(
       const at = new Date().toISOString();
       const orchestration = ensureTaskOrchestration(record);
       orchestration.lease = null;
-      orchestration.last_failure = failureKind && reason ? { kind: failureKind, message: reason, at } : null;
+      orchestration.last_failure = failureKind && reason ? { kind: failureKind, message: reason, at, run_id: runId } : null;
       record.lifecycle = "finished";
       record.finished_at = at;
       record.outcome = outcome;

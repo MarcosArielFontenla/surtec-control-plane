@@ -50,11 +50,12 @@
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["kind", "message", "at"],
+              "required": ["kind", "message", "at", "run_id"],
               "properties": {
                 "kind": { "type": "string", "enum": ["transient", "terminal", "cancelled", "budget"] },
                 "message": { "type": "string" },
-                "at": { "type": "string", "minLength": 1 }
+                "at": { "type": "string", "minLength": 1 },
+                "run_id": { "type": "string", "minLength": 1 }
               }
             },
             { "type": "null" }
