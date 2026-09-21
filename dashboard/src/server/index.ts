@@ -117,7 +117,7 @@ export function createApp(
 
   app.post("/api/tasks/:id/reject", (c) => {
     try {
-      return c.json({ decision: rejectTask(c.req.param("id")) });
+      return c.json({ decision: rejectTask(c.req.param("id"), repoRoot) });
     } catch (err) {
       // TaskNotFoundError extends ReviewError — check the subclass first (404 vs 400).
       if (err instanceof TaskNotFoundError) return c.json({ error: err.message }, 404);

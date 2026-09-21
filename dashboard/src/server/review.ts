@@ -2,8 +2,8 @@ import type { ReviewDecision, TaskRecord } from "../../../lib/state/types";
 import { readTask, writeTask } from "../../../lib/state/store";
 import { expandHome } from "../../../lib/expand-home";
 import { pushBranch, removeWorktree } from "../../../runner/worktree";
-import { loadRegistryProjects } from "./registry";
 import { ensurePullRequest, buildPrBody } from "../../../runner/github";
+import { PolicyService } from "../../../lib/policy/service";
 
 export class ReviewError extends Error {}
 export class TaskNotFoundError extends ReviewError {}
@@ -28,15 +28,22 @@ function persistDecision(rec: TaskRecord, decision: ReviewDecision): ReviewDecis
   return decision;
 }
 
-function beginDecision(taskId: string, action: ReviewAction): { rec: TaskRecord; done: boolean } {
+function beginDecision(taskId: string, action: ReviewAction, repoRoot: string): { rec: TaskRecord; done: boolean; defaultBranch: string } {
   const rec = readTask(taskId);
   if (!rec) throw new TaskNotFoundError(`task not found: ${taskId}`);
   if (rec.lifecycle !== "finished") throw new ReviewError(`task ${taskId} is not finished`);
   const pending = action === "approve" ? "approving" : "rejecting";
   const complete = action === "approve" ? "approved" : "rejected";
-  if (rec.decision?.status === complete) return { rec, done: true };
+  if (rec.decision?.status === complete) return { rec, done: true, defaultBranch: "main" };
   if (rec.decision && rec.decision.status !== pending) {
     throw new ReviewError(`task ${taskId} is already ${rec.decision.status}`);
+  }
+
+  let defaultBranch: string;
+  try {
+    defaultBranch = new PolicyService(repoRoot).authorizeTask(rec.envelope).project.default_branch ?? "main";
+  } catch (error) {
+    throw new ReviewError(`review denied by current policy: ${(error as Error).message}`);
   }
 
   const now = new Date().toISOString();
@@ -46,20 +53,11 @@ function beginDecision(taskId: string, action: ReviewAction): { rec: TaskRecord;
     : { status: pending, at: now, attempts: 1 };
   delete decision.error;
   persistDecision(rec, decision);
-  return { rec, done: false };
-}
-
-function defaultBranchFor(repoRoot: string, project: string): string {
-  try {
-    const p = loadRegistryProjects(repoRoot).find((x) => x.id === project);
-    return p?.default_branch ?? "main";
-  } catch {
-    return "main";
-  }
+  return { rec, done: false, defaultBranch };
 }
 
 export function approveTask(taskId: string, repoRoot: string = process.cwd()): ReviewDecision {
-  const { rec, done } = beginDecision(taskId, "approve");
+  const { rec, done, defaultBranch } = beginDecision(taskId, "approve", repoRoot);
   if (done) return rec.decision!;
   const decision = rec.decision!;
   const { branch, committed } = runInfo(rec);
@@ -82,8 +80,7 @@ export function approveTask(taskId: string, repoRoot: string = process.cwd()): R
     }
 
     if (!decision.pr_url) {
-      const base = defaultBranchFor(repoRoot, rec.envelope.project);
-      const pr = ensurePullRequest(repoPath, branch, base, rec.envelope.title, buildPrBody(rec.envelope, rec.result));
+      const pr = ensurePullRequest(repoPath, branch, defaultBranch, rec.envelope.title, buildPrBody(rec.envelope, rec.result));
       if (!pr.url) {
         decision.error = pr.error;
         decision.at = new Date().toISOString();
@@ -102,8 +99,8 @@ export function approveTask(taskId: string, repoRoot: string = process.cwd()): R
   return persistDecision(rec, decision);
 }
 
-export function rejectTask(taskId: string): ReviewDecision {
-  const { rec, done } = beginDecision(taskId, "reject");
+export function rejectTask(taskId: string, repoRoot: string = process.cwd()): ReviewDecision {
+  const { rec, done } = beginDecision(taskId, "reject", repoRoot);
   if (done) return rec.decision!;
   const decision = rec.decision!;
   const { branch, worktreePath } = runInfo(rec);

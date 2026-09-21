@@ -170,10 +170,11 @@ describe("api", () => {
   });
 
   function writeFinishedReadOnly(id: string): void {
+    const repoPath = join(root, "projects", "stock-control");
     const task = {
       envelope: {
         id, source: "dashboard", project: "stock-control", task_type: "analysis",
-        agent: "backend-engineer", title: "Look", instructions: "x", repo_path: "~/dev",
+        agent: "backend-engineer", title: "Look", instructions: "x", repo_path: repoPath,
         branch: `agent/${id}`, sandbox: "read-only", expected_outputs: [],
         requires_human_approval: true, metadata: {},
       },
