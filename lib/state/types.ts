@@ -171,6 +171,10 @@ export interface TaskView {
   updated_at: string;
   finished_at: string | null;
   requires_human_approval: boolean;
+  attempts: number;
+  max_attempts: number;
+  retry_at: string | null;
+  cancel_requested_at: string | null;
 }
 
 export interface AttentionItem {

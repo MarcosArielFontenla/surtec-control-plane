@@ -2,6 +2,7 @@ import type {
   TaskRecord, ProjectStatusOverride, OverviewModel, ProjectView, TaskView, AttentionItem,
 } from "./types";
 import type { PortfolioProject } from "../portfolio";
+import { defaultTaskOrchestration } from "./orchestration";
 
 export interface RegistryProject {
   id: string;
@@ -15,6 +16,7 @@ export interface RegistryProject {
 }
 
 function toTaskView(t: TaskRecord): TaskView {
+  const orchestration = t.orchestration ?? defaultTaskOrchestration();
   return {
     id: t.envelope.id,
     project: t.envelope.project,
@@ -25,6 +27,10 @@ function toTaskView(t: TaskRecord): TaskView {
     updated_at: t.updated_at,
     finished_at: t.finished_at,
     requires_human_approval: t.envelope.requires_human_approval,
+    attempts: orchestration.attempts,
+    max_attempts: orchestration.max_attempts,
+    retry_at: orchestration.retry_at,
+    cancel_requested_at: orchestration.cancel_requested_at,
   };
 }
 
@@ -77,7 +83,7 @@ export function buildOverview(
     const verification = t.result?.verification?.status ?? null;
     if (t.lifecycle === "finished" && t.outcome === "needs-review") {
       attention.push({ kind: "needs-review", task_id: t.envelope.id, project: t.envelope.project, title: t.envelope.title, verification });
-    } else if (t.lifecycle === "finished" && t.envelope.requires_human_approval) {
+    } else if (t.lifecycle === "finished" && (t.outcome === "completed" || t.outcome === "partial") && t.envelope.requires_human_approval) {
       attention.push({ kind: "awaiting-approval", task_id: t.envelope.id, project: t.envelope.project, title: t.envelope.title, verification });
     }
     if (t.result) {

@@ -15,6 +15,7 @@ const overview: OverviewModel = {
     id: "STK-002", project: "stock-control", agent: "qa-reviewer",
     title: "Regression pass", lifecycle: "running", outcome: null,
     updated_at: "2026-05-28T11:15:00Z", finished_at: null, requires_human_approval: false,
+    attempts: 1, max_attempts: 3, retry_at: null, cancel_requested_at: null,
   }],
   history: [],
   attention: [{ kind: "risk", task_id: "STK-001", project: "stock-control", title: "No rate limiting" }],

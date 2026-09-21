@@ -3,8 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskRecord } from "../lib/state/types";
-import { writeTask, readTask } from "../lib/state/store";
-import { reconcileOrphanWorktrees, reconcileRunning } from "./reconcile";
+import { reconcileOrphanWorktrees } from "./reconcile";
 
 function record(id: string, lifecycle: TaskRecord["lifecycle"]): TaskRecord {
   return {
@@ -26,22 +25,6 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.SURTEC_STATE_DIR;
   rmSync(root, { recursive: true, force: true });
-});
-
-describe("reconcileRunning", () => {
-  it("marks orphaned running tasks as finished/failed and leaves others alone", () => {
-    writeTask(record("R-1", "running"));
-    writeTask(record("Q-1", "queued"));
-
-    const n = reconcileRunning();
-
-    expect(n).toBe(1);
-    const r = readTask("R-1")!;
-    expect(r.lifecycle).toBe("finished");
-    expect(r.outcome).toBe("failed");
-    expect(r.result?.blockers[0]).toContain("interrupted");
-    expect(readTask("Q-1")!.lifecycle).toBe("queued");
-  });
 });
 
 describe("reconcileOrphanWorktrees", () => {

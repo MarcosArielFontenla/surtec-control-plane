@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { dirname } from "node:path";
 import { listTasks, listProjectOverrides, readTask } from "../../../lib/state/store";
+import { readTaskEvents } from "../../../lib/state/events";
 import { buildOverview } from "../../../lib/state/derive";
 import { loadRegistryProjects } from "./registry";
 import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
@@ -20,22 +21,20 @@ import { createActivityCache, buildActivityFeed } from "./activity-read";
 import { createDeployCache, readDeployHealth, resolveDeployUrl, DeployError } from "./deploy-read";
 import { createRailwayCache, readRailwayDeploy, resolveRailway, RailwayError } from "./railway-read";
 import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../lib/state/notes";
-import { runTask } from "../../../runner/run-task";
+import { TaskControlError, type TaskControl } from "../../../runner/task-orchestrator";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
 import { createHttpSecurity, type HttpSecurity } from "./http-security";
 
 export function createApp(
   repoRoot: string = process.cwd(),
-  onTaskCreated: (id: string) => void = (id) => {
-    runTask(id, repoRoot).catch((err: unknown) => {
-      console.error(`runTask failed unexpectedly for ${id}:`, err);
-    });
-  },
+  taskDispatch: ((id: string) => void) | TaskControl = () => {},
   pm: ProcessManager = processManager,
   httpSecurity: HttpSecurity = createHttpSecurity(),
 ): Hono {
   const app = new Hono();
+  const taskControl = typeof taskDispatch === "function" ? null : taskDispatch;
+  const onTaskCreated = typeof taskDispatch === "function" ? taskDispatch : (id: string) => taskDispatch.enqueue(id);
 
   app.use("/api/*", httpSecurity.middleware);
   app.get("/api/session", (c) => {
@@ -72,6 +71,16 @@ export function createApp(
     return c.json(rec);
   });
 
+  app.get("/api/tasks/:id/events", (c) => {
+    try {
+      const id = c.req.param("id");
+      if (!readTask(id)) return c.json({ error: "not found" }, 404);
+      return c.json({ events: readTaskEvents(id) });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 400);
+    }
+  });
+
   app.get("/api/dispatch-options", (c) => {
     try {
       const projects = loadRegistryProjects(repoRoot).map((p) => ({
@@ -100,6 +109,26 @@ export function createApp(
       return c.json({ id }, 201);
     } catch (err) {
       if (err instanceof ValidationError) return c.json({ error: err.message }, 400);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/tasks/:id/cancel", (c) => {
+    if (!taskControl) return c.json({ error: "task worker is unavailable" }, 503);
+    try {
+      return c.json({ task: taskControl.cancel(c.req.param("id")) });
+    } catch (err) {
+      if (err instanceof TaskControlError) return c.json({ error: err.message }, err.status);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.post("/api/tasks/:id/retry", (c) => {
+    if (!taskControl) return c.json({ error: "task worker is unavailable" }, 503);
+    try {
+      return c.json({ task: taskControl.retry(c.req.param("id")) });
+    } catch (err) {
+      if (err instanceof TaskControlError) return c.json({ error: err.message }, err.status);
       return c.json({ error: (err as Error).message }, 500);
     }
   });

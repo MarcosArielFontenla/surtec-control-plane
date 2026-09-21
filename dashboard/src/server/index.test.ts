@@ -7,6 +7,9 @@ import { createApp } from "./index";
 import { readTask } from "../../../lib/state/store";
 import type { ProcessManager } from "../../../runner/process-manager";
 import type { RunRecord } from "../../../lib/state/types";
+import { appendTaskEvent } from "../../../lib/state/events";
+import type { TaskControl } from "../../../runner/task-orchestrator";
+import { TaskControlError } from "../../../runner/task-orchestrator";
 
 async function apiRequest(app: ReturnType<typeof createApp>, path: string, init?: RequestInit): Promise<Response> {
   const method = (init?.method ?? "GET").toUpperCase();
@@ -27,6 +30,15 @@ function fakeManager(over: Partial<ProcessManager> = {}): ProcessManager {
     subscribe: vi.fn().mockReturnValue(() => {}),
     ...over,
   } as ProcessManager;
+}
+
+function fakeTaskControl(over: Partial<TaskControl> = {}): TaskControl {
+  return {
+    enqueue: vi.fn(),
+    cancel: vi.fn().mockImplementation(() => readTask("STK-1")!),
+    retry: vi.fn().mockImplementation(() => readTask("STK-1")!),
+    ...over,
+  };
 }
 
 let root: string;
@@ -127,6 +139,14 @@ describe("api", () => {
     expect(res.status).toBe(404);
   });
 
+  it("GET /api/tasks/:id/events returns the append-only stream", async () => {
+    appendTaskEvent({ task_id: "STK-1", type: "warning", revision: 1, payload: { message: "check" } });
+    const app = createApp(root);
+    const res = await app.request("/api/tasks/STK-1/events");
+    expect(res.status).toBe(200);
+    expect((await res.json()).events).toMatchObject([{ task_id: "STK-1", type: "warning" }]);
+  });
+
   it("GET /api/dispatch-options returns projects with their allowed agents", async () => {
     const app = createApp(root, () => {});
     const res = await app.request("/api/dispatch-options");
@@ -167,6 +187,28 @@ describe("api", () => {
       body: "{ not json",
     });
     expect(res.status).toBe(400);
+  });
+
+  it("POST /api/tasks/:id/cancel delegates to the durable worker control", async () => {
+    const cancel = vi.fn().mockImplementation(() => readTask("STK-1")!);
+    const app = createApp(root, fakeTaskControl({ cancel }));
+    const res = await apiRequest(app, "/api/tasks/STK-1/cancel", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(cancel).toHaveBeenCalledWith("STK-1");
+  });
+
+  it("POST /api/tasks/:id/retry maps task conflicts to 409", async () => {
+    const retry = vi.fn().mockImplementation(() => { throw new TaskControlError("budget exhausted", 409); });
+    const app = createApp(root, fakeTaskControl({ retry }));
+    const res = await apiRequest(app, "/api/tasks/STK-1/retry", { method: "POST" });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "budget exhausted" });
+  });
+
+  it("task control mutations fail closed when no worker was injected", async () => {
+    const app = createApp(root, () => {});
+    const res = await apiRequest(app, "/api/tasks/STK-1/cancel", { method: "POST" });
+    expect(res.status).toBe(503);
   });
 
   function writeFinishedReadOnly(id: string): void {

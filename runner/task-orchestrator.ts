@@ -83,8 +83,8 @@ export class TaskOrchestrator implements TaskControl {
     if (this.poller) return;
     this.stopped = false;
     this.recoverExpiredLeases();
-    void this.runOnce();
-    this.poller = setInterval(() => { void this.runOnce(); }, this.pollMs);
+    this.requestTick();
+    this.poller = setInterval(() => this.requestTick(), this.pollMs);
     this.poller.unref?.();
   }
 
@@ -98,7 +98,7 @@ export class TaskOrchestrator implements TaskControl {
   }
 
   enqueue(_taskId: string): void {
-    if (!this.stopped) void this.runOnce();
+    if (!this.stopped) this.requestTick();
   }
 
   cancel(taskId: string): TaskRecord {
@@ -228,6 +228,7 @@ export class TaskOrchestrator implements TaskControl {
       try {
         return withStateLock("orchestrator-schedule", () => {
           this.recoverExpiredLeases();
+          this.schedulePendingRetries();
           const now = this.now();
           const snapshots = listTasks();
           const running = snapshots.filter((record) => isLeaseCurrent(record, now.getTime()));
@@ -303,16 +304,21 @@ export class TaskOrchestrator implements TaskControl {
     heartbeat.unref?.();
     const promise = this.runAttempt(taskId, { signal: controller.signal, runId, workerId: this.workerId })
       .then((completion) => {
-        if (completion?.retryable && !completion.stale) this.scheduleRetry(taskId, runId, completion.reason ?? "transient execution failure");
+        if (completion?.retryable && !completion.stale) this.tryScheduleRetry(taskId, runId, completion.reason ?? "transient execution failure");
       })
       .catch((error: unknown) => {
-        this.finalizeUnexpectedFailure(taskId, runId, (error as Error)?.message ?? "unexpected worker failure");
-        this.scheduleRetry(taskId, runId, (error as Error)?.message ?? "unexpected worker failure");
+        const reason = (error as Error)?.message ?? "unexpected worker failure";
+        try {
+          this.finalizeUnexpectedFailure(taskId, runId, reason);
+          this.tryScheduleRetry(taskId, runId, reason);
+        } catch (finalizeError) {
+          console.error(`[orchestrator] failed to finalize ${taskId}:`, finalizeError);
+        }
       })
       .finally(() => {
         clearInterval(heartbeat);
         this.active.delete(taskId);
-        if (!this.stopped) void this.runOnce();
+        if (!this.stopped) this.requestTick();
       });
     this.active.set(taskId, { runId, controller, heartbeat, promise });
   }
@@ -332,7 +338,7 @@ export class TaskOrchestrator implements TaskControl {
         stillOwned = true;
       });
     } catch (error) {
-      if (!(error instanceof StateLockConflictError)) throw error;
+      if (!(error instanceof StateLockConflictError)) console.error(`[orchestrator] heartbeat failed for ${taskId}:`, error);
       return;
     }
     if ((!stillOwned || cancelRequested) && !controller.signal.aborted) {
@@ -380,5 +386,27 @@ export class TaskOrchestrator implements TaskControl {
       scheduled = true;
     });
     if (updated && scheduled) appendTaskEvent({ task_id: taskId, type: "retry-scheduled", revision: updated.revision!, run_id: runId, attempt: updated.orchestration!.attempts, payload: { retry_at: retryAt, reason }, at: now.toISOString() });
+  }
+
+  private tryScheduleRetry(taskId: string, runId: string, reason: string): void {
+    try {
+      this.scheduleRetry(taskId, runId, reason);
+    } catch (error) {
+      if (!(error instanceof StateLockConflictError)) console.error(`[orchestrator] failed to schedule retry for ${taskId}:`, error);
+    }
+  }
+
+  private schedulePendingRetries(): void {
+    for (const record of listTasks()) {
+      const failure = record.orchestration?.last_failure;
+      if (record.lifecycle !== "finished" || record.outcome !== "failed" || failure?.kind !== "transient") continue;
+      this.scheduleRetry(record.envelope.id, failure.run_id, failure.message);
+    }
+  }
+
+  private requestTick(): void {
+    void this.runOnce().catch((error: unknown) => {
+      console.error("[orchestrator] scheduler tick failed:", error);
+    });
   }
 }

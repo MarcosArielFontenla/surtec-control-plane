@@ -129,6 +129,22 @@ export function rejectTask(id: string): Promise<{ decision: unknown }> {
   return decide(id, "reject");
 }
 
+async function controlTask(id: string, action: "cancel" | "retry"): Promise<void> {
+  const res = await mutate(`/api/tasks/${encodeURIComponent(id)}/${action}`);
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `${action} failed: ${res.status}`);
+  }
+}
+
+export function cancelTask(id: string): Promise<void> {
+  return controlTask(id, "cancel");
+}
+
+export function retryTask(id: string): Promise<void> {
+  return controlTask(id, "retry");
+}
+
 export async function openProject(id: string, target: "vscode" | "folder"): Promise<void> {
   const res = await mutate(`/api/projects/${encodeURIComponent(id)}/open`, {
     method: "POST",

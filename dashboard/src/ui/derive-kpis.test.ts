@@ -36,7 +36,7 @@ describe("deriveKpis", () => {
         proj("b", true, { dirty: true, uncommitted: 3 }),
         proj("c", false, null),
       ],
-      inProgress: [{ id: "T9", project: "a", agent: "x", title: "t", lifecycle: "running", outcome: null, updated_at: "", finished_at: null, requires_human_approval: false }],
+      inProgress: [{ id: "T9", project: "a", agent: "x", title: "t", lifecycle: "running", outcome: null, updated_at: "", finished_at: null, requires_human_approval: false, attempts: 1, max_attempts: 3, retry_at: null, cancel_requested_at: null }],
       attention: [
         { kind: "awaiting-approval", task_id: "T1", project: "a", title: "x" },
         { kind: "risk", task_id: "T2", project: "b", title: "y" },

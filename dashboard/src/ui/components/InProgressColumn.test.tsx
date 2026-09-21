@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { InProgressColumn } from "./InProgressColumn";
 import type { TaskView } from "../../../../lib/state/types";
+import { cancelTask, retryTask } from "../api";
+
+vi.mock("../api", () => ({ cancelTask: vi.fn(), retryTask: vi.fn() }));
 
 const task = (id: string, outcome: TaskView["outcome"]): TaskView => ({
   id, project: "p", agent: "backend-engineer", title: `title ${id}`, lifecycle: "finished", outcome, updated_at: "", finished_at: null, requires_human_approval: false,
+  attempts: 1, max_attempts: 3, retry_at: null, cancel_requested_at: null,
 });
 
 describe("InProgressColumn", () => {
@@ -19,5 +23,20 @@ describe("InProgressColumn", () => {
     expect(screen.getByText("Historial reciente")).toBeInTheDocument();
     expect(screen.getByText("completed")).toBeInTheDocument();
     expect(screen.getByText("failed")).toBeInTheDocument();
+  });
+
+  it("offers cancellation for active work and retry for eligible failures", async () => {
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+    vi.mocked(cancelTask).mockResolvedValue();
+    vi.mocked(retryTask).mockResolvedValue();
+    const active = { ...task("T9", null), lifecycle: "running" as const };
+
+    render(<InProgressColumn inProgress={[active]} history={[task("T2", "failed")]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
+
+    await waitFor(() => expect(cancelTask).toHaveBeenCalledWith("T9"));
+    await waitFor(() => expect(retryTask).toHaveBeenCalledWith("T2"));
+    vi.unstubAllGlobals();
   });
 });
