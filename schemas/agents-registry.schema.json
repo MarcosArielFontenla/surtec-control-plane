@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/agents-registry.schema.json",
+  "title": "AgentsRegistry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agents"],
+  "properties": {
+    "agents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "type", "description", "default_sandbox", "allowed_task_types", "requires_human_approval_for"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "type": { "type": "string", "minLength": 1, "maxLength": 60 },
+          "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "default_sandbox": { "type": "string", "enum": ["read-only", "workspace-write"] },
+          "allowed_task_types": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" }
+          },
+          "requires_human_approval_for": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" }
+          }
+        }
+      }
+    }
+  }
+}
+
