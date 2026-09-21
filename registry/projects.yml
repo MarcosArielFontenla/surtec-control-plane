@@ -1,7 +1,7 @@
 # Surtec Control Plane — project registry (config overlay)
 #
 # Discovery drives the project LIST (real git repos under SURTEC_PROJECTS_ROOT,
-# default E:\product-projects). This file OVERLAYS config by folder name: repo,
+# default: this repository's parent directory). This file OVERLAYS config by folder name: repo,
 # default_branch, allowed_agents, sandbox, commands. A discovered project with no
 # entry here is shown but "sin configurar" (not dispatchable).
 #

@@ -1,9 +1,18 @@
 import { createInterface, type Interface as ReadLineInterface } from "node:readline";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { AgentEvent, AgentEventSink, AgentRunInput, AgentRunResult, AgentUsage } from "./agent-executor";
 import type { ServerNotification } from "./generated/codex-app-server/ServerNotification";
+import type { InitializeParams } from "./generated/codex-app-server/InitializeParams";
+import type { JsonValue } from "./generated/codex-app-server/serde_json/JsonValue";
+import type { SandboxMode } from "./generated/codex-app-server/v2/SandboxMode";
+import type { SandboxPolicy } from "./generated/codex-app-server/v2/SandboxPolicy";
+import type { ThreadResumeParams } from "./generated/codex-app-server/v2/ThreadResumeParams";
 import type { ThreadStartResponse } from "./generated/codex-app-server/v2/ThreadStartResponse";
+import type { ThreadStartParams } from "./generated/codex-app-server/v2/ThreadStartParams";
 import type { ThreadResumeResponse } from "./generated/codex-app-server/v2/ThreadResumeResponse";
+import type { TurnInterruptParams } from "./generated/codex-app-server/v2/TurnInterruptParams";
+import type { TurnStartParams } from "./generated/codex-app-server/v2/TurnStartParams";
 import type { TurnStartResponse } from "./generated/codex-app-server/v2/TurnStartResponse";
 import type { TurnCompletedNotification } from "./generated/codex-app-server/v2/TurnCompletedNotification";
 
@@ -47,6 +56,11 @@ function abortError(message = "agent turn interrupted"): Error {
   return error;
 }
 
+function isWithin(root: string, candidate: string): boolean {
+  const relation = relative(resolve(root), resolve(candidate));
+  return relation === "" || (!relation.startsWith("..") && !isAbsolute(relation));
+}
+
 function redactSecrets(text: string): string {
   return text
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
@@ -72,11 +86,11 @@ function itemStatus(item: JsonObject): string | undefined {
   return typeof item.status === "string" ? item.status : undefined;
 }
 
-function sandboxMode(mode: AgentRunInput["mode"]): "read-only" | "workspace-write" {
+function sandboxMode(mode: AgentRunInput["mode"]): SandboxMode {
   return mode === "read-only" ? "read-only" : "workspace-write";
 }
 
-function sandboxPolicy(input: AgentRunInput): Record<string, unknown> {
+function sandboxPolicy(input: AgentRunInput): SandboxPolicy {
   if (input.mode === "read-only") return { type: "readOnly", networkAccess: false };
   return {
     type: "workspaceWrite",
@@ -130,7 +144,8 @@ export class CodexAppServerClient {
 
     const onAbort = () => {
       if (activeThreadId && activeTurnId) {
-        void this.request("turn/interrupt", { threadId: activeThreadId, turnId: activeTurnId }).catch(() => {});
+        const params: TurnInterruptParams = { threadId: activeThreadId, turnId: activeTurnId };
+        void this.request("turn/interrupt", params).catch(() => {});
       } else {
         this.fail(abortError());
       }
@@ -144,13 +159,14 @@ export class CodexAppServerClient {
     signal.addEventListener("abort", onAbort, { once: true });
 
     try {
-      await this.request("initialize", {
+      const initializeParams: InitializeParams = {
         clientInfo: { name: "surtec_control_plane", title: "Surtec Control Plane", version: "0.1.0" },
         capabilities: null,
-      });
+      };
+      await this.request("initialize", initializeParams);
       this.notify("initialized", {});
 
-      const common = {
+      const common: Pick<ThreadStartParams, "cwd" | "approvalPolicy" | "approvalsReviewer" | "model" | "developerInstructions" | "config"> = {
         cwd: input.cwd,
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
@@ -163,25 +179,25 @@ export class CodexAppServerClient {
       };
 
       const threadResponse = input.threadId
-        ? await this.request<ThreadResumeResponse>("thread/resume", { threadId: input.threadId, sandbox: sandboxMode(input.mode), ...common })
+        ? await this.request<ThreadResumeResponse>("thread/resume", { threadId: input.threadId, sandbox: sandboxMode(input.mode), ...common } satisfies ThreadResumeParams)
         : await this.request<ThreadStartResponse>("thread/start", {
             sandbox: sandboxMode(input.mode),
             serviceName: "surtec_control_plane",
             ephemeral: false,
             ...common,
-          });
+          } satisfies ThreadStartParams);
 
       activeThreadId = threadResponse.thread.id;
       await this.emit({ type: "thread-started", at: new Date().toISOString(), threadId: activeThreadId });
 
-      const turnParams: Record<string, unknown> = {
+      const turnParams: TurnStartParams = {
         threadId: activeThreadId,
-        input: [{ type: "text", text: input.prompt }],
+        input: [{ type: "text", text: input.prompt, text_elements: [] }],
         cwd: input.cwd,
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
         sandboxPolicy: sandboxPolicy(input),
-        outputSchema: input.outputSchema,
+        outputSchema: input.outputSchema as JsonValue,
       };
       if (input.model) turnParams.model = input.model;
       if (input.reasoningEffort) turnParams.effort = input.reasoningEffort;
@@ -287,14 +303,18 @@ export class CodexAppServerClient {
     const turnId = stringField(params, "turnId") ?? "";
     if (method === "item/commandExecution/requestApproval") {
       const command = stringField(params, "command") ?? "";
+      const commandCwd = stringField(params, "cwd");
       const allowed = this.input?.mode === "workspace-write-verify"
+        && (!commandCwd || isWithin(this.input.cwd, commandCwd))
         && (this.input.verifyCommands ?? []).some((candidate) => candidate.trim() === command.trim());
       await this.emit({ type: "approval", at: new Date().toISOString(), threadId, turnId, approval: "command", allowed, command });
       this.write({ id, result: { decision: allowed ? "accept" : "decline" } });
       return;
     }
     if (method === "item/fileChange/requestApproval") {
-      const allowed = this.input?.mode !== "read-only";
+      const grantRoot = stringField(params, "grantRoot");
+      const allowed = this.input?.mode !== "read-only"
+        && (!grantRoot || (this.input ? isWithin(this.input.cwd, grantRoot) : false));
       await this.emit({ type: "approval", at: new Date().toISOString(), threadId, turnId, approval: "file-change", allowed });
       this.write({ id, result: { decision: allowed ? "accept" : "decline" } });
       return;

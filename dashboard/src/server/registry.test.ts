@@ -54,4 +54,16 @@ describe("loadRegistryProjects", () => {
       },
     ]);
   });
+
+  it("prefers the discovered machine-local path over a stale configured path", () => {
+    const projectsRoot = join(root, "projects");
+    const discovered = join(projectsRoot, "stock-control");
+    mkdirSync(join(discovered, ".git"), { recursive: true });
+    process.env.SURTEC_PROJECTS_ROOT = projectsRoot;
+    try {
+      expect(loadRegistryProjects(root)[0].repo_path).toBe(discovered);
+    } finally {
+      delete process.env.SURTEC_PROJECTS_ROOT;
+    }
+  });
 });

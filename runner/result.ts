@@ -1,5 +1,17 @@
 import type { AgentResult, TaskEnvelope, VerificationReport } from "../lib/state/types";
+import Ajv2020 from "ajv/dist/2020.js";
+import agentResultSchema from "../schemas/agent-result.schema.json";
 import { validateAgentReport } from "./agent-report";
+
+const validateResult = new Ajv2020({ allErrors: true, allowUnionTypes: true }).compile(agentResultSchema);
+
+export function assertAgentResult(value: unknown): AgentResult {
+  if (!validateResult(value)) {
+    const detail = validateResult.errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ") || "unknown validation error";
+    throw new Error(`AgentResult schema validation failed: ${detail}`);
+  }
+  return value as unknown as AgentResult;
+}
 
 export function toAgentResult(
   envelope: TaskEnvelope,
@@ -11,7 +23,7 @@ export function toAgentResult(
 ): AgentResult {
   const validated = validateAgentReport(structuredOutput);
   if (!validated.ok) {
-    return {
+    return assertAgentResult({
       task_id: envelope.id,
       agent: envelope.agent,
       status: "needs-review",
@@ -25,10 +37,10 @@ export function toAgentResult(
       artifacts: [],
       logs_path: logsPath,
       verification,
-    };
+    });
   }
   const report = validated.report;
-  return {
+  return assertAgentResult({
     task_id: envelope.id,
     agent: envelope.agent,
     status: report.status,
@@ -42,11 +54,11 @@ export function toAgentResult(
     artifacts: report.artifacts,
     logs_path: logsPath,
     verification,
-  };
+  });
 }
 
 export function failureResult(envelope: TaskEnvelope, reason: string, logsPath: string): AgentResult {
-  return {
+  return assertAgentResult({
     task_id: envelope.id,
     agent: envelope.agent,
     status: "failed",
@@ -60,5 +72,5 @@ export function failureResult(envelope: TaskEnvelope, reason: string, logsPath: 
     artifacts: [],
     logs_path: logsPath,
     verification: null,
-  };
+  });
 }

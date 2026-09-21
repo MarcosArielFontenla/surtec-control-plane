@@ -4,6 +4,8 @@
 
 Replace the execution runtime, restore dispatch, add structured result validation, normalize events and usage, establish current documentation, and remove obsolete runtime references.
 
+Status: complete on 2026-09-21. See [Phase 0 verification](phase-0-verification.md) for command evidence and the one environment-limited optional smoke.
+
 ## Phase 1 — Security, policy, and reliable review
 
 Create one typed policy service, validate every trust boundary, isolate subprocess environments, add path containment and identifier checks, bind to loopback, protect mutations, make review effects retryable, reconcile orphan worktrees, add secret scanning, and add CI.
@@ -27,4 +29,3 @@ Narrowly evolve source-control, CI, deployment, and observability integrations w
 ## Phase 6 — Optional collaborative workspace
 
 Only with explicit authorization, add structured role artifacts, comments, traceability, authentication, and multi-user isolation.
-

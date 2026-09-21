@@ -41,5 +41,4 @@
 
 ## Deferred controls
 
-Phase 1 owns canonical policy enforcement, complete runtime schema validation, strict identifier and path containment, subprocess environment allowlists, redaction, loopback/session/origin protections, idempotent review effects, orphan reconciliation, secret scanning, and CI.
-
+Phase 1 owns canonical policy enforcement, complete validation at every persisted boundary, strict identifier and path containment, environment allowlists for non-agent subprocesses, centralized redaction, loopback/session/origin protections, idempotent review effects, orphan reconciliation, secret scanning, and CI.

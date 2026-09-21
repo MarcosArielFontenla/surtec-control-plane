@@ -1,69 +1,87 @@
 # Surtec Control Plane
 
-A **personal portfolio control plane**: one local dashboard to see the live status of, and orchestrate,
-my bespoke git projects from a single place — instead of opening each one by hand in the CLI / VS Code.
-
-It is intentionally **not** a product repository: real applications live in their own repos under a
-projects root (default: this repo's parent folder). This repository is only the control plane.
+Surtec Control Plane is a local dashboard for discovering, observing, and safely operating a portfolio of sibling Git repositories. Product code stays in its own repositories; this repository contains only the control plane.
 
 ## Stack
 
-- **UI:** Vite + React 18 (`dashboard/src/ui`).
-- **API:** Hono + `@hono/node-server` (`dashboard/src/server`), on `:4317`.
-- **Task runner:** the **Claude Agent SDK** (`runner/`) — execution is Claude-only.
-- **State:** a file-first store under `state/` (gitignored).
-- **Tests:** Vitest + Testing Library (jsdom). **Package manager:** pnpm.
+- React 18 and Vite in `dashboard/src/ui`
+- Hono and `@hono/node-server` in `dashboard/src/server`
+- Codex App Server over local JSONL/JSON-RPC in `runner`
+- File-first task state under the ignored `state/` directory
+- Vitest and Testing Library
+- pnpm
 
-```bash
-pnpm install
-pnpm state seed     # load example data into state/ (optional)
-pnpm dev            # UI on http://localhost:5173 (API on :4317; /api proxied)
+## Local development
+
+```text
+pnpm install --frozen-lockfile
+pnpm state seed
+pnpm dev
 ```
 
-Production-style run: `pnpm build && pnpm start`. Tests: `pnpm test`.
-Set `ANTHROPIC_API_KEY` for dispatch (copy `.env.example` → `.env`).
+The UI runs at `http://localhost:5173`; Vite proxies `/api` to the API at `http://localhost:4317`.
 
-## What it does
+Quality gates:
 
-The dashboard is organized into four views (sidebar): **Overview**, **Procesos**, **Issues**, **Actividad**.
+```text
+pnpm test
+pnpm typecheck
+pnpm build
+```
 
-- **Portfolio discovery + live git status.** Auto-discovers git repos under a root
-  (`SURTEC_PROJECTS_ROOT`, default = parent dir; ignore with `SURTEC_PROJECTS_IGNORE`) and shows
-  per-project branch, dirty/uncommitted, ahead/behind, and last commit (read-only local git, cached).
-  `registry/projects.yml` is a config overlay matched by folder name.
-- **Agent dispatch.** From **Nueva tarea**, pick a project + agent + mode and write instructions; the
-  control plane runs a Claude agent (Agent SDK) against the repo and records its lifecycle + result live.
-  - **Analizar** = read-only (inspect only).
-  - **Implementar** = workspace-write: edits in an isolated git worktree (`../surtec-worktrees/...`) on
-    `agent/<task>-<agent>`; the runner commits the edits. The agent never runs shell, merges, deploys, or pushes.
-  - **Implementar + auto-fix (verify)** = the agent gets a Bash tool restricted to the project's declared
-    verify commands so it can run tests and fix failures during its turn.
-  - After a workspace-write task finishes, the runner runs the project's **verification** commands and
-    records the real pass/fail (a ✓/✗ badge), independent of what the agent claims.
-- **Review.** Finished tasks show **Aprobar** / **Rechazar**. Aprobar (workspace-write) pushes the branch
-  to origin and opens a **PR** via `gh` (merge stays manual); Rechazar discards the worktree + branch.
-- **Per-project actions.** Open in **VS Code** / **folder** (server resolves the real path; no
-  client-supplied paths), **GitHub** link, **git Fetch/Pull/Push** (push confirmed), **branch** list/
-  switch/create, **PRs · Issues + CI** and **dependency staleness** (read-only `gh`/`npm outdated`,
-  on-demand + cached), and per-project **Notas** (a persisted TODO checklist).
-- **Procesos.** Launch a project's `dev`/`build`/`test`/`lint`/`install` from the dashboard and stream
-  output live over SSE; stop them (tree-kill). **Bulk sync:** Fetch-all / Pull-all across repos.
-- **Issues.** A unified inbox aggregating open GitHub issues across all configured repos (read-only `gh`,
-  async + parallel), repo-filterable, sorted by activity.
-- **Actividad.** A cross-project timeline merging recent local commits with dispatched tasks.
+See `docs/runbooks/local-development.md` for environment variables and troubleshooting.
 
-## Design
+## Capabilities
 
-The UI uses the **Boreal** design tokens (dark alpine theme — `dashboard/src/ui/styles/boreal-tokens.css`:
-ink/glacier/ember/aurora, Bricolage/Hanken/Space Mono) with the **Claude redesign** layout
-(`dashboard.css`): a fixed sidebar, KPI strip, dense frosted-glass project cards, and lucide icons.
+- Discovers depth-one Git repositories under `SURTEC_PROJECTS_ROOT` or this repository's parent directory.
+- Overlays trusted project and agent configuration from `registry/`.
+- Shows Git status, GitHub activity, dependency status, deployment health, notes, and local process output.
+- Dispatches analysis work in a read-only sandbox.
+- Dispatches implementation work in an isolated Git worktree and task branch.
+- Records normalized runtime events, thread and turn identifiers, token usage, structured results, diffs, and verification evidence.
+- Routes invalid structured reports to `needs-review`.
+- Keeps branch publication behind explicit human review; merge and deploy remain manual.
 
-## Safety
+## Codex runtime
 
-No deploys. No merges to protected branches. No pushing branches unless you ask. No secrets. The agent
-never runs shell except under the explicit per-task auto-fix opt-in (and only the declared verify commands).
+The runner spawns the installed `codex app-server --stdio` process without a shell and uses the authentication already configured for that CLI. It does not require a repository credential file.
 
-## Conventions & methodology
+Optional settings are documented in `.env.example`:
 
-See `CLAUDE.md`. Work is done as Superpowers slices (brainstorm → spec → plan → TDD → review → finish);
-specs and plans live in `docs/superpowers/`.
+- `SURTEC_CODEX_BIN`
+- `SURTEC_CODEX_MODEL`
+- `SURTEC_CODEX_REASONING_EFFORT`
+
+Protocol bindings are generated from the installed CLI:
+
+```text
+pnpm codex:generate-protocol
+```
+
+The real read-only runtime smoke is opt-in:
+
+```text
+$env:SURTEC_CODEX_SMOKE='1'
+pnpm smoke:codex
+```
+
+## Dispatch safety
+
+- Read-only tasks use the App Server read-only sandbox.
+- Write tasks are restricted to the task worktree and run with network access disabled for agent tools.
+- App Server receives a reduced environment; unrelated inherited credentials are excluded.
+- Verification commands come only from trusted registry configuration and are re-run by the control plane after a commit.
+- JSONL logs redact credential-shaped values.
+- The runner never merges or deploys.
+
+See `docs/runbooks/codex-runtime.md` and `docs/security/threat-model.md` for the full operational model and current limitations.
+
+## Architecture and workflow
+
+- Repository instructions: `AGENTS.md`
+- Current architecture: `docs/architecture/current-architecture.md`
+- Runtime decision: `docs/decisions/ADR-0001-codex-app-server-runtime.md`
+- Evolution roadmap: `docs/roadmap/control-plane-evolution.md`
+- Historical implementation records: `docs/superpowers/`
+
+Work is delivered in reviewable slices with tests, type checking, a production build, and no push, merge, or deployment without explicit authorization.

@@ -1,12 +1,12 @@
-# Claude Redesign — Control Plane Layout Overhaul (Design Spec)
+# Control Plane Redesign — Control Plane Layout Overhaul (Design Spec)
 
 **Date:** 2026-05-30
 **Status:** Approved (design)
-**Branch:** `feat/claude-redesign`
+**Branch:** `feat/control-plane-redesign`
 
 ## Goal
 
-Apply the "Claude Design" layout redesign — captured by Marcos in a standalone HTML
+Apply the "Control Plane Design" layout redesign — captured by Marcos in a standalone HTML
 mockup at the repo root (`Surtec Control Plane (standalone).html`, decoded to
 `extracted-design/_template.html`) — to the live control-plane dashboard. It is a
 **full layout/structure overhaul** built on the **same Boreal design tokens** we already
@@ -16,7 +16,7 @@ The palette and type do not change; the layout, component structure, and visual 
 ## Constraints
 
 - **Tokens unchanged.** `boreal-tokens.css` stays byte-identical. The redesign consumes the
-  existing tokens; it does not introduce a new palette. ("Claude Design" = the new *layout*,
+  existing tokens; it does not introduce a new palette. ("Control Plane Design" = the new *layout*,
   not a new brand — Surtec branding stays.)
 - **Behaviour preserved.** Every existing capability stays wired and functional: live polling
   (`/api/overview`, `/api/runs`), dispatch, git fetch/pull/push, bulk sync, branch ops,
@@ -162,7 +162,7 @@ own `getProjectCommands` / SSE wiring.
 
 ## Slice / delivery
 
-- Branch `feat/claude-redesign`; subagent-driven TDD per the plan; merge `--no-ff` to master +
+- Branch `feat/control-plane-redesign`; subagent-driven TDD per the plan; merge `--no-ff` to master +
   push to origin at the end.
 - `lucide-react` added to `dashboard` deps.
 - Reference artifacts (`Surtec Control Plane (standalone).html`, `extracted-design/`) stay

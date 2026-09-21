@@ -113,7 +113,7 @@ describe("CodexAppServerClient", () => {
 
     expect(server.received.map((message) => message.method)).toEqual(["initialize", "initialized", "thread/start", "turn/start"]);
     expect(server.received[2].params).toMatchObject({ cwd: "C:\\repo", sandbox: "read-only", developerInstructions: "root rules" });
-    expect(server.received[3].params).toMatchObject({ cwd: "C:\\repo", outputSchema: { type: "object" }, sandboxPolicy: { type: "readOnly", networkAccess: false } });
+    expect(server.received[3].params).toMatchObject({ cwd: "C:\\repo", input: [{ type: "text", text: "inspect", text_elements: [] }], outputSchema: { type: "object" }, sandboxPolicy: { type: "readOnly", networkAccess: false } });
     expect(result).toMatchObject({ structuredOutput: report, threadId: "thread-1", turnId: "turn-1" });
     expect(result.usage).toMatchObject({ inputTokens: 11, outputTokens: 7, totalTokens: 18 });
     expect(events.map((event) => event.type)).toEqual(expect.arrayContaining(["thread-started", "turn-started", "message-delta", "item", "usage", "turn-completed"]));
@@ -169,6 +169,26 @@ describe("CodexAppServerClient", () => {
     });
 
     await new CodexAppServerClient(server).run(input({ mode: "workspace-write-verify", verifyCommands: ["pnpm test"] }), () => {}, new AbortController().signal);
+
+    expect(decision).toEqual({ decision: "decline" });
+  });
+
+  it("declines a write approval that asks to expand outside the worktree", async () => {
+    let decision: unknown;
+    const server = new FakeAppServer((message, current) => {
+      if (message.method === "initialize") current.send({ id: message.id, result: {} });
+      if (message.method === "thread/start") current.send({ id: message.id, result: { thread: { id: "thread-1" } } });
+      if (message.method === "turn/start") {
+        current.send({ id: message.id, result: { turn: { id: "turn-1" } } });
+        queueMicrotask(() => current.send({ id: 77, method: "item/fileChange/requestApproval", params: { threadId: "thread-1", turnId: "turn-1", grantRoot: "C:\\outside" } }));
+      }
+      if (message.id === 77 && !message.method) {
+        decision = message.result;
+        current.send(completedTurn());
+      }
+    });
+
+    await new CodexAppServerClient(server).run(input({ mode: "workspace-write" }), () => {}, new AbortController().signal);
 
     expect(decision).toEqual({ decision: "decline" });
   });

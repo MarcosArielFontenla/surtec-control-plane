@@ -1,4 +1,5 @@
 import type { AgentOutcome } from "../lib/state/types";
+import agentReportSchema from "../schemas/agent-report.schema.json";
 
 const OUTCOMES = ["completed", "partial", "blocked", "failed", "needs-review"] as const;
 const STRING_ARRAY_FIELDS = ["commands_run", "tests_run", "risks", "blockers", "next_steps", "artifacts"] as const;
@@ -14,23 +15,7 @@ export interface AgentReport {
   artifacts: string[];
 }
 
-export const AGENT_REPORT_SCHEMA = {
-  $schema: "https://json-schema.org/draft/2020-12/schema",
-  title: "AgentReport",
-  type: "object",
-  additionalProperties: false,
-  required: ["status", "summary", ...STRING_ARRAY_FIELDS],
-  properties: {
-    status: { type: "string", enum: OUTCOMES },
-    summary: { type: "string", minLength: 1 },
-    commands_run: { type: "array", items: { type: "string" } },
-    tests_run: { type: "array", items: { type: "string" } },
-    risks: { type: "array", items: { type: "string" } },
-    blockers: { type: "array", items: { type: "string" } },
-    next_steps: { type: "array", items: { type: "string" } },
-    artifacts: { type: "array", items: { type: "string" } },
-  },
-} as const;
+export const AGENT_REPORT_SCHEMA = agentReportSchema;
 
 export type AgentReportValidation =
   | { ok: true; report: AgentReport }

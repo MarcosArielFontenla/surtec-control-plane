@@ -4,6 +4,8 @@
 
 Make Codex the only active execution runtime, restore dispatch, preserve the task lifecycle, and make malformed results fail safely.
 
+Status: implemented and verified on 2026-09-21. Evidence is recorded in `phase-0-verification.md`.
+
 ## Ordered slices
 
 1. **Baseline and evidence**
@@ -51,4 +53,3 @@ Make Codex the only active execution runtime, restore dispatch, preserve the tas
 - Secret exposure to agent-run commands: reduced subprocess environment in Phase 0; canonical process isolation is completed in Phase 1.
 - Partial worktree state after runtime failure: existing risk retained and explicitly scheduled for Phase 1.
 - Real authentication unavailable during automated tests: tests use a fake process; the real smoke is opt-in.
-

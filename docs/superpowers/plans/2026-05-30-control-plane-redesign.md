@@ -1,8 +1,8 @@
-# Claude Redesign Implementation Plan
+# Control Plane Redesign Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Re-skin the control-plane dashboard to the "Claude Design" layout (from the user's standalone mockup) on the existing Boreal tokens, preserving all behaviour and deriving new affordances (KPIs, sidebar Resumen, Historial) from real API data.
+**Goal:** Re-skin the control-plane dashboard to the "Control Plane Design" layout (from the user's standalone mockup) on the existing Boreal tokens, preserving all behaviour and deriving new affordances (KPIs, sidebar Resumen, Historial) from real API data.
 
 **Architecture:** Pure presentation overhaul. `dashboard/src/ui/styles/dashboard.css` is rewritten to the mockup's class vocabulary; `boreal-tokens.css` is untouched. React components are re-structured to emit the new markup while keeping their props, hooks, and side-effect logic. A new `lucide-react` dependency supplies icons; a small inline `BrandMark` SVG is the logo. One pure helper `deriveKpis` computes the KPI/summary numbers from `OverviewModel` + runs.
 
@@ -104,7 +104,7 @@ export function BrandMark({ size = 30 }: { size?: number }) {
 
 ```
 git add dashboard/package.json pnpm-lock.yaml dashboard/src/ui/components/BrandMark.tsx
-git commit -m "feat(ui): add lucide-react + BrandMark logo for the Claude redesign"
+git commit -m "feat(ui): add lucide-react + BrandMark logo for the control-plane redesign"
 ```
 
 ---
@@ -142,7 +142,7 @@ Expected: the current suite still passes (319), since class-name changes haven't
 
 ```
 git add dashboard/src/ui/styles/dashboard.css
-git commit -m "feat(ui): rewrite dashboard.css to the Claude redesign vocabulary"
+git commit -m "feat(ui): rewrite dashboard.css to the control-plane redesign vocabulary"
 ```
 
 ---
@@ -1282,7 +1282,7 @@ Expected: `cardCount` matches the project count; read `.shots/full.png` and conf
 
 - [ ] **Step 5: Finish the branch**
 
-Use **superpowers:finishing-a-development-branch**: verify tests pass, then merge `--no-ff` to master + push to origin (the established project flow), delete the branch. Update memory: mark the Claude redesign DONE in `live-status-dashboard-slice.md` (supersedes the Boreal restyle layout note — Boreal *tokens* still in use), and refresh `MEMORY.md`.
+Use **superpowers:finishing-a-development-branch**: verify tests pass, then merge `--no-ff` to master + push to origin (the established project flow), delete the branch. Update memory: mark the control-plane redesign DONE in `live-status-dashboard-slice.md` (supersedes the Boreal restyle layout note — Boreal *tokens* still in use), and refresh `MEMORY.md`.
 
 ---
 

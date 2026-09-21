@@ -10,8 +10,7 @@
 
 **Conventions:**
 - Commands run from repo root `E:\product-projects\surtec-control-plane`. Branch: `feat/review-gate`.
-- Extensionless relative imports. Every commit ends with:
-  `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
+- Extensionless relative imports.
 - Spec: `docs/superpowers/specs/2026-05-29-review-gate-design.md`.
 - Governance preserved: push is the ONLY outward action, only on Approve, UI-confirmed; never merge; protected branches untouched.
 
@@ -83,7 +82,7 @@ Expected: no errors.
 
 ```bash
 git add lib/state/types.ts
-git commit -m "feat(state): add ReviewDecision + decision field on TaskRecord" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(state): add ReviewDecision + decision field on TaskRecord"
 ```
 
 ---
@@ -134,7 +133,7 @@ Expected: PASS (existing 4 + 1 new = 5).
 
 ```bash
 git add lib/state/derive.ts lib/state/derive.test.ts
-git commit -m "feat(state): exclude decided tasks from the attention panel" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(state): exclude decided tasks from the attention panel"
 ```
 
 ---
@@ -220,7 +219,7 @@ Expected: PASS (existing 3 + 3 new = 6).
 
 ```bash
 git add runner/worktree.ts runner/worktree.test.ts
-git commit -m "feat(runner): pushBranch + removeWorktree (git by the runner, no merge)" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(runner): pushBranch + removeWorktree (git by the runner, no merge)"
 ```
 
 ---
@@ -412,7 +411,7 @@ Expected: PASS (7 tests).
 
 ```bash
 git add dashboard/src/server/review.ts dashboard/src/server/review.test.ts
-git commit -m "feat(dashboard): review module (approve pushes branch, reject discards worktree)" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(dashboard): review module (approve pushes branch, reject discards worktree)"
 ```
 
 ---
@@ -519,7 +518,7 @@ Run: `pnpm exec vitest run` — all pass. `pnpm exec tsc --noEmit` — no errors
 
 ```bash
 git add dashboard/src/server/index.ts dashboard/src/server/index.test.ts
-git commit -m "feat(dashboard): POST approve/reject endpoints" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(dashboard): POST approve/reject endpoints"
 ```
 
 ---
@@ -670,7 +669,7 @@ Expected: PASS (2 tests). Then full suite `pnpm exec vitest run` (all pass — t
 
 ```bash
 git add dashboard/src/ui/api.ts dashboard/src/ui/components/AttentionPanel.tsx dashboard/src/ui/components/AttentionPanel.test.tsx
-git commit -m "feat(dashboard): Aprobar/Rechazar buttons in the attention panel" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(dashboard): Aprobar/Rechazar buttons in the attention panel"
 ```
 
 ---
@@ -711,7 +710,7 @@ Expected: Vite builds `dashboard/dist` without errors.
 
 ```bash
 git add README.md
-git commit -m "docs: document the review gate (approve/reject)" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "docs: document the review gate (approve/reject)"
 ```
 
 ---

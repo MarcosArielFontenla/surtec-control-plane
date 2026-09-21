@@ -32,11 +32,10 @@ const controller = new AbortController();
 const timer = setTimeout(() => controller.abort(), 2 * 60 * 1000);
 
 try {
-  const rootInstructions = readFileSync(join(root, "AGENTS.md"), "utf8");
   const result = await codexExecutor.run(
     {
       cwd: fixture,
-      developerInstructions: `${rootInstructions}\nThis is a read-only runtime smoke. Do not modify any file.`,
+      developerInstructions: "This is a read-only runtime smoke. Inspect only the supplied fixture and do not modify any file.",
       prompt: "Read the fixture and return a concise structured report describing its purpose.",
       mode: "read-only",
       model: process.env.SURTEC_CODEX_MODEL?.trim() || undefined,

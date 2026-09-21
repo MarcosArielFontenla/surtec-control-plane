@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toAgentResult, failureResult } from "./result";
+import { assertAgentResult, toAgentResult, failureResult } from "./result";
 import type { TaskEnvelope } from "../lib/state/types";
 
 const envelope: TaskEnvelope = {
@@ -66,5 +66,11 @@ describe("failureResult", () => {
     expect(r.blockers).toEqual(["timeout (5m)"]);
     expect(r.summary).toContain("timeout (5m)");
     expect(r.verification).toBeNull();
+  });
+});
+
+describe("assertAgentResult", () => {
+  it("rejects a result that violates the canonical schema", () => {
+    expect(() => assertAgentResult({ status: "completed" })).toThrow("AgentResult schema validation failed");
   });
 });

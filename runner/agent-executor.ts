@@ -26,7 +26,7 @@ export interface AgentRunInput {
   prompt: string;
   mode: RunMode;
   model?: string;
-  reasoningEffort?: string;
+  reasoningEffort?: ReasoningEffort;
   threadId?: string;
   verifyCommands?: string[];
   outputSchema: Record<string, unknown>;
@@ -43,4 +43,5 @@ export interface AgentRunResult {
 export interface AgentExecutor {
   run(input: AgentRunInput, events: AgentEventSink, signal: AbortSignal): Promise<AgentRunResult>;
 }
+import type { ReasoningEffort } from "./generated/codex-app-server/ReasoningEffort";
 

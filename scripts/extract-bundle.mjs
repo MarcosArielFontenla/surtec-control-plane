@@ -1,4 +1,4 @@
-// One-off: decode a Claude "standalone" bundle HTML into its source assets.
+// One-off: decode the standalone design bundle HTML into its source assets.
 // Usage: node scripts/extract-bundle.mjs "<html file>" [outdir]
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { gunzipSync, inflateSync } from "node:zlib";

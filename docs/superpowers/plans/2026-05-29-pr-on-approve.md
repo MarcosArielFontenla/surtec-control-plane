@@ -10,8 +10,7 @@
 
 **Conventions:**
 - Commands run from repo root `E:\product-projects\surtec-control-plane`. Branch: `feat/pr-on-approve`.
-- Extensionless relative imports. Every commit ends with:
-  `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
+- Extensionless relative imports.
 - Spec: `docs/superpowers/specs/2026-05-29-pr-on-approve-design.md`.
 - Governance: `gh` only CREATES a PR (never `gh pr merge`); PR is part of the UI-confirmed approve action; graceful on gh-missing/unauth/PR-exists.
 
@@ -134,7 +133,7 @@ Expected: PASS (1 test). Run `pnpm exec vitest run` (all pass — the overview/a
 
 ```bash
 git add lib/state/derive.ts dashboard/src/server/registry.ts dashboard/src/server/registry.test.ts
-git commit -m "feat(dashboard): expose default_branch from the registry" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(dashboard): expose default_branch from the registry"
 ```
 
 ---
@@ -165,7 +164,7 @@ Expected: no errors.
 
 ```bash
 git add lib/state/types.ts
-git commit -m "feat(state): add pr_url to ReviewDecision" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(state): add pr_url to ReviewDecision"
 ```
 
 ---
@@ -278,7 +277,7 @@ Expected: PASS (3 tests). Run `pnpm exec tsc --noEmit` (no errors).
 
 ```bash
 git add runner/github.ts runner/github.test.ts
-git commit -m "feat(runner): github PR helper (buildPrBody + openPullRequest, no merge)" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(runner): github PR helper (buildPrBody + openPullRequest, no merge)"
 ```
 
 ---
@@ -396,7 +395,7 @@ Run `pnpm exec vitest run` (all pass), `pnpm exec tsc --noEmit` (no errors).
 
 ```bash
 git add dashboard/src/server/review.ts dashboard/src/server/review.test.ts
-git commit -m "feat(dashboard): open a PR on approve (after push, targeting default_branch)" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(dashboard): open a PR on approve (after push, targeting default_branch)"
 ```
 
 ---
@@ -430,7 +429,7 @@ Run: `pnpm exec tsc --noEmit` (no errors). Run: `pnpm build` (compiles).
 
 ```bash
 git add dashboard/src/server/index.ts dashboard/src/ui/components/AttentionPanel.tsx
-git commit -m "feat(dashboard): thread repoRoot to approve + mention PR in the confirm" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "feat(dashboard): thread repoRoot to approve + mention PR in the confirm"
 ```
 
 ---
@@ -455,7 +454,7 @@ with the PR error noted. Design: `docs/superpowers/specs/2026-05-29-pr-on-approv
 
 ```bash
 git add README.md
-git commit -m "docs: document PR on approve" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "docs: document PR on approve"
 ```
 
 ---
