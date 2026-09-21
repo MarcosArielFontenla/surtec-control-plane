@@ -10,6 +10,8 @@ Status: complete on 2026-09-21. See [Phase 0 verification](phase-0-verification.
 
 Create one typed policy service, validate every trust boundary, isolate subprocess environments, add path containment and identifier checks, bind to loopback, protect mutations, make review effects retryable, reconcile orphan worktrees, add secret scanning, and add CI.
 
+Status: complete on 2026-09-21. See [Phase 1 verification](phase-1-verification.md).
+
 ## Phase 2 — Durable orchestration
 
 Move execution behind a worker boundary, add bounded concurrency and per-project write exclusion, cancellation, retry, crash recovery, idempotency, append-only task events, resource budgets, and transactional persistence when justified.

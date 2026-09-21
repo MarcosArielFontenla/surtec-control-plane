@@ -23,6 +23,8 @@ Run this after upgrading the Codex CLI. Review generated changes and update the 
 
 Tests use a fake App Server process. They verify handshake ordering, request correlation, thread and turn lifecycle, event normalization, approvals, structured results, malformed JSONL, interruption, and unexpected process exit without making a paid request.
 
+Approval requests fail closed unless they match the active App Server thread and turn and the exact command or file path permitted for that task. Sandbox capability and approval policy are independent: an approval cannot expand the configured sandbox or current registry policy.
+
 ## Real read-only smoke
 
 ```text
@@ -38,4 +40,3 @@ The smoke runs against `fixtures/codex-smoke`, snapshots its files before and af
 - Authentication error: sign in using the Codex CLI or configure a documented non-interactive authentication method outside the repository.
 - Protocol error after a CLI upgrade: regenerate bindings and compare the relevant request and notification types.
 - Interrupted turn: inspect the task JSONL report for normalized events; the client requests interruption and then terminates the child if necessary.
-

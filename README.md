@@ -24,9 +24,12 @@ The UI runs at `http://localhost:5173`; Vite proxies `/api` to the API at `http:
 Quality gates:
 
 ```text
+pnpm schemas:check
+pnpm secrets:check
 pnpm test
 pnpm typecheck
 pnpm build
+pnpm audit:check
 ```
 
 See `docs/runbooks/local-development.md` for environment variables and troubleshooting.
@@ -35,12 +38,14 @@ See `docs/runbooks/local-development.md` for environment variables and troublesh
 
 - Discovers depth-one Git repositories under `SURTEC_PROJECTS_ROOT` or this repository's parent directory.
 - Overlays trusted project and agent configuration from `registry/`.
+- Validates registry and persisted state through one typed policy boundary.
 - Shows Git status, GitHub activity, dependency status, deployment health, notes, and local process output.
 - Dispatches analysis work in a read-only sandbox.
 - Dispatches implementation work in an isolated Git worktree and task branch.
 - Records normalized runtime events, thread and turn identifiers, token usage, structured results, diffs, and verification evidence.
 - Routes invalid structured reports to `needs-review`.
 - Keeps branch publication behind explicit human review; merge and deploy remain manual.
+- Resumes interrupted approval/rejection effects without duplicating pushes or pull requests.
 
 ## Codex runtime
 
@@ -71,6 +76,9 @@ pnpm smoke:codex
 - Write tasks are restricted to the task worktree and run with network access disabled for agent tools.
 - App Server receives a reduced environment; unrelated inherited credentials are excluded.
 - Verification commands come only from trusted registry configuration and are re-run by the control plane after a commit.
+- Dispatch, execution, and review revalidate current policy and canonical repository containment.
+- The API binds to loopback; same-origin checks and an in-memory session token protect mutations.
+- Non-agent subprocesses receive allowlisted environments, and surfaced output uses centralized redaction.
 - JSONL logs redact credential-shaped values.
 - The runner never merges or deploys.
 
