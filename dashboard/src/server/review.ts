@@ -1,5 +1,6 @@
 import type { ReviewDecision, TaskRecord } from "../../../lib/state/types";
-import { readTask, writeTask } from "../../../lib/state/store";
+import { readTask, updateTask } from "../../../lib/state/store";
+import { appendTaskEvent } from "../../../lib/state/events";
 import { expandHome } from "../../../lib/expand-home";
 import { pushBranch, removeWorktree } from "../../../runner/worktree";
 import { ensurePullRequest, buildPrBody } from "../../../runner/github";
@@ -22,10 +23,38 @@ function runInfo(rec: TaskRecord): RunInfo {
 type ReviewAction = "approve" | "reject";
 
 function persistDecision(rec: TaskRecord, decision: ReviewDecision): ReviewDecision {
-  rec.decision = decision;
-  rec.updated_at = decision.at;
-  writeTask(rec);
-  return decision;
+  const updated = updateTask(rec.envelope.id, (current) => {
+    current.decision = { ...decision };
+    current.updated_at = decision.at;
+  });
+  if (!updated?.decision) throw new TaskNotFoundError(`task not found: ${rec.envelope.id}`);
+  Object.assign(rec, updated);
+  appendTaskEvent({
+    task_id: rec.envelope.id,
+    type: "review-decision",
+    revision: updated.revision!,
+    attempt: updated.orchestration?.attempts || null,
+    payload: {
+      status: decision.status,
+      attempts: decision.attempts ?? 1,
+      pushed: decision.pushed ?? null,
+      pull_request_created: Boolean(decision.pr_url),
+      cleanup_completed: decision.cleanup_completed ?? null,
+      has_error: Boolean(decision.error),
+    },
+    at: decision.at,
+  });
+  return updated.decision;
+}
+
+function appendReviewEvent(rec: TaskRecord, type: "policy-evaluated" | "cleanup", payload: Record<string, unknown>): void {
+  appendTaskEvent({
+    task_id: rec.envelope.id,
+    type,
+    revision: rec.revision ?? 1,
+    attempt: rec.orchestration?.attempts || null,
+    payload,
+  });
 }
 
 function beginDecision(taskId: string, action: ReviewAction, repoRoot: string): { rec: TaskRecord; done: boolean; defaultBranch: string } {
@@ -42,7 +71,9 @@ function beginDecision(taskId: string, action: ReviewAction, repoRoot: string): 
   let defaultBranch: string;
   try {
     defaultBranch = new PolicyService(repoRoot).authorizeTask(rec.envelope).project.default_branch ?? "main";
+    appendReviewEvent(rec, "policy-evaluated", { boundary: "review", action, allowed: true });
   } catch (error) {
+    appendReviewEvent(rec, "policy-evaluated", { boundary: "review", action, allowed: false, reason: (error as Error).message });
     throw new ReviewError(`review denied by current policy: ${(error as Error).message}`);
   }
 
@@ -112,12 +143,17 @@ export function rejectTask(taskId: string, repoRoot: string = process.cwd()): Re
     } catch (e) {
       decision.error = (e as Error).message;
       decision.at = new Date().toISOString();
-      return persistDecision(rec, decision);
+      const persisted = persistDecision(rec, decision);
+      appendReviewEvent(rec, "cleanup", { status: "failed", reason: decision.error });
+      return persisted;
     }
     decision.cleanup_completed = true;
     delete decision.error;
     decision.at = new Date().toISOString();
     persistDecision(rec, decision);
+    appendReviewEvent(rec, "cleanup", { status: "completed", branch });
+  } else {
+    appendReviewEvent(rec, "cleanup", { status: "not-applicable" });
   }
   decision.status = "rejected";
   decision.at = new Date().toISOString();

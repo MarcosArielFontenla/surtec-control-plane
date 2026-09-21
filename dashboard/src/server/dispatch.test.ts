@@ -62,7 +62,10 @@ describe("createTask", () => {
     expect(t.envelope.source).toBe("dashboard");
     expect(t.revision).toBe(1);
     expect(t.orchestration).toMatchObject({ attempts: 0, max_attempts: 3, lease: null });
-    expect(readTaskEvents(id)).toMatchObject([{ task_id: id, type: "queued", revision: 1 }]);
+    expect(readTaskEvents(id)).toMatchObject([
+      { task_id: id, type: "policy-evaluated", revision: 1, payload: { boundary: "dispatch", allowed: true } },
+      { task_id: id, type: "queued", revision: 1 },
+    ]);
   });
 
   it("rejects unknown project", () => {

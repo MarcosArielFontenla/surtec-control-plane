@@ -10,6 +10,7 @@ vi.mock("../../../runner/github", () => ({ ensurePullRequest: vi.fn(), buildPrBo
 import { ensurePullRequest } from "../../../runner/github";
 import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
 import { writeTask, readTask } from "../../../lib/state/store";
+import { readTaskEvents } from "../../../lib/state/events";
 
 let root: string;
 let projectRepo: string;
@@ -69,6 +70,8 @@ describe("approveTask", () => {
     expect(ensurePullRequest).toHaveBeenCalledWith(projectRepo, "agent/RV-1-backend-engineer", "main", "t", "PR_BODY");
     expect(d.pr_url).toBe("https://github.com/x/pull/1");
     expect(readTask("RV-1")!.decision?.pr_url).toBe("https://github.com/x/pull/1");
+    expect(readTaskEvents("RV-1").map((event) => event.type)).toContain("policy-evaluated");
+    expect(readTaskEvents("RV-1").map((event) => event.type)).toContain("review-decision");
   });
 
   it("approves a read-only task without pushing", () => {
@@ -157,6 +160,7 @@ describe("rejectTask", () => {
     expect(d.cleanup_completed).toBe(true);
     expect(removeWorktree).toHaveBeenCalledWith(projectRepo, "/tmp/wt", "agent/RV-5-backend-engineer");
     expect(readTask("RV-5")!.decision?.status).toBe("rejected");
+    expect(readTaskEvents("RV-5").map((event) => event.type)).toContain("cleanup");
 
     expect(rejectTask("RV-5", root).status).toBe("rejected");
     expect(removeWorktree).toHaveBeenCalledTimes(1);

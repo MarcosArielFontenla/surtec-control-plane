@@ -7,6 +7,7 @@ import { listTasks, StateLockConflictError, updateTask, withStateLock } from "..
 import { cancelledResult, failureResult } from "./result";
 import { codexExecutor } from "./codex-executor";
 import { runTask, type TaskRunCompletion, type TaskRunOptions } from "./run-task";
+import type { Tracer } from "../lib/observability/tracing";
 
 export interface TaskControl {
   enqueue(taskId: string): void;
@@ -30,6 +31,7 @@ export interface TaskOrchestratorOptions {
   heartbeatMs?: number;
   retryBaseMs?: number;
   now?: () => Date;
+  tracer?: Tracer;
   runAttempt?: (taskId: string, options: TaskRunOptions) => Promise<TaskRunCompletion | null>;
 }
 
@@ -76,7 +78,7 @@ export class TaskOrchestrator implements TaskControl {
     this.heartbeatMs = options.heartbeatMs ?? positiveInteger(process.env.SURTEC_WORKER_HEARTBEAT_MS, 5_000, this.leaseMs);
     this.retryBaseMs = options.retryBaseMs ?? positiveInteger(process.env.SURTEC_WORKER_RETRY_BASE_MS, 1_000, 60_000);
     this.now = options.now ?? (() => new Date());
-    this.runAttempt = options.runAttempt ?? ((taskId, runOptions) => runTask(taskId, this.repoRoot, executor, runOptions));
+    this.runAttempt = options.runAttempt ?? ((taskId, runOptions) => runTask(taskId, this.repoRoot, executor, { ...runOptions, tracer: options.tracer }));
   }
 
   start(): void {

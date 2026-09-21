@@ -10,7 +10,7 @@
     "task_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
     "type": {
       "type": "string",
-      "enum": ["queued", "claimed", "started", "thread-started", "turn-started", "usage", "cancel-requested", "cancelled", "retry-scheduled", "lease-recovered", "completed", "failed", "needs-review", "warning"]
+      "enum": ["queued", "policy-evaluated", "claimed", "started", "thread-started", "turn-started", "approval-recorded", "worktree-created", "diff-captured", "verification", "review-decision", "cleanup", "usage", "cancel-requested", "cancelled", "retry-scheduled", "lease-recovered", "completed", "failed", "needs-review", "warning"]
     },
     "at": { "type": "string", "minLength": 1 },
     "revision": { "type": "integer", "minimum": 1 },

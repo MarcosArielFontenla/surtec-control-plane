@@ -75,6 +75,13 @@ export function createTask(input: CreateTaskInput, repoRoot: string = process.cw
     orchestration: defaultTaskOrchestration(),
   };
   writeTask(record);
-  appendTaskEvent({ task_id: id, type: "queued", revision: 1, payload: { source: envelope.source } });
+  appendTaskEvent({
+    task_id: id,
+    type: "policy-evaluated",
+    revision: 1,
+    payload: { boundary: "dispatch", allowed: true, project, agent, sandbox, self_verify: envelope.self_verify === true },
+    at: ts,
+  });
+  appendTaskEvent({ task_id: id, type: "queued", revision: 1, payload: { source: envelope.source }, at: ts });
   return { id };
 }

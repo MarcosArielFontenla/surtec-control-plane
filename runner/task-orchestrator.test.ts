@@ -251,6 +251,6 @@ describe("TaskOrchestrator", () => {
       result: { summary: "done" },
       orchestration: { attempts: 1, cumulative_tokens: 6, lease: null },
     });
-    expect(readTaskEvents("T-1").map((event) => event.type)).toEqual(["claimed", "started", "usage", "completed"]);
+    expect(readTaskEvents("T-1").map((event) => event.type)).toEqual(["claimed", "started", "policy-evaluated", "usage", "completed"]);
   });
 });

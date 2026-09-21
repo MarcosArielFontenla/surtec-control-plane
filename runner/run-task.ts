@@ -15,11 +15,13 @@ import { createWorktree, commitAndDiff } from "./worktree";
 import { runVerification } from "./verify";
 import { PolicyError, PolicyService } from "../lib/policy/service";
 import { safeJson } from "../lib/security/redaction";
+import { noOpTracer, type Tracer } from "../lib/observability/tracing";
 
 export interface TaskRunOptions {
   signal?: AbortSignal;
   runId?: string;
   workerId?: string;
+  tracer?: Tracer;
 }
 
 export interface TaskRunCompletion {
@@ -103,6 +105,13 @@ export async function runTask(
   if (initial.lifecycle !== "running" || initialOrchestration.lease?.run_id !== runId) return null;
   attempt = initialOrchestration.attempts;
   claimedRevision ??= initial.revision ?? 1;
+  const span = (options.tracer ?? noOpTracer).startSpan("task.attempt", {
+    task_id: taskId,
+    project: initial.envelope.project,
+    agent: initial.envelope.agent,
+    attempt,
+  });
+  let spanStatus: "ok" | "error" = "error";
 
   mkdirSync(join(repoRoot, "reports"), { recursive: true });
   const startedAt = new Date().toISOString();
@@ -163,14 +172,27 @@ export async function runTask(
     });
     if (!finished) return { outcome, retryable: false, reason, stale: true };
     appendOwnedEvent(finished, eventType(outcome), { outcome, retryable, ...(reason ? { reason } : {}) });
+    spanStatus = outcome === "completed" || outcome === "partial" ? "ok" : "error";
+    span.addEvent("task.finished", { outcome, retryable });
     return { outcome, retryable, reason, stale: false };
   };
 
   const startRecord = ownedMutation((record) => {
     record.logs_path = logsPath;
+    if (span.context) {
+      record.envelope.metadata.run = {
+        ...metadataRun(record),
+        trace_id: span.context.traceId,
+        span_id: span.context.spanId,
+      };
+    }
   });
   if (!startRecord) return { outcome: "failed", retryable: false, reason: "attempt lease is no longer current", stale: true };
-  appendOwnedEvent(startRecord, "started", { claimed_revision: claimedRevision });
+  appendOwnedEvent(startRecord, "started", {
+    claimed_revision: claimedRevision,
+    ...(span.context ? { trace_id: span.context.traceId, span_id: span.context.spanId } : {}),
+  });
+  span.addEvent("task.started");
 
   const onExternalAbort = (): void => {
     if (controller.signal.aborted) return;
@@ -222,11 +244,45 @@ export async function runTask(
     }
     if (event.type === "usage") {
       recordUsage(event.usage);
+      span.addEvent("agent.usage", { total_tokens: event.usage.totalTokens });
+      return;
+    }
+    if (event.type === "approval") {
+      const updated = ownedMutation(() => {});
+      if (updated) {
+        appendOwnedEvent(updated, "approval-recorded", {
+          approval: event.approval,
+          allowed: event.allowed,
+          thread_id: event.threadId,
+          turn_id: event.turnId,
+        });
+      }
+      span.addEvent("agent.approval", { approval: event.approval, allowed: event.allowed });
+      return;
+    }
+    if (event.type === "warning") {
+      const updated = ownedMutation(() => {});
+      if (updated) appendOwnedEvent(updated, "warning", { message: event.message.slice(0, 1_000) });
+      span.addEvent("agent.warning");
     }
   };
 
   try {
-    const allowed = new PolicyService(repoRoot).authorizeTask(initial.envelope);
+    const policy = new PolicyService(repoRoot);
+    let allowed: ReturnType<typeof policy.authorizeTask>;
+    try {
+      allowed = policy.authorizeTask(initial.envelope);
+      const policyRecord = ownedMutation(() => {});
+      if (policyRecord) appendOwnedEvent(policyRecord, "policy-evaluated", { boundary: "execution", allowed: true });
+      span.addEvent("policy.evaluated", { boundary: "execution", allowed: true });
+    } catch (error) {
+      if (error instanceof PolicyError) {
+        const policyRecord = ownedMutation(() => {});
+        if (policyRecord) appendOwnedEvent(policyRecord, "policy-evaluated", { boundary: "execution", allowed: false, reason: error.message });
+        span.addEvent("policy.evaluated", { boundary: "execution", allowed: false });
+      }
+      throw error;
+    }
     const cwd = expandHome(allowed.project.repo_path!);
     const agent = allowed.agent;
     const agentsMd = readFileSync(join(repoRoot, "AGENTS.md"), "utf8");
@@ -264,6 +320,8 @@ export async function runTask(
         record.envelope.metadata.run = { ...metadataRun(record), mode, branch, worktree_path: worktreePath };
       });
       if (!worktreeRecord) return { outcome: "failed", retryable: false, reason: "attempt lease is no longer current", stale: true };
+      appendOwnedEvent(worktreeRecord, "worktree-created", { branch });
+      span.addEvent("worktree.created", { branch });
       const agentRun = await runAgent(worktreePath);
       if (agentRun.usage && recordUsage(agentRun.usage)) {
         const error = new Error("task token budget exhausted");
@@ -271,15 +329,38 @@ export async function runTask(
         throw error;
       }
       if (!ownedMutation(() => {})) return { outcome: "failed", retryable: false, reason: "attempt lease is no longer current", stale: true };
-      const { filesChanged, diffstat, committed } = commitAndDiff(
+      const { filesChanged, diffstat, committed, patch, patchTruncated } = commitAndDiff(
         worktreePath,
         `agent ${initial.envelope.id}: ${initial.envelope.title}`.slice(0, 72),
       );
       const verification = committed ? runVerification(worktreePath, verifyCommands) : null;
-      writeLog({ task_id: initial.envelope.id, mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, branch, worktree_path: worktreePath, committed, diffstat, verification, usage: agentRun.usage, structured_output: agentRun.structuredOutput });
-      ownedMutation((record) => {
-        record.envelope.metadata.run = { ...metadataRun(record), mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, branch, worktree_path: worktreePath, diffstat, committed, verification, usage: agentRun.usage };
+      const diffPath = committed ? `reports/${initial.envelope.id}-${runId}.diff` : null;
+      if (diffPath) writeFileSync(join(repoRoot, diffPath), patch, "utf8");
+      writeLog({ task_id: initial.envelope.id, mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, branch, worktree_path: worktreePath, committed, diffstat, diff_path: diffPath, diff_truncated: patchTruncated, verification, usage: agentRun.usage, structured_output: agentRun.structuredOutput });
+      const evidenceRecord = ownedMutation((record) => {
+        record.envelope.metadata.run = {
+          ...metadataRun(record),
+          mode,
+          thread_id: agentRun.threadId,
+          turn_id: agentRun.turnId,
+          branch,
+          worktree_path: worktreePath,
+          diffstat,
+          committed,
+          diff_path: diffPath,
+          diff_truncated: patchTruncated,
+          verification,
+          usage: agentRun.usage,
+        };
       });
+      if (evidenceRecord && diffPath) {
+        appendOwnedEvent(evidenceRecord, "diff-captured", { path: diffPath, bytes: Buffer.byteLength(patch, "utf8"), truncated: patchTruncated });
+      }
+      if (evidenceRecord && verification) {
+        appendOwnedEvent(evidenceRecord, "verification", { status: verification.status, checks: verification.checks.length });
+      }
+      span.addEvent("git.diff", { committed, files_changed: filesChanged.length, truncated: patchTruncated });
+      if (verification) span.addEvent("verification.finished", { status: verification.status, checks: verification.checks.length });
       const result = toAgentResult(initial.envelope, agentRun.structuredOutput, agentRun.finalText, logsPath, filesChanged, verification);
       const terminalReason = result.status === "needs-review"
         ? "invalid structured agent output"
@@ -336,5 +417,6 @@ export async function runTask(
   } finally {
     clearTimeout(timeout);
     options.signal?.removeEventListener("abort", onExternalAbort);
+    span.end(spanStatus);
   }
 }

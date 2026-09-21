@@ -6,6 +6,7 @@ build
 !.env.example
 reports/*.jsonl
 reports/*.log
+reports/*.diff
 tmp/*
 !tmp/.gitkeep
 .DS_Store

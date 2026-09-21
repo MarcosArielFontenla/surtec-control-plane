@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskRecord } from "../lib/state/types";
 import type { AgentExecutor, AgentRunResult } from "./agent-executor";
+import type { Tracer } from "../lib/observability/tracing";
 
 vi.mock("./worktree", () => ({ createWorktree: vi.fn(), commitAndDiff: vi.fn() }));
 vi.mock("./verify", () => ({ runVerification: vi.fn() }));
@@ -164,7 +165,10 @@ describe("runTask", () => {
     writeTask(record);
     const worktreePath = join(root, "worktree");
     vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath });
-    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: ["src/x.ts"], diffstat: "1 file changed", committed: true });
+    vi.mocked(commitAndDiff).mockReturnValue({
+      filesChanged: ["src/x.ts"], diffstat: "1 file changed", committed: true,
+      patch: "diff --git a/src/x.ts b/src/x.ts\n+export const x = 1;\n", patchTruncated: false,
+    });
 
     await runTask("T-1", root, executor);
 
@@ -173,13 +177,16 @@ describe("runTask", () => {
     expect(runVerification).toHaveBeenCalledWith(worktreePath, ["pnpm test"]);
     const finished = readTask("T-1")!;
     expect(finished.result?.files_changed).toEqual(["src/x.ts"]);
-    expect(finished.envelope.metadata.run).toMatchObject({ thread_id: "thread-1", turn_id: "turn-1" });
+    expect(finished.envelope.metadata.run).toMatchObject({
+      thread_id: "thread-1", turn_id: "turn-1", diff_path: expect.stringMatching(/\.diff$/), diff_truncated: false,
+    });
+    expect(readFileSync(join(root, (finished.envelope.metadata.run as { diff_path: string }).diff_path), "utf8")).toContain("+export const x");
   });
 
   it("uses plain write mode when self verification is not requested", async () => {
     writeTask(writeRecord());
     vi.mocked(createWorktree).mockReturnValue({ branch: "branch", worktreePath: join(root, "worktree") });
-    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: [], diffstat: "", committed: false });
+    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: [], diffstat: "", committed: false, patch: "", patchTruncated: false });
 
     await runTask("T-1", root, executor);
 
@@ -223,6 +230,11 @@ describe("runTask", () => {
       await events({ type: "thread-started", at: "2026-09-21T10:00:00Z", threadId: "thread-durable" });
       await events({ type: "turn-started", at: "2026-09-21T10:00:01Z", threadId: "thread-durable", turnId: "turn-durable" });
       await events({
+        type: "approval", at: "2026-09-21T10:00:01Z", threadId: "thread-durable", turnId: "turn-durable",
+        approval: "command", allowed: true, command: "printenv PRIVATE_TOKEN",
+      });
+      await events({ type: "warning", at: "2026-09-21T10:00:01Z", threadId: "thread-durable", turnId: "turn-durable", message: "runtime warning" });
+      await events({
         type: "usage",
         at: "2026-09-21T10:00:02Z",
         threadId: "thread-durable",
@@ -237,9 +249,13 @@ describe("runTask", () => {
     const finished = readTask("T-1")!;
     expect(finished.envelope.metadata.run).toMatchObject({ thread_id: "thread-durable", turn_id: "turn-durable" });
     expect(finished.orchestration?.cumulative_tokens).toBe(15);
-    expect(readTaskEvents("T-1").map((event) => event.type)).toEqual([
-      "claimed", "started", "thread-started", "turn-started", "usage", "usage", "completed",
+    const events = readTaskEvents("T-1");
+    expect(events.map((event) => event.type)).toEqual([
+      "claimed", "started", "policy-evaluated", "thread-started", "turn-started", "approval-recorded", "warning", "usage", "usage", "completed",
     ]);
+    expect(events.find((event) => event.type === "approval-recorded")?.payload).toEqual({
+      approval: "command", allowed: true, thread_id: "thread-durable", turn_id: "turn-durable",
+    });
   });
 
   it("resumes the persisted Codex thread on a retry", async () => {
@@ -331,5 +347,20 @@ describe("runTask", () => {
     const log = readFileSync(join(root, record.logs_path!), "utf8");
     expect(log).not.toContain("top-secret-value");
     expect(log).toContain("[REDACTED]");
+  });
+
+  it("records injected trace identifiers without requiring a tracing package", async () => {
+    writeTask(queuedRecord());
+    const addEvent = vi.fn();
+    const end = vi.fn();
+    const tracer: Tracer = {
+      startSpan: vi.fn(() => ({ context: { traceId: "trace-1", spanId: "span-1" }, addEvent, end })),
+    };
+
+    await runTask("T-1", root, executor, { tracer });
+
+    expect(readTask("T-1")?.envelope.metadata.run).toMatchObject({ trace_id: "trace-1", span_id: "span-1" });
+    expect(addEvent).toHaveBeenCalledWith("task.finished", { outcome: "completed", retryable: false });
+    expect(end).toHaveBeenCalledWith("ok");
   });
 });

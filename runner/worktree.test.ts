@@ -45,6 +45,8 @@ describe("commitAndDiff", () => {
     expect(r.committed).toBe(true);
     expect(r.filesChanged).toContain("new.txt");
     expect(r.diffstat).toContain("new.txt");
+    expect(r.patch).toContain("+content");
+    expect(r.patchTruncated).toBe(false);
   });
 
   it("reports no commit when there are no changes", () => {
@@ -53,6 +55,8 @@ describe("commitAndDiff", () => {
     expect(r.committed).toBe(false);
     expect(r.filesChanged).toEqual([]);
     expect(r.diffstat).toBe("");
+    expect(r.patch).toBe("");
+    expect(r.patchTruncated).toBe(false);
   });
 });
 

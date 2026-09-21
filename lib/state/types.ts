@@ -107,10 +107,17 @@ export interface TaskRecord {
 
 export type TaskEventType =
   | "queued"
+  | "policy-evaluated"
   | "claimed"
   | "started"
   | "thread-started"
   | "turn-started"
+  | "approval-recorded"
+  | "worktree-created"
+  | "diff-captured"
+  | "verification"
+  | "review-decision"
+  | "cleanup"
   | "usage"
   | "cancel-requested"
   | "cancelled"
