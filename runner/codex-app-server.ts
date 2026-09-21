@@ -1,5 +1,4 @@
 import { createInterface, type Interface as ReadLineInterface } from "node:readline";
-import { isAbsolute, relative, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { AgentEvent, AgentEventSink, AgentRunInput, AgentRunResult, AgentUsage } from "./agent-executor";
 import type { ServerNotification } from "./generated/codex-app-server/ServerNotification";
@@ -15,6 +14,8 @@ import type { TurnInterruptParams } from "./generated/codex-app-server/v2/TurnIn
 import type { TurnStartParams } from "./generated/codex-app-server/v2/TurnStartParams";
 import type { TurnStartResponse } from "./generated/codex-app-server/v2/TurnStartResponse";
 import type { TurnCompletedNotification } from "./generated/codex-app-server/v2/TurnCompletedNotification";
+import { isPathWithin } from "../lib/security/paths";
+import { redactText } from "../lib/security/redaction";
 
 type RequestId = string | number;
 
@@ -27,6 +28,7 @@ export interface AppServerProcess {
 }
 
 interface PendingRequest {
+  method: string;
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
 }
@@ -54,17 +56,6 @@ function abortError(message = "agent turn interrupted"): Error {
   const error = new Error(message);
   error.name = "AbortError";
   return error;
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const relation = relative(resolve(root), resolve(candidate));
-  return relation === "" || (!relation.startsWith("..") && !isAbsolute(relation));
-}
-
-function redactSecrets(text: string): string {
-  return text
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
-    .replace(/\b(authorization|api[_-]?key|access[_-]?token|bearer)\s*[:=]\s*\S+/gi, "$1=[REDACTED]");
 }
 
 function usageFrom(value: unknown): AgentUsage | null {
@@ -118,13 +109,15 @@ export class CodexAppServerClient {
   private exited = false;
   private closing = false;
   private notificationQueue: Promise<void> = Promise.resolve();
+  private activeThreadId: string | null = null;
+  private activeTurnId: string | null = null;
 
   constructor(private readonly process: AppServerProcess) {
     this.lines = createInterface({ input: process.stdout });
     this.lines.on("line", (line) => this.handleLine(line));
     process.stderr.setEncoding("utf8");
     process.stderr.on("data", (chunk: string | Buffer) => {
-      this.stderrTail = redactSecrets((this.stderrTail + String(chunk)).slice(-4000));
+      this.stderrTail = redactText((this.stderrTail + String(chunk)).slice(-4000));
     });
     process.on("exit", (code, signal) => {
       this.exited = true;
@@ -188,6 +181,7 @@ export class CodexAppServerClient {
           } satisfies ThreadStartParams);
 
       activeThreadId = threadResponse.thread.id;
+      this.activeThreadId = activeThreadId;
       await this.emit({ type: "thread-started", at: new Date().toISOString(), threadId: activeThreadId });
 
       const turnParams: TurnStartParams = {
@@ -204,6 +198,7 @@ export class CodexAppServerClient {
 
       const turnResponse = await this.request<TurnStartResponse>("turn/start", turnParams);
       activeTurnId = turnResponse.turn.id;
+      this.activeTurnId = activeTurnId;
       await this.emit({ type: "turn-started", at: new Date().toISOString(), threadId: activeThreadId, turnId: activeTurnId });
 
       const completion = await this.waitForTurn(activeThreadId, activeTurnId);
@@ -237,7 +232,7 @@ export class CodexAppServerClient {
     if (this.fatalError) return Promise.reject(this.fatalError);
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
+      this.pending.set(id, { method, resolve: (value) => resolve(value as T), reject });
       try {
         this.write({ method, id, params });
       } catch (error) {
@@ -278,6 +273,12 @@ export class CodexAppServerClient {
       if (isObject(message.error)) {
         pending.reject(new CodexProtocolError(stringField(message.error, "message") || "App Server request failed"));
       } else {
+        if ((pending.method === "thread/start" || pending.method === "thread/resume") && isObject(message.result)) {
+          this.activeThreadId = stringField(message.result.thread, "id");
+        }
+        if (pending.method === "turn/start" && isObject(message.result)) {
+          this.activeTurnId = stringField(message.result.turn, "id");
+        }
         pending.resolve(message.result);
       }
       return;
@@ -301,11 +302,16 @@ export class CodexAppServerClient {
   private async handleServerRequest(id: RequestId, method: string, params: unknown): Promise<void> {
     const threadId = stringField(params, "threadId") ?? "";
     const turnId = stringField(params, "turnId") ?? "";
+    const activeScope = threadId !== ""
+      && turnId !== ""
+      && threadId === this.activeThreadId
+      && turnId === this.activeTurnId;
     if (method === "item/commandExecution/requestApproval") {
       const command = stringField(params, "command") ?? "";
       const commandCwd = stringField(params, "cwd");
-      const allowed = this.input?.mode === "workspace-write-verify"
-        && (!commandCwd || isWithin(this.input.cwd, commandCwd))
+      const allowed = activeScope
+        && this.input?.mode === "workspace-write-verify"
+        && (!commandCwd || isPathWithin(this.input.cwd, commandCwd))
         && (this.input.verifyCommands ?? []).some((candidate) => candidate.trim() === command.trim());
       await this.emit({ type: "approval", at: new Date().toISOString(), threadId, turnId, approval: "command", allowed, command });
       this.write({ id, result: { decision: allowed ? "accept" : "decline" } });
@@ -313,8 +319,9 @@ export class CodexAppServerClient {
     }
     if (method === "item/fileChange/requestApproval") {
       const grantRoot = stringField(params, "grantRoot");
-      const allowed = this.input?.mode !== "read-only"
-        && (!grantRoot || (this.input ? isWithin(this.input.cwd, grantRoot) : false));
+      const allowed = activeScope
+        && this.input?.mode !== "read-only"
+        && (!grantRoot || (this.input ? isPathWithin(this.input.cwd, grantRoot) : false));
       await this.emit({ type: "approval", at: new Date().toISOString(), threadId, turnId, approval: "file-change", allowed });
       this.write({ id, result: { decision: allowed ? "accept" : "decline" } });
       return;

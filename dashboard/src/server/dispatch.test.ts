@@ -9,6 +9,14 @@ let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "surtec-dispatch-"));
   mkdirSync(join(root, "registry"), { recursive: true });
+  const projectsRoot = join(root, "projects");
+  mkdirSync(join(projectsRoot, "stock-control", ".git"), { recursive: true });
+  process.env.SURTEC_PROJECTS_ROOT = projectsRoot;
+  writeFileSync(
+    join(root, "registry", "agents.yml"),
+    "agents:\n  - id: backend-engineer\n    name: Backend Engineer\n    type: engineering\n    description: Implements code.\n    default_sandbox: workspace-write\n    allowed_task_types: [bugfix]\n    requires_human_approval_for: [merge]\n",
+    "utf8",
+  );
   writeFileSync(
     join(root, "registry", "projects.yml"),
     [
@@ -18,6 +26,10 @@ beforeEach(() => {
       "    status: active",
       "    allowed_agents:",
       "      - backend-engineer",
+      "    sandbox:",
+      "      default: workspace-write",
+      "    commands:",
+      "      test: pnpm test",
       "",
     ].join("\n"),
     "utf8",
@@ -26,6 +38,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   delete process.env.SURTEC_STATE_DIR;
+  delete process.env.SURTEC_PROJECTS_ROOT;
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -44,7 +57,7 @@ describe("createTask", () => {
     expect(t.envelope.requires_human_approval).toBe(true);
     expect(t.envelope.project).toBe("stock-control");
     expect(t.envelope.agent).toBe("backend-engineer");
-    expect(t.envelope.repo_path).toBe("~/dev/surtec/stock-control");
+    expect(t.envelope.repo_path).toBe(join(root, "projects", "stock-control"));
     expect(t.envelope.source).toBe("dashboard");
   });
 

@@ -25,9 +25,17 @@ let stateDir: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "surtec-api-"));
   mkdirSync(join(root, "registry"), { recursive: true });
+  const projectsRoot = join(root, "projects");
+  mkdirSync(join(projectsRoot, "stock-control", ".git"), { recursive: true });
+  process.env.SURTEC_PROJECTS_ROOT = projectsRoot;
+  writeFileSync(
+    join(root, "registry", "agents.yml"),
+    "agents:\n  - id: backend-engineer\n    name: Backend Engineer\n    type: engineering\n    description: Implements backend.\n    default_sandbox: workspace-write\n    allowed_task_types: [bugfix]\n    requires_human_approval_for: [merge]\n",
+    "utf8",
+  );
   writeFileSync(
     join(root, "registry", "projects.yml"),
-    "projects:\n  stock-control:\n    status: active\n    allowed_agents:\n      - backend-engineer\n",
+    "projects:\n  stock-control:\n    status: active\n    allowed_agents:\n      - backend-engineer\n    sandbox:\n      default: workspace-write\n    commands:\n      build: pnpm build\n",
     "utf8",
   );
   stateDir = join(root, "state");
@@ -49,6 +57,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.SURTEC_STATE_DIR;
+  delete process.env.SURTEC_PROJECTS_ROOT;
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -428,8 +437,8 @@ describe("run routes", () => {
   });
 
   it("POST /run with an unconfigured command → 400", async () => {
-    const app = createApp(process.cwd(), () => {}, fakeManager());
-    const res = await app.request("/api/projects/appointment-manager/run", {
+    const app = createApp(root, () => {}, fakeManager());
+    const res = await app.request("/api/projects/stock-control/run", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ command: "nope" }),
     });
@@ -448,8 +457,8 @@ describe("run routes", () => {
   it("POST /run that hits a busy slot → 409", async () => {
     const { SlotBusyError } = await import("../../../runner/process-manager");
     const start = vi.fn().mockImplementation(() => { throw new SlotBusyError("dev"); });
-    const app = createApp(process.cwd(), () => {}, fakeManager({ start }));
-    const res = await app.request("/api/projects/expense-tracker-mvp/run", {
+    const app = createApp(root, () => {}, fakeManager({ start }));
+    const res = await app.request("/api/projects/stock-control/run", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ command: "build" }),
     });
@@ -466,11 +475,11 @@ describe("run routes", () => {
   });
 
   it("GET /api/projects/:id/commands returns the registry map + running slots", async () => {
-    const app = createApp(process.cwd(), () => {}, fakeManager());
-    const res = await app.request("/api/projects/expense-tracker-mvp/commands");
+    const app = createApp(root, () => {}, fakeManager());
+    const res = await app.request("/api/projects/stock-control/commands");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { commands: Record<string, string>; running: object };
-    expect(body.commands.build).toBe("npm run build");
+    expect(body.commands.build).toBe("pnpm build");
     expect(body.running).toEqual({ dev: null, oneshot: null });
   });
 

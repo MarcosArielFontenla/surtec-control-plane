@@ -8,6 +8,7 @@ let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "pc-"));
   mkdirSync(join(root, "registry"));
+  writeFileSync(join(root, "registry", "agents.yml"), "agents: []\n", "utf8");
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
@@ -28,9 +29,9 @@ describe("loadProjectCommands", () => {
     expect(loadProjectCommands(root, "p")).toEqual({ dev: "npm run dev", test: "npm test" });
   });
 
-  it("filters out empty/non-string values", () => {
+  it("fails closed on empty command values", () => {
     writeRegistry(`projects:\n  p:\n    commands:\n      dev: ""\n      test: npm test\n`);
-    expect(loadProjectCommands(root, "p")).toEqual({ test: "npm test" });
+    expect(loadProjectCommands(root, "p")).toEqual({});
   });
 
   it("returns {} for an unknown project", () => {

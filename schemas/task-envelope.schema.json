@@ -22,7 +22,7 @@
   "properties": {
     "id": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
     },
     "source": {
       "type": "string",
@@ -31,23 +31,25 @@
     },
     "project": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
     },
     "task_type": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
     },
     "agent": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
     },
     "title": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 200
     },
     "instructions": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 20000
     },
     "repo_path": {
       "type": "string",
@@ -79,4 +81,3 @@
     }
   }
 }
-

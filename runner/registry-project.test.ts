@@ -8,6 +8,7 @@ let root: string;
 
 function writeRegistry(yml: string): void {
   mkdirSync(join(root, "registry"), { recursive: true });
+  writeFileSync(join(root, "registry", "agents.yml"), "agents: []\n", "utf8");
   writeFileSync(join(root, "registry", "projects.yml"), yml, "utf8");
 }
 
@@ -43,8 +44,8 @@ describe("loadProjectVerifyCommands", () => {
     expect(loadProjectVerifyCommands(root, "p")).toEqual([]);
   });
 
-  it("drops empty/whitespace entries from an explicit verify list", () => {
+  it("fails closed on empty entries in an explicit verify list", () => {
     writeRegistry(`projects:\n  p:\n    verify:\n      - ""\n      - "  "\n      - pnpm test\n`);
-    expect(loadProjectVerifyCommands(root, "p")).toEqual(["pnpm test"]);
+    expect(loadProjectVerifyCommands(root, "p")).toEqual([]);
   });
 });

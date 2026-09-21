@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { TaskEnvelope, TaskRecord } from "../../../lib/state/types";
 import { writeTask } from "../../../lib/state/store";
-import { loadRegistryProjects } from "./registry";
+import { PolicyError, PolicyService } from "../../../lib/policy/service";
 
 export class ValidationError extends Error {}
 
@@ -19,6 +19,7 @@ export function createTask(input: CreateTaskInput, repoRoot: string = process.cw
   const instructions = String(input?.instructions ?? "").trim();
 
   if (!instructions) throw new ValidationError("instructions are required");
+  if (instructions.length > 20_000) throw new ValidationError("instructions are too long");
 
   const sandbox = String(input?.sandbox ?? "read-only");
   if (sandbox !== "read-only" && sandbox !== "workspace-write") {
@@ -30,10 +31,13 @@ export function createTask(input: CreateTaskInput, repoRoot: string = process.cw
     throw new ValidationError("self_verify requires sandbox workspace-write");
   }
 
-  const rp = loadRegistryProjects(repoRoot).find((p) => p.id === project);
-  if (!rp) throw new ValidationError(`unknown project: ${project}`);
-  if (!(rp.allowed_agents ?? []).includes(agent)) {
-    throw new ValidationError(`agent '${agent}' is not allowed for project '${project}'`);
+  let repoPath: string;
+  try {
+    const allowed = new PolicyService(repoRoot).authorizeDispatch({ project, agent, sandbox, selfVerify });
+    repoPath = allowed.project.repo_path!;
+  } catch (error) {
+    if (error instanceof PolicyError) throw new ValidationError(error.message);
+    throw error;
   }
 
   const id = `T-${randomUUID().slice(0, 8)}`;
@@ -45,7 +49,7 @@ export function createTask(input: CreateTaskInput, repoRoot: string = process.cw
     agent,
     title: instructions.slice(0, 80),
     instructions,
-    repo_path: rp.repo_path ?? `~/dev/surtec/${project}`,
+    repo_path: repoPath,
     branch: `agent/${id}-${agent}`,
     sandbox: sandbox as "read-only" | "workspace-write",
     expected_outputs: ["summary", "risks", "next_steps"],

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/task-record.schema.json",
+  "title": "TaskRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["envelope", "lifecycle", "outcome", "created_at", "started_at", "updated_at", "finished_at", "result", "logs_path"],
+  "properties": {
+    "envelope": { "$ref": "https://surtec.dev/schemas/task-envelope.schema.json" },
+    "lifecycle": { "type": "string", "enum": ["queued", "running", "finished"] },
+    "outcome": { "type": ["string", "null"], "enum": ["completed", "partial", "blocked", "failed", "needs-review", null] },
+    "created_at": { "type": "string", "minLength": 1 },
+    "started_at": { "type": ["string", "null"] },
+    "updated_at": { "type": "string", "minLength": 1 },
+    "finished_at": { "type": ["string", "null"] },
+    "result": { "oneOf": [{ "$ref": "https://surtec.dev/schemas/agent-result.schema.json" }, { "type": "null" }] },
+    "logs_path": { "type": ["string", "null"] },
+    "decision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "at"],
+          "properties": {
+            "status": { "type": "string", "enum": ["approved", "rejected"] },
+            "at": { "type": "string", "minLength": 1 },
+            "branch": { "type": "string", "minLength": 1 },
+            "pushed": { "type": "boolean" },
+            "pr_url": { "type": "string", "minLength": 1 },
+            "error": { "type": "string" }
+          }
+        },
+        { "type": "null" }
+      ]
+    }
+  }
+}
+

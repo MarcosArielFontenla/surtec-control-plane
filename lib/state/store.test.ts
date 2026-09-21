@@ -61,10 +61,27 @@ describe("store", () => {
     expect(() => readTask("BAD", tasks)).toThrow();
   });
 
+  it("rejects a well-formed JSON task that does not match the persisted schema", () => {
+    mkdirSync(tasks, { recursive: true });
+    writeFileSync(join(tasks, "BAD.json"), JSON.stringify({ envelope: { id: "BAD" }, lifecycle: "queued" }), "utf8");
+    expect(() => readTask("BAD", tasks)).toThrow(/invalid task record/);
+    expect(listTasks(tasks)).toEqual([]);
+  });
+
+  it("rejects unsafe task identifiers before constructing a path", () => {
+    expect(() => readTask("../escape", tasks)).toThrow(/invalid task id/);
+    expect(() => writeTask(makeRecord("../escape"), tasks)).toThrow();
+  });
+
   it("upserts and lists project overrides", () => {
     upsertProjectOverride({ id: "stock-control", health: "ok", note: "fine" }, projects);
     expect(listProjectOverrides(projects)).toEqual([
       { id: "stock-control", health: "ok", note: "fine" },
     ]);
+  });
+
+  it("validates project overrides before persisting them", () => {
+    expect(() => upsertProjectOverride({ id: "../escape", health: "ok" }, projects)).toThrow();
+    expect(() => upsertProjectOverride({ id: "alpha", health: "unknown" as never }, projects)).toThrow(/invalid project override/);
   });
 });

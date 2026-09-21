@@ -173,6 +173,26 @@ describe("CodexAppServerClient", () => {
     expect(decision).toEqual({ decision: "decline" });
   });
 
+  it("declines an otherwise valid approval from a different turn", async () => {
+    let decision: unknown;
+    const server = new FakeAppServer((message, current) => {
+      if (message.method === "initialize") current.send({ id: message.id, result: {} });
+      if (message.method === "thread/start") current.send({ id: message.id, result: { thread: { id: "thread-1" } } });
+      if (message.method === "turn/start") {
+        current.send({ id: message.id, result: { turn: { id: "turn-1" } } });
+        queueMicrotask(() => current.send({ id: 89, method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", turnId: "forged-turn", command: "pnpm test" } }));
+      }
+      if (message.id === 89 && !message.method) {
+        decision = message.result;
+        current.send(completedTurn());
+      }
+    });
+
+    await new CodexAppServerClient(server).run(input({ mode: "workspace-write-verify", verifyCommands: ["pnpm test"] }), () => {}, new AbortController().signal);
+
+    expect(decision).toEqual({ decision: "decline" });
+  });
+
   it("declines a write approval that asks to expand outside the worktree", async () => {
     let decision: unknown;
     const server = new FakeAppServer((message, current) => {

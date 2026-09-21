@@ -7,10 +7,8 @@ import type { AgentExecutor, AgentRunResult } from "./agent-executor";
 
 vi.mock("./worktree", () => ({ createWorktree: vi.fn(), commitAndDiff: vi.fn() }));
 vi.mock("./verify", () => ({ runVerification: vi.fn() }));
-vi.mock("./registry-project", () => ({ loadProjectVerifyCommands: vi.fn() }));
 import { createWorktree, commitAndDiff } from "./worktree";
 import { runVerification } from "./verify";
-import { loadProjectVerifyCommands } from "./registry-project";
 import { runTask } from "./run-task";
 import { readTask, writeTask } from "../lib/state/store";
 
@@ -68,23 +66,27 @@ function writeRecord(): TaskRecord {
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "surtec-runtask-"));
-  repo = join(root, "repo");
-  mkdirSync(repo, { recursive: true });
+  repo = join(root, "stock-control");
+  mkdirSync(join(repo, ".git"), { recursive: true });
   mkdirSync(join(root, "registry"), { recursive: true });
   writeFileSync(
     join(root, "registry", "agents.yml"),
-    "agents:\n  - id: backend-engineer\n    name: Backend Engineer\n    description: Implements backend.\n",
+    "agents:\n  - id: backend-engineer\n    name: Backend Engineer\n    type: engineering\n    description: Implements backend.\n    default_sandbox: workspace-write\n    allowed_task_types: [bugfix]\n    requires_human_approval_for: [merge]\n",
+    "utf8",
+  );
+  writeFileSync(
+    join(root, "registry", "projects.yml"),
+    "projects:\n  stock-control:\n    allowed_agents: [backend-engineer]\n    sandbox:\n      default: workspace-write\n    commands:\n      test: pnpm test\n",
     "utf8",
   );
   writeFileSync(join(root, "AGENTS.md"), "ROOT RULE: do not deploy.\n", "utf8");
   process.env.SURTEC_STATE_DIR = join(root, "state");
+  process.env.SURTEC_PROJECTS_ROOT = root;
   run = vi.fn<AgentExecutor["run"]>();
   run.mockResolvedValue(agentRun());
   executor = { run };
   vi.mocked(createWorktree).mockReset();
   vi.mocked(commitAndDiff).mockReset();
-  vi.mocked(loadProjectVerifyCommands).mockReset();
-  vi.mocked(loadProjectVerifyCommands).mockReturnValue(["pnpm test"]);
   vi.mocked(runVerification).mockReset();
   vi.mocked(runVerification).mockReturnValue({ status: "passed", checks: [] });
 });
@@ -92,6 +94,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   delete process.env.SURTEC_STATE_DIR;
+  delete process.env.SURTEC_PROJECTS_ROOT;
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -137,7 +140,7 @@ describe("runTask", () => {
 
     await runTask("T-1", root, executor);
 
-    expect(readTask("T-1")?.result?.blockers[0]).toContain("repo not found");
+    expect(readTask("T-1")?.result?.blockers[0]).toContain("repository path does not match");
     expect(run).not.toHaveBeenCalled();
   });
 
@@ -153,7 +156,6 @@ describe("runTask", () => {
   });
 
   it("creates a worktree, executes there, commits, verifies, and records protocol metadata", async () => {
-    mkdirSync(join(repo, ".git"));
     const record = writeRecord();
     record.envelope.self_verify = true;
     writeTask(record);
@@ -172,7 +174,6 @@ describe("runTask", () => {
   });
 
   it("uses plain write mode when self verification is not requested", async () => {
-    mkdirSync(join(repo, ".git"));
     writeTask(writeRecord());
     vi.mocked(createWorktree).mockReturnValue({ branch: "branch", worktreePath: join(root, "worktree") });
     vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: [], diffstat: "", committed: false });
@@ -184,11 +185,12 @@ describe("runTask", () => {
   });
 
   it("fails cleanly when a write target is not a git repository", async () => {
+    rmSync(join(repo, ".git"), { recursive: true, force: true });
     writeTask(writeRecord());
 
     await runTask("T-1", root, executor);
 
-    expect(readTask("T-1")?.result?.blockers[0]).toContain("not a git repository");
+    expect(readTask("T-1")?.result?.blockers[0]).toContain("contained local git checkout");
     expect(run).not.toHaveBeenCalled();
   });
 

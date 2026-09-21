@@ -7,25 +7,11 @@ import { expandHome } from "../lib/expand-home";
 import { codexExecutor } from "./codex-executor";
 import { buildSystemPrompt, buildUserPrompt } from "./agent-prompt";
 import { AGENT_REPORT_SCHEMA } from "./agent-report";
-import { loadRegistryAgents } from "./registry-agents";
 import { toAgentResult, failureResult } from "./result";
 import { createWorktree, commitAndDiff } from "./worktree";
 import { runVerification } from "./verify";
-import { loadProjectVerifyCommands } from "./registry-project";
-
-function redactLogText(value: string): string {
-  return value
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
-    .replace(/\b(authorization|api[_-]?key|access[_-]?token|bearer)\s*[:=]\s*\S+/gi, "$1=[REDACTED]");
-}
-
-function safeLogJson(value: unknown): string {
-  const secretKey = /(authorization|api[_-]?key|access[_-]?token|password|secret)/i;
-  return redactLogText(JSON.stringify(value, (key, item) => {
-    if (key && secretKey.test(key)) return "[REDACTED]";
-    return typeof item === "string" ? redactLogText(item) : item;
-  }));
-}
+import { PolicyService } from "../lib/policy/service";
+import { safeJson } from "../lib/security/redaction";
 
 export async function runTask(
   taskId: string,
@@ -59,30 +45,18 @@ export async function runTask(
 
   const writeLog = (obj: unknown): void => {
     try {
-      writeFileSync(absLogsPath, safeLogJson(obj) + "\n", { encoding: "utf8", flag: "a" });
+      writeFileSync(absLogsPath, safeJson(obj) + "\n", { encoding: "utf8", flag: "a" });
     } catch {
       /* logging must never break the run */
     }
   };
 
   try {
-    const cwd = expandHome(rec.envelope.repo_path);
-    if (!existsSync(cwd)) {
-      const reason = `repo not found at ${cwd}`;
-      writeLog({ error: reason });
-      finish("failed", failureResult(rec.envelope, reason, logsPath));
-      return;
-    }
-    const agent = loadRegistryAgents(repoRoot).find((a) => a.id === rec.envelope.agent);
-    if (!agent) {
-      const reason = `unknown agent: ${rec.envelope.agent}`;
-      writeLog({ error: reason });
-      finish("failed", failureResult(rec.envelope, reason, logsPath));
-      return;
-    }
+    const allowed = new PolicyService(repoRoot).authorizeTask(rec.envelope);
+    const cwd = expandHome(allowed.project.repo_path!);
+    const agent = allowed.agent;
     const agentsMd = readFileSync(join(repoRoot, "AGENTS.md"), "utf8");
-    const verifyCommands =
-      rec.envelope.sandbox === "workspace-write" ? loadProjectVerifyCommands(repoRoot, rec.envelope.project) : [];
+    const verifyCommands = rec.envelope.sandbox === "workspace-write" ? allowed.project.verify_commands : [];
     const wantsVerify = rec.envelope.self_verify === true && verifyCommands.length > 0;
     const mode = wantsVerify
       ? "workspace-write-verify"

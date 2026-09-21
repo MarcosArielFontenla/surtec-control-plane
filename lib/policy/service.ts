@@ -5,10 +5,11 @@ import { parse } from "yaml";
 import agentsRegistrySchema from "../../schemas/agents-registry.schema.json";
 import projectsRegistrySchema from "../../schemas/projects-registry.schema.json";
 import type { ProjectCommands, SandboxMode } from "../state/types";
+import type { TaskEnvelope } from "../state/types";
 import { DEFAULT_IGNORE, discoverProjects, type DiscoveredProject } from "../discover";
 import { expandHome } from "../expand-home";
 import { assertSafeIdentifier } from "../security/identifiers";
-import { isPathWithin } from "../security/paths";
+import { canonicalPath, isPathWithin } from "../security/paths";
 
 export interface PolicyAgent {
   id: string;
@@ -180,6 +181,24 @@ export class PolicyService {
     return { project, agent };
   }
 
+  authorizeTask(envelope: TaskEnvelope): { project: PolicyProject; agent: PolicyAgent } {
+    try { assertSafeIdentifier(envelope.id, "task id"); } catch { throw new PolicyError("invalid task id", "invalid-input"); }
+    const allowed = this.authorizeDispatch({
+      project: envelope.project,
+      agent: envelope.agent,
+      sandbox: envelope.sandbox,
+      selfVerify: envelope.self_verify === true,
+    });
+    if (canonicalPath(envelope.repo_path) !== canonicalPath(allowed.project.repo_path!)) {
+      throw new PolicyError(`task '${envelope.id}' repository path does not match current project policy`, "denied");
+    }
+    const genericTaskType = envelope.sandbox === "workspace-write" ? "implementation" : "analysis";
+    if (envelope.task_type !== genericTaskType && !allowed.agent.allowed_task_types.includes(envelope.task_type)) {
+      throw new PolicyError(`task type '${envelope.task_type}' is not allowed for agent '${envelope.agent}'`, "denied");
+    }
+    return allowed;
+  }
+
   private projectsRoot(): string {
     return expandHome(this.environment.SURTEC_PROJECTS_ROOT ?? dirname(this.repoRoot));
   }
@@ -188,4 +207,3 @@ export class PolicyService {
     return [...DEFAULT_IGNORE, ...(this.environment.SURTEC_PROJECTS_IGNORE ?? "").split(",").map((value) => value.trim()).filter(Boolean)];
   }
 }
-

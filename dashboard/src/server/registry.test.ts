@@ -10,6 +10,11 @@ describe("loadRegistryProjects", () => {
     root = mkdtempSync(join(tmpdir(), "surtec-reg-"));
     mkdirSync(join(root, "registry"), { recursive: true });
     writeFileSync(
+      join(root, "registry", "agents.yml"),
+      "agents:\n  - id: backend-engineer\n    name: Backend Engineer\n    type: engineering\n    description: Implements code.\n    default_sandbox: workspace-write\n    allowed_task_types: []\n    requires_human_approval_for: []\n  - id: qa-reviewer\n    name: QA Reviewer\n    type: quality\n    description: Reviews quality.\n    default_sandbox: read-only\n    allowed_task_types: []\n    requires_human_approval_for: []\n",
+      "utf8",
+    );
+    writeFileSync(
       join(root, "registry", "projects.yml"),
       [
         "projects:",
@@ -37,7 +42,7 @@ describe("loadRegistryProjects", () => {
         status: "active",
         repo: "git@github.com:surtec/stock-control.git",
         allowed_agents: ["backend-engineer", "qa-reviewer"],
-        repo_path: "~/dev/surtec/stock-control",
+        repo_path: null,
         default_branch: "main",
         deploy_url: null,
         railway: null,
