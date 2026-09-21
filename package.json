@@ -2,12 +2,16 @@
   "name": "surtec-control-plane",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.24.0",
   "description": "Local portfolio control plane with Codex-native task dispatch.",
   "type": "module",
   "scripts": {
     "state": "tsx cli/surtec-state.ts",
     "codex:generate-protocol": "node scripts/generate-codex-protocol.mjs",
     "schemas:check": "node scripts/check-schemas.mjs",
+    "secrets:check": "node scripts/check-secrets.mjs",
+    "audit:check": "pnpm audit --audit-level moderate",
+    "ci:check": "pnpm schemas:check && pnpm secrets:check && pnpm test && pnpm typecheck && pnpm build",
     "smoke:api": "tsx scripts/api-smoke.ts",
     "smoke:codex": "tsx scripts/codex-smoke.ts",
     "dev:api": "tsx dashboard/src/server/serve.ts",
@@ -20,30 +24,30 @@
     "test:watch": "vitest"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",
     "ajv": "^8.20.0",
     "hono": "^4.13.8",
-    "lucide-react": "^1.17.0",
+    "lucide-react": "^1.47.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "yaml": "^2.6.1"
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@testing-library/jest-dom": "^6.6.3",
-    "@testing-library/react": "^16.1.0",
-    "@types/node": "^22.10.2",
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.4",
-    "concurrently": "^9.1.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^22.20.4",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.4",
     "jsdom": "^25.0.1",
-    "playwright": "^1.60.0",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vite": "^6.0.5",
-    "vitest": "^2.1.8"
+    "playwright": "^1.63.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3",
+    "vitest": "^4.1.11"
   }
 }

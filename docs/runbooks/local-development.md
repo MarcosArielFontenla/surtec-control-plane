@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Node.js 18 or newer.
+- Node.js 20 or newer.
 - pnpm.
 - Git.
 - Codex CLI for real dispatch.
@@ -39,4 +39,3 @@ pnpm start
 ## Validation
 
 Use `pnpm smoke:api` for the local API smoke. Real agent execution is never part of the normal test suite; see the Codex runtime runbook for the explicit smoke command.
-

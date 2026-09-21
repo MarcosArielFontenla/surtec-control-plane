@@ -73,6 +73,7 @@ describe("ensurePullRequest", () => {
   });
 
   it("does not create a PR when the duplicate check fails", () => {
+    // secret-scan: allow -- synthetic credential used to verify redaction.
     mocks.spawnSync.mockReturnValueOnce({ status: 1, stdout: "", stderr: "token=ghp_abcdefghijklmnopqrstuvwxyz123456" });
 
     const result = ensurePullRequest("/repo", "agent/T-1", "main", "title", "body");

@@ -20,7 +20,7 @@ Preserve a modular monolith. Do not introduce distributed infrastructure, multi-
 
 ## Architecture
 
-- TypeScript ESM on Node.js 18 or newer.
+- TypeScript ESM on Node.js 20 or newer.
 - React and Vite provide the dashboard UI.
 - Hono provides the local API.
 - Codex App Server over local `stdio` JSON-RPC is the only agent execution runtime.
@@ -76,4 +76,3 @@ Every phase delivery reports:
 7. Known risks and deferred work.
 8. Local commits created.
 9. Recommended next phase.
-

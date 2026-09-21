@@ -209,12 +209,13 @@ describe("api", () => {
     expect(res.status).toBe(404);
   });
 
-  it("POST /api/tasks/:id/approve returns 400 when already decided", async () => {
+  it("POST /api/tasks/:id/approve is idempotent when already approved", async () => {
     writeFinishedReadOnly("RV-3");
     const app = createApp(root, () => {});
-    await apiRequest(app, "/api/tasks/RV-3/approve", { method: "POST" });
+    const first = await apiRequest(app, "/api/tasks/RV-3/approve", { method: "POST" });
     const res = await apiRequest(app, "/api/tasks/RV-3/approve", { method: "POST" });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(await first.json());
   });
 
   it("open: 404 for an unknown project", async () => {

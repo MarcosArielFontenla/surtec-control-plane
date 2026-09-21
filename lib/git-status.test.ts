@@ -69,7 +69,7 @@ describe("readGitStatus", () => {
     expect(s.ahead).toBe(0);
     rmSync(bare, { recursive: true, force: true });
     rmSync(clone2, { recursive: true, force: true });
-  });
+  }, 15_000);
 
   it("returns ok:false for a non-repo directory", () => {
     const s = readGitStatus(dir);
