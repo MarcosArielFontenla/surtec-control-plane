@@ -15,6 +15,7 @@ pnpm install --frozen-lockfile
 pnpm codex:generate-protocol
 pnpm schemas:check
 pnpm secrets:check
+pnpm evals:check
 pnpm test
 pnpm typecheck
 pnpm build
@@ -43,7 +44,7 @@ pnpm start
 
 ## Validation
 
-`pnpm ci:check` runs every offline quality gate. `pnpm audit:check` additionally queries the npm registry and fails on moderate or higher advisories.
+`pnpm ci:check` runs every offline quality gate, including the versioned role/task-type evaluation suite under `evals/v1/`. `pnpm evals:check` can run that suite independently; it validates fixture schemas, registry coverage, deterministic quality thresholds, and non-compensable security/policy failures. `pnpm audit:check` additionally queries the npm registry and fails on moderate or higher advisories.
 
 Use `pnpm smoke:api` for the local API smoke. The production-style API listens on `127.0.0.1`; browser mutations obtain an in-memory session token automatically. A server restart intentionally invalidates the previous token.
 

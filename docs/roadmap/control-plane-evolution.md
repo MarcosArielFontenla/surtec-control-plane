@@ -28,6 +28,8 @@ Status: complete on 2026-09-21. See [Phase 3 verification](phase-3-verification.
 
 Build versioned fixture-based evaluations by role and task type. Prefer deterministic checks; make security and policy violations hard failures regardless of aggregate scores.
 
+Status: complete on 2026-09-21. See [Phase 4 verification](phase-4-verification.md).
+
 ## Phase 5 — Integrations and extensibility
 
 Narrowly evolve source-control, CI, deployment, and observability integrations when multiple real implementations justify an interface.
