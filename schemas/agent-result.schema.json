@@ -29,7 +29,7 @@
     },
     "status": {
       "type": "string",
-      "enum": ["completed", "partial", "blocked", "failed", "needs-review"]
+      "enum": ["completed", "partial", "blocked", "failed", "needs-review", "cancelled"]
     },
     "summary": {
       "type": "string"

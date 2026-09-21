@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTask, ValidationError } from "./dispatch";
 import { listTasks } from "../../../lib/state/store";
+import { readTaskEvents } from "../../../lib/state/events";
 
 let root: string;
 beforeEach(() => {
@@ -59,6 +60,9 @@ describe("createTask", () => {
     expect(t.envelope.agent).toBe("backend-engineer");
     expect(t.envelope.repo_path).toBe(join(root, "projects", "stock-control"));
     expect(t.envelope.source).toBe("dashboard");
+    expect(t.revision).toBe(1);
+    expect(t.orchestration).toMatchObject({ attempts: 0, max_attempts: 3, lease: null });
+    expect(readTaskEvents(id)).toMatchObject([{ task_id: id, type: "queued", revision: 1 }]);
   });
 
   it("rejects unknown project", () => {

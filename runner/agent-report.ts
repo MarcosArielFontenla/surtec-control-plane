@@ -5,7 +5,7 @@ const OUTCOMES = ["completed", "partial", "blocked", "failed", "needs-review"] a
 const STRING_ARRAY_FIELDS = ["commands_run", "tests_run", "risks", "blockers", "next_steps", "artifacts"] as const;
 
 export interface AgentReport {
-  status: AgentOutcome;
+  status: Exclude<AgentOutcome, "cancelled">;
   summary: string;
   commands_run: string[];
   tests_run: string[];

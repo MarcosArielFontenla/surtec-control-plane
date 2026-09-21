@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { TaskEnvelope, TaskRecord } from "../../../lib/state/types";
 import { writeTask } from "../../../lib/state/store";
 import { PolicyError, PolicyService } from "../../../lib/policy/service";
+import { defaultTaskOrchestration } from "../../../lib/state/orchestration";
+import { appendTaskEvent } from "../../../lib/state/events";
 
 export class ValidationError extends Error {}
 
@@ -69,7 +71,10 @@ export function createTask(input: CreateTaskInput, repoRoot: string = process.cw
     finished_at: null,
     result: null,
     logs_path: null,
+    revision: 1,
+    orchestration: defaultTaskOrchestration(),
   };
   writeTask(record);
+  appendTaskEvent({ task_id: id, type: "queued", revision: 1, payload: { source: envelope.source } });
   return { id };
 }

@@ -8,13 +8,60 @@
   "properties": {
     "envelope": { "$ref": "https://surtec.dev/schemas/task-envelope.schema.json" },
     "lifecycle": { "type": "string", "enum": ["queued", "running", "finished"] },
-    "outcome": { "type": ["string", "null"], "enum": ["completed", "partial", "blocked", "failed", "needs-review", null] },
+    "outcome": { "type": ["string", "null"], "enum": ["completed", "partial", "blocked", "failed", "needs-review", "cancelled", null] },
     "created_at": { "type": "string", "minLength": 1 },
     "started_at": { "type": ["string", "null"] },
     "updated_at": { "type": "string", "minLength": 1 },
     "finished_at": { "type": ["string", "null"] },
     "result": { "oneOf": [{ "$ref": "https://surtec.dev/schemas/agent-result.schema.json" }, { "type": "null" }] },
     "logs_path": { "type": ["string", "null"] },
+    "revision": { "type": "integer", "minimum": 1 },
+    "orchestration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempts", "max_attempts", "max_runtime_ms", "max_total_tokens", "cumulative_tokens", "retry_at", "cancel_requested_at", "lease", "last_failure"],
+      "properties": {
+        "attempts": { "type": "integer", "minimum": 0 },
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "max_runtime_ms": { "type": "integer", "minimum": 1000, "maximum": 86400000 },
+        "max_total_tokens": { "type": "integer", "minimum": 1 },
+        "cumulative_tokens": { "type": "integer", "minimum": 0 },
+        "retry_at": { "type": ["string", "null"] },
+        "cancel_requested_at": { "type": ["string", "null"] },
+        "lease": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["run_id", "worker_id", "acquired_at", "heartbeat_at", "expires_at"],
+              "properties": {
+                "run_id": { "type": "string", "minLength": 1 },
+                "worker_id": { "type": "string", "minLength": 1 },
+                "acquired_at": { "type": "string", "minLength": 1 },
+                "heartbeat_at": { "type": "string", "minLength": 1 },
+                "expires_at": { "type": "string", "minLength": 1 }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "last_failure": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "message", "at"],
+              "properties": {
+                "kind": { "type": "string", "enum": ["transient", "terminal", "cancelled", "budget"] },
+                "message": { "type": "string" },
+                "at": { "type": "string", "minLength": 1 }
+              }
+            },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
     "decision": {
       "oneOf": [
         {

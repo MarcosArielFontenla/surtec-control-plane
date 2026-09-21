@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/task-event.schema.json",
+  "title": "TaskEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "task_id", "type", "at", "revision", "run_id", "attempt", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "type": {
+      "type": "string",
+      "enum": ["queued", "claimed", "started", "thread-started", "turn-started", "usage", "cancel-requested", "cancelled", "retry-scheduled", "lease-recovered", "completed", "failed", "needs-review", "warning"]
+    },
+    "at": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "run_id": { "type": ["string", "null"] },
+    "attempt": { "type": ["integer", "null"], "minimum": 1 },
+    "payload": { "type": "object", "maxProperties": 20 }
+  }
+}

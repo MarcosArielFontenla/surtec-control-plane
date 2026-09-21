@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeTask, readTask, listTasks, upsertProjectOverride, listProjectOverrides } from "./store";
+import { writeTask, readTask, listTasks, upsertProjectOverride, listProjectOverrides, updateTask, withStateLock, StateLockConflictError } from "./store";
 import type { TaskRecord } from "./types";
 
 function makeRecord(id: string): TaskRecord {
@@ -37,6 +37,27 @@ describe("store", () => {
     const rec = makeRecord("STK-1");
     writeTask(rec, tasks);
     expect(readTask("STK-1", tasks)).toEqual(rec);
+  });
+
+  it("mutates a task under a lock and increments its revision", () => {
+    writeTask(makeRecord("STK-1"), tasks);
+    const updated = updateTask("STK-1", (record) => {
+      record.lifecycle = "running";
+    }, tasks);
+    expect(updated?.lifecycle).toBe("running");
+    expect(updated?.revision).toBe(1);
+    expect(readTask("STK-1", tasks)?.revision).toBe(1);
+  });
+
+  it("rejects a concurrent state lock instead of mutating unlocked", () => {
+    const locks = join(dir, "locks");
+    mkdirSync(locks, { recursive: true });
+    const descriptor = openSync(join(locks, "STK-1.lock"), "wx");
+    try {
+      expect(() => withStateLock("STK-1", () => undefined, locks)).toThrow(StateLockConflictError);
+    } finally {
+      closeSync(descriptor);
+    }
   });
 
   it("readTask returns null when missing", () => {

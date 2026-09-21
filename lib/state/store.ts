@@ -1,9 +1,9 @@
 import {
-  mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, existsSync,
+  closeSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync, renameSync, existsSync, statSync, unlinkSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import type { TaskRecord, ProjectStatusOverride } from "./types";
-import { tasksDir, projectsDir } from "./paths";
+import { tasksDir, projectsDir, locksDir } from "./paths";
 import { assertSafeIdentifier } from "../security/identifiers";
 import { describeValidation, validateProjectOverride, validateTaskRecord } from "./validation";
 
@@ -12,6 +12,43 @@ export function writeJsonAtomic(filePath: string, data: unknown): void {
   const tmp = `${filePath}.tmp`;
   writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
   renameSync(tmp, filePath);
+}
+
+export class StateLockConflictError extends Error {}
+
+const STALE_LOCK_MS = 30_000;
+
+export function withStateLock<T>(id: string, action: () => T, dir: string = locksDir()): T {
+  assertSafeIdentifier(id, "lock id");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${id}.lock`);
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, "wx");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    try {
+      if (Date.now() - statSync(path).mtimeMs <= STALE_LOCK_MS) {
+        throw new StateLockConflictError(`state lock is busy: ${id}`);
+      }
+      unlinkSync(path);
+      descriptor = openSync(path, "wx");
+    } catch (retryError) {
+      if (retryError instanceof StateLockConflictError) throw retryError;
+      if ((retryError as NodeJS.ErrnoException).code === "ENOENT") {
+        descriptor = openSync(path, "wx");
+      } else {
+        throw retryError;
+      }
+    }
+  }
+  try {
+    writeFileSync(descriptor, `${process.pid}\n${new Date().toISOString()}\n`, "utf8");
+    return action();
+  } finally {
+    closeSync(descriptor);
+    try { unlinkSync(path); } catch { /* a stale-lock recovery may already have removed it */ }
+  }
 }
 
 function readJsonDir<T>(dir: string, label: string, validate: ((value: unknown) => value is T) & { errors?: unknown }): T[] {
@@ -47,6 +84,18 @@ export function readTask(id: string, dir: string = tasksDir()): TaskRecord | nul
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
   }
+}
+
+export function updateTask(id: string, mutate: (record: TaskRecord) => void, dir: string = tasksDir()): TaskRecord | null {
+  assertSafeIdentifier(id, "task id");
+  return withStateLock(id, () => {
+    const record = readTask(id, dir);
+    if (!record) return null;
+    mutate(record);
+    record.revision = (record.revision ?? 0) + 1;
+    writeTask(record, dir);
+    return record;
+  }, join(dirname(dir), "locks"));
 }
 
 export function listTasks(dir: string = tasksDir()): TaskRecord[] {

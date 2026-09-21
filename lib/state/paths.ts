@@ -16,6 +16,14 @@ export function projectsDir(base: string = stateDir()): string {
   return join(base, "projects");
 }
 
+export function eventsDir(base: string = stateDir()): string {
+  return join(base, "events");
+}
+
+export function locksDir(base: string = stateDir()): string {
+  return join(base, "locks");
+}
+
 export function notesDir(base: string = stateDir()): string {
   return join(base, "notes");
 }

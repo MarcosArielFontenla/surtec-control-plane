@@ -19,7 +19,7 @@ export interface TaskEnvelope {
 }
 
 // Canonical TS mirror of schemas/agent-result.schema.json
-export type AgentOutcome = "completed" | "partial" | "blocked" | "failed" | "needs-review";
+export type AgentOutcome = "completed" | "partial" | "blocked" | "failed" | "needs-review" | "cancelled";
 
 export interface AgentResult {
   task_id: string;
@@ -61,6 +61,34 @@ export interface ReviewDecision {
 
 export type Lifecycle = "queued" | "running" | "finished";
 
+export interface TaskLease {
+  run_id: string;
+  worker_id: string;
+  acquired_at: string;
+  heartbeat_at: string;
+  expires_at: string;
+}
+
+export type TaskFailureKind = "transient" | "terminal" | "cancelled" | "budget";
+
+export interface TaskFailure {
+  kind: TaskFailureKind;
+  message: string;
+  at: string;
+}
+
+export interface TaskOrchestration {
+  attempts: number;
+  max_attempts: number;
+  max_runtime_ms: number;
+  max_total_tokens: number;
+  cumulative_tokens: number;
+  retry_at: string | null;
+  cancel_requested_at: string | null;
+  lease: TaskLease | null;
+  last_failure: TaskFailure | null;
+}
+
 export interface TaskRecord {
   envelope: TaskEnvelope;
   lifecycle: Lifecycle;
@@ -72,6 +100,35 @@ export interface TaskRecord {
   result: AgentResult | null;
   logs_path: string | null;
   decision?: ReviewDecision | null;
+  revision?: number;
+  orchestration?: TaskOrchestration;
+}
+
+export type TaskEventType =
+  | "queued"
+  | "claimed"
+  | "started"
+  | "thread-started"
+  | "turn-started"
+  | "usage"
+  | "cancel-requested"
+  | "cancelled"
+  | "retry-scheduled"
+  | "lease-recovered"
+  | "completed"
+  | "failed"
+  | "needs-review"
+  | "warning";
+
+export interface TaskEvent {
+  event_id: string;
+  task_id: string;
+  type: TaskEventType;
+  at: string;
+  revision: number;
+  run_id: string | null;
+  attempt: number | null;
+  payload: Record<string, unknown>;
 }
 
 export interface ProjectStatusOverride {
