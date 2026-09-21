@@ -65,4 +65,3 @@ Default limits are conservative and environment-configurable:
 - No automatic push, pull request, merge, deployment, or destructive orphan cleanup.
 - No paid Codex request in automated verification.
 - No complete task-detail observability UI; Phase 3 owns the richer lifecycle view.
-

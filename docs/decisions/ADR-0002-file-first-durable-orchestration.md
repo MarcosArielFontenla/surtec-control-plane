@@ -61,4 +61,3 @@ Trade-offs:
 - SQLite now: stronger multi-record transactions, but no current query volume or deployment need justifies a storage migration.
 - Redis or a hosted queue: contradicts local-first operation and introduces a service dependency.
 - One child worker process per task: adds process supervision and IPC without improving the current single-host durability guarantees enough to justify the complexity.
-
