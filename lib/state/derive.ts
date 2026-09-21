@@ -15,7 +15,7 @@ export interface RegistryProject {
   railway?: { project_id: string; service_id: string; environment_id: string } | null;
 }
 
-function toTaskView(t: TaskRecord): TaskView {
+export function toTaskView(t: TaskRecord): TaskView {
   const orchestration = t.orchestration ?? defaultTaskOrchestration();
   return {
     id: t.envelope.id,
@@ -32,6 +32,24 @@ function toTaskView(t: TaskRecord): TaskView {
     retry_at: orchestration.retry_at,
     cancel_requested_at: orchestration.cancel_requested_at,
   };
+}
+
+export function buildAttention(tasks: TaskRecord[]): AttentionItem[] {
+  const attention: AttentionItem[] = [];
+  for (const t of tasks) {
+    if (t.decision?.status === "approved" || t.decision?.status === "rejected") continue;
+    const verification = t.result?.verification?.status ?? null;
+    if (t.lifecycle === "finished" && t.outcome === "needs-review") {
+      attention.push({ kind: "needs-review", task_id: t.envelope.id, project: t.envelope.project, title: t.envelope.title, verification });
+    } else if (t.lifecycle === "finished" && (t.outcome === "completed" || t.outcome === "partial") && t.envelope.requires_human_approval) {
+      attention.push({ kind: "awaiting-approval", task_id: t.envelope.id, project: t.envelope.project, title: t.envelope.title, verification });
+    }
+    if (t.result) {
+      for (const r of t.result.risks) attention.push({ kind: "risk", task_id: t.envelope.id, project: t.envelope.project, title: r });
+      for (const b of t.result.blockers) attention.push({ kind: "blocker", task_id: t.envelope.id, project: t.envelope.project, title: b });
+    }
+  }
+  return attention;
 }
 
 export function buildOverview(
@@ -74,27 +92,7 @@ export function buildOverview(
     };
   });
 
-  const attention: AttentionItem[] = [];
-  for (const t of tasks) {
-    if (t.decision?.status === "approved" || t.decision?.status === "rejected") continue;
-    // A task-level flag is raised only once: needs-review takes priority over
-    // awaiting-approval (review the work before approving it). Both branches guard
-    // on lifecycle === "finished" so a still-running task never surfaces here.
-    const verification = t.result?.verification?.status ?? null;
-    if (t.lifecycle === "finished" && t.outcome === "needs-review") {
-      attention.push({ kind: "needs-review", task_id: t.envelope.id, project: t.envelope.project, title: t.envelope.title, verification });
-    } else if (t.lifecycle === "finished" && (t.outcome === "completed" || t.outcome === "partial") && t.envelope.requires_human_approval) {
-      attention.push({ kind: "awaiting-approval", task_id: t.envelope.id, project: t.envelope.project, title: t.envelope.title, verification });
-    }
-    if (t.result) {
-      for (const r of t.result.risks) {
-        attention.push({ kind: "risk", task_id: t.envelope.id, project: t.envelope.project, title: r });
-      }
-      for (const b of t.result.blockers) {
-        attention.push({ kind: "blocker", task_id: t.envelope.id, project: t.envelope.project, title: b });
-      }
-    }
-  }
+  const attention = buildAttention(tasks);
 
   return { projects, inProgress, history, attention };
 }

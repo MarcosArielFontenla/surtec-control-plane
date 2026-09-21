@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { listTasks, listProjectOverrides, readTask } from "../../../lib/state/store";
 import { readTaskEvents } from "../../../lib/state/events";
 import { buildOverview } from "../../../lib/state/derive";
+import { buildTaskDetail, buildToday } from "../../../lib/state/observability";
 import { loadRegistryProjects } from "./registry";
 import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
 import { createGitStatusCache } from "../../../lib/git-status-cache";
@@ -65,10 +66,41 @@ export function createApp(
     }
   });
 
+  app.get("/api/today", (c) => {
+    const date = c.req.query("date");
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: "date must use YYYY-MM-DD" }, 400);
+    try {
+      const tasks = listTasks();
+      const warnings: string[] = [];
+      const events = tasks.flatMap((task) => {
+        try {
+          return readTaskEvents(task.envelope.id);
+        } catch {
+          warnings.push(`Task ${task.envelope.id} has an unreadable event stream.`);
+          return [];
+        }
+      });
+      return c.json(buildToday(tasks, events, { date, warnings }));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
   app.get("/api/tasks/:id", (c) => {
     const rec = readTask(c.req.param("id"));
     if (!rec) return c.json({ error: "not found" }, 404);
     return c.json(rec);
+  });
+
+  app.get("/api/tasks/:id/detail", (c) => {
+    try {
+      const id = c.req.param("id");
+      const rec = readTask(id);
+      if (!rec) return c.json({ error: "not found" }, 404);
+      return c.json(buildTaskDetail(rec, readTaskEvents(id), repoRoot));
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 500);
+    }
   });
 
   app.get("/api/tasks/:id/events", (c) => {

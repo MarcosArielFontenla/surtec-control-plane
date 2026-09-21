@@ -75,11 +75,13 @@ beforeEach(() => {
   };
   writeFileSync(join(stateDir, "tasks", "STK-1.json"), JSON.stringify(task), "utf8");
   process.env.SURTEC_STATE_DIR = stateDir;
+  process.env.SURTEC_TIME_ZONE = "UTC";
 });
 
 afterEach(() => {
   delete process.env.SURTEC_STATE_DIR;
   delete process.env.SURTEC_PROJECTS_ROOT;
+  delete process.env.SURTEC_TIME_ZONE;
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -145,6 +147,39 @@ describe("api", () => {
     const res = await app.request("/api/tasks/STK-1/events");
     expect(res.status).toBe(200);
     expect((await res.json()).events).toMatchObject([{ task_id: "STK-1", type: "warning" }]);
+  });
+
+  it("GET /api/today returns evidence-backed daily operations", async () => {
+    appendTaskEvent({ task_id: "STK-1", type: "retry-scheduled", revision: 1, payload: { reason: "transient" }, at: "2026-05-28T11:00:00Z" });
+    const app = createApp(root);
+
+    const res = await app.request("/api/today?date=2026-05-28");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      date: "2026-05-28", time_zone: "UTC", counts: { active: 1, retries: 1 },
+      active: [{ id: "STK-1" }], retries: [{ task: { id: "STK-1" }, event: { type: "retry-scheduled" } }],
+    });
+  });
+
+  it("GET /api/today rejects an invalid date", async () => {
+    const res = await createApp(root).request("/api/today?date=today");
+    expect(res.status).toBe(400);
+  });
+
+  it("GET /api/tasks/:id/detail returns consolidated task evidence", async () => {
+    appendTaskEvent({ task_id: "STK-1", type: "policy-evaluated", revision: 1, payload: { allowed: true } });
+    const app = createApp(root);
+
+    const res = await app.request("/api/tasks/STK-1/detail");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      task: { envelope: { id: "STK-1" } },
+      policy_decisions: [{ type: "policy-evaluated" }],
+      diff: { status: "none" },
+      cleanup: { status: "unknown" },
+    });
   });
 
   it("GET /api/dispatch-options returns projects with their allowed agents", async () => {

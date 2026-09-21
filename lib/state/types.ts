@@ -199,6 +199,72 @@ export interface OverviewModel {
   attention: AttentionItem[];
 }
 
+export interface TodayActivity {
+  task: TaskView;
+  event: TaskEvent;
+}
+
+export interface TodayModel {
+  date: string;
+  time_zone: string;
+  generated_at: string;
+  active: TaskView[];
+  attention: AttentionItem[];
+  completed: TaskView[];
+  failed: TaskView[];
+  cancelled: TaskView[];
+  retries: TodayActivity[];
+  cancellations: TodayActivity[];
+  recoveries: TodayActivity[];
+  counts: {
+    active: number;
+    attention: number;
+    completed: number;
+    failed: number;
+    cancelled: number;
+    retries: number;
+  };
+  warnings: string[];
+}
+
+export interface TaskDiffEvidence {
+  status: "available" | "none" | "missing" | "invalid";
+  path: string | null;
+  content: string | null;
+  truncated: boolean;
+}
+
+export interface TaskExecutionEvidence {
+  mode: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  trace_id: string | null;
+  span_id: string | null;
+  branch: string | null;
+  worktree_path: string | null;
+  committed: boolean | null;
+  diffstat: string | null;
+}
+
+export interface TaskCleanupEvidence {
+  status: "not-applicable" | "retained" | "completed" | "failed" | "unknown";
+  at: string | null;
+}
+
+export interface TaskDetailModel {
+  task: TaskRecord;
+  events: TaskEvent[];
+  duration_ms: number | null;
+  execution: TaskExecutionEvidence;
+  diff: TaskDiffEvidence;
+  policy_decisions: TaskEvent[];
+  approvals: TaskEvent[];
+  usage: TaskEvent[];
+  retries: TaskEvent[];
+  review_history: TaskEvent[];
+  cleanup: TaskCleanupEvidence;
+}
+
 // --- Process runs (B.2 "Procesos") ---
 export type RunKind = "dev" | "oneshot";
 export type RunStatus = "running" | "exited" | "failed" | "stopped";
