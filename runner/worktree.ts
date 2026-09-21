@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
+import { gitEnvironment } from "../lib/security/environment";
+import { redactText } from "../lib/security/redaction";
 
 export interface WorktreeInfo {
   branch: string;
@@ -17,10 +19,10 @@ function sanitizeId(s: string): string {
 }
 
 function git(args: string[]): { ok: boolean; stdout: string; stderr: string } {
-  const r = spawnSync("git", args, { encoding: "utf8", timeout: 30_000 });
-  const stderr = r.stderr ?? "";
+  const r = spawnSync("git", args, { encoding: "utf8", timeout: 30_000, env: gitEnvironment() });
+  const stderr = redactText(r.stderr ?? "");
   // r.error is set when the process couldn't be spawned (e.g. git missing) or timed out.
-  return { ok: r.status === 0, stdout: r.stdout ?? "", stderr: stderr || (r.error ? r.error.message : "") };
+  return { ok: r.status === 0, stdout: redactText(r.stdout ?? ""), stderr: stderr || (r.error ? redactText(r.error.message) : "") };
 }
 
 export function createWorktree(sourceRepo: string, taskId: string, agentId: string): WorktreeInfo {

@@ -6,6 +6,12 @@ import { ProjectNotes } from "./ProjectNotes";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("ProjectNotes", () => {
+  function sessionResponse(url: string): Response | null {
+    return String(url).endsWith("/api/session")
+      ? { ok: true, status: 200, json: async () => ({ token: "test-session-token" }) } as Response
+      : null;
+  }
+
   it("loads notes on mount and shows the pending count badge", async () => {
     const notes = [{ id: "1", text: "a", done: false, created_at: "t" }, { id: "2", text: "b", done: false, created_at: "t" }];
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ notes }) })) as unknown as typeof fetch);
@@ -14,7 +20,8 @@ describe("ProjectNotes", () => {
   });
 
   it("adds a note: posts { text } and renders the returned list", async () => {
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const session = sessionResponse(url); if (session) return session;
       if (!init || init.method === undefined) return { ok: true, status: 200, json: async () => ({ notes: [] }) };
       return { ok: true, status: 200, json: async () => ({ notes: [{ id: "1", text: "do x", done: false, created_at: "t" }] }) };
     });
@@ -39,7 +46,8 @@ describe("ProjectNotes", () => {
 
   it("toggling an item posts { action: 'toggle' }", async () => {
     const initial = [{ id: "1", text: "a", done: false, created_at: "t" }];
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const session = sessionResponse(url); if (session) return session;
       if (!init || init.method === undefined) return { ok: true, status: 200, json: async () => ({ notes: initial }) };
       return { ok: true, status: 200, json: async () => ({ notes: [{ id: "1", text: "a", done: true, created_at: "t" }] }) };
     });
@@ -57,7 +65,8 @@ describe("ProjectNotes", () => {
 
   it("deleting an item posts { action: 'delete' } and removes it", async () => {
     const initial = [{ id: "1", text: "borrame", done: false, created_at: "t" }];
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const session = sessionResponse(url); if (session) return session;
       if (!init || init.method === undefined) return { ok: true, status: 200, json: async () => ({ notes: initial }) };
       return { ok: true, status: 200, json: async () => ({ notes: [] }) };
     });

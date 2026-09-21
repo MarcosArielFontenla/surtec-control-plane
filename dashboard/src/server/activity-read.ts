@@ -3,6 +3,8 @@ import { dirname } from "node:path";
 import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
 import { listTasks } from "../../../lib/state/store";
 import type { TaskRecord, ActivityItem, TaskActivity, ActivityFeed } from "../../../lib/state/types";
+import { gitEnvironment } from "../../../lib/security/environment";
+import { redactText } from "../../../lib/security/redaction";
 
 const TIMEOUT_MS = 10_000;
 
@@ -12,13 +14,13 @@ export interface CommitRow { hash: string; shortHash: string; subject: string; a
 
 // Reads recent commits from a repo via read-only LOCAL git (no network). Never throws → [].
 export function readRecentCommits(repoPath: string, limit = 8, spawnSync: SpawnSync = nodeSpawnSync as unknown as SpawnSync): CommitRow[] {
-  const r = spawnSync("git", ["-C", repoPath, "log", "-n", String(limit), "--format=%H%x00%h%x00%s%x00%cI%x00%an"], { encoding: "utf8", timeout: TIMEOUT_MS });
+  const r = spawnSync("git", ["-C", repoPath, "log", "-n", String(limit), "--format=%H%x00%h%x00%s%x00%cI%x00%an"], { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
   if (r.status !== 0 || r.error || !r.stdout) return [];
   const out: CommitRow[] = [];
   for (const line of r.stdout.split("\n")) {
     if (!line.includes("\x00")) continue;
     const [hash, shortHash, subject, at, author] = line.split("\x00");
-    if (hash) out.push({ hash, shortHash: shortHash ?? "", subject: subject ?? "", at: at ?? "", author: author ?? "" });
+    if (hash) out.push({ hash, shortHash: shortHash ?? "", subject: redactText(subject ?? ""), at: at ?? "", author: redactText(author ?? "") });
   }
   return out;
 }

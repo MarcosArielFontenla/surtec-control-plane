@@ -13,7 +13,7 @@ describe("readGithubCounts", () => {
   it("returns counts and queries gh with -R <slug> (no cwd inference)", () => {
     const spawnSync = routeGh({ pr: { status: 0, stdout: '[{"number":1},{"number":2}]' }, issue: { status: 0, stdout: '[{"number":5}]' } });
     expect(readGithubCounts("owner/repo", { spawnSync: spawnSync as never })).toEqual({ ok: true, prs: 2, issues: 1 });
-    expect(spawnSync.mock.calls[0]).toEqual(["gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", "owner/repo"], { encoding: "utf8", timeout: 20000 }]);
+    expect(spawnSync.mock.calls[0]).toEqual(["gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", "owner/repo"], expect.objectContaining({ encoding: "utf8", timeout: 20000, env: expect.any(Object) })]);
     expect((spawnSync.mock.calls[1][1] as string[])).toEqual(["issue", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", "owner/repo"]);
   });
 
@@ -92,7 +92,7 @@ describe("readCiStatus", () => {
   it("queries gh run list with the exact argv and maps success → passing", () => {
     const spawnSync = vi.fn().mockReturnValue({ status: 0, stdout: '[{"status":"completed","conclusion":"success"}]' });
     expect(readCiStatus("owner/repo", "main", { spawnSync: spawnSync as never })).toEqual({ state: "passing" });
-    expect(spawnSync.mock.calls[0]).toEqual(["gh", ["run", "list", "--branch", "main", "--limit", "1", "--json", "status,conclusion", "-R", "owner/repo"], { encoding: "utf8", timeout: 20000 }]);
+    expect(spawnSync.mock.calls[0]).toEqual(["gh", ["run", "list", "--branch", "main", "--limit", "1", "--json", "status,conclusion", "-R", "owner/repo"], expect.objectContaining({ encoding: "utf8", timeout: 20000, env: expect.any(Object) })]);
   });
 
   it("maps completed+failure → failing", () => {

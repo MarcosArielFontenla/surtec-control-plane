@@ -44,6 +44,18 @@ describe("ProcessManager.start", () => {
     expect(snap.record.endedAt).toBe("2026-05-30T00:00:00.000Z");
   });
 
+  it("redacts credentials from the stored command and streamed output", () => {
+    const child = fakeChild();
+    const pm = makePM(vi.fn().mockReturnValue(child));
+    const rec = pm.start({ projectId: "p", kind: "oneshot", command: "tool --api_key=top-secret-value", cwd: "/p" });
+    child.stdout.emit("data", Buffer.from("authorization=top-secret-value"));
+    child.emit("exit", 0);
+    const snap = pm.get(rec.runId)!;
+    expect(snap.record.command).not.toContain("top-secret-value");
+    expect(snap.log).not.toContain("top-secret-value");
+    expect(snap.log).toContain("[REDACTED]");
+  });
+
   it("marks failed on non-zero exit", () => {
     const child = fakeChild();
     const pm = makePM(vi.fn().mockReturnValue(child));
@@ -138,7 +150,7 @@ describe("ProcessManager.stop", () => {
     });
     const rec = pm.start({ projectId: "p", kind: "dev", command: "d", cwd: "/p" });
     pm.stop(rec.runId);
-    expect(spawnSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"]);
+    expect(spawnSync).toHaveBeenCalledWith("taskkill", ["/PID", "4242", "/T", "/F"], expect.objectContaining({ env: expect.any(Object) }));
     expect(pm.get(rec.runId)!.record.status).toBe("stopped");
   });
 

@@ -5,9 +5,9 @@ import { AttentionPanel } from "./AttentionPanel";
 import type { AttentionItem } from "../../../../lib/state/types";
 
 beforeEach(() => {
-  vi.stubGlobal("fetch", vi.fn(async () => ({
-    ok: true, status: 200, json: async () => ({ decision: { status: "approved" } }),
-  })) as unknown as typeof fetch);
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => String(url).endsWith("/api/session")
+    ? { ok: true, status: 200, json: async () => ({ token: "test-session-token" }) }
+    : { ok: true, status: 200, json: async () => ({ decision: { status: "approved" } }) }) as unknown as typeof fetch);
   vi.stubGlobal("confirm", vi.fn(() => true));
 });
 afterEach(() => vi.unstubAllGlobals());

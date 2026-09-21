@@ -5,6 +5,9 @@ import { NewTaskForm } from "./NewTaskForm";
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string, _init?: RequestInit) => {
+    if (String(url).endsWith("/api/session")) {
+      return { ok: true, status: 200, json: async () => ({ token: "test-session-token" }) } as Response;
+    }
     if (String(url).endsWith("/api/dispatch-options")) {
       return { ok: true, status: 200, json: async () => ({ projects: [{ project: "stock-control", agents: ["backend-engineer"] }] }) } as Response;
     }
@@ -74,6 +77,9 @@ describe("NewTaskForm", () => {
 
   it("shows an error banner when dispatch fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (String(url).endsWith("/api/session")) {
+        return { ok: true, status: 200, json: async () => ({ token: "test-session-token" }) } as Response;
+      }
       if (String(url).endsWith("/api/dispatch-options")) {
         return { ok: true, status: 200, json: async () => ({ projects: [{ project: "stock-control", agents: ["backend-engineer"] }] }) } as Response;
       }

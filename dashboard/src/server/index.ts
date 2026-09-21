@@ -23,6 +23,7 @@ import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../l
 import { runTask } from "../../../runner/run-task";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
+import { createHttpSecurity, type HttpSecurity } from "./http-security";
 
 export function createApp(
   repoRoot: string = process.cwd(),
@@ -32,8 +33,15 @@ export function createApp(
     });
   },
   pm: ProcessManager = processManager,
+  httpSecurity: HttpSecurity = createHttpSecurity(),
 ): Hono {
   const app = new Hono();
+
+  app.use("/api/*", httpSecurity.middleware);
+  app.get("/api/session", (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json({ token: httpSecurity.token });
+  });
 
   const gitStatusCache = createGitStatusCache();
   const githubCache = createGithubCache();

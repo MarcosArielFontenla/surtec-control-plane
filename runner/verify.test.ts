@@ -4,6 +4,7 @@ import { runVerification } from "./verify";
 const PASS = `node -e "process.exit(0)"`;
 const FAIL = `node -e "process.exit(1)"`;
 const BIG = `node -e "for(let i=0;i<5000;i++)process.stdout.write('x')"`;
+const SECRET = `node -e "process.stdout.write('authorization=top-secret-value')"`;
 
 describe("runVerification", () => {
   it("returns skipped for an empty command list", () => {
@@ -37,5 +38,12 @@ describe("runVerification", () => {
     const r = runVerification(process.cwd(), ["this-binary-does-not-exist-zzz --nope"]);
     expect(r.status).toBe("failed");
     expect(r.checks[0].ok).toBe(false);
+  });
+
+  it("redacts secrets from verification output", () => {
+    const r = runVerification(process.cwd(), [SECRET]);
+    expect(r.status).toBe("passed");
+    expect(r.checks[0].output_tail).toContain("[REDACTED]");
+    expect(r.checks[0].output_tail).not.toContain("top-secret-value");
   });
 });

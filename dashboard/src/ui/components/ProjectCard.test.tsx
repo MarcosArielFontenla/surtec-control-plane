@@ -11,6 +11,16 @@ const base: ProjectView = {
   path: "/p/alpha", configured: true, git: null,
 };
 
+function stubSessionFetch<T extends (...args: any[]) => any>(fetchMock: T): T {
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    if (String(url).endsWith("/api/session")) {
+      return { ok: true, status: 200, json: async () => ({ token: "test-session-token" }) } as Response;
+    }
+    return fetchMock(url, init);
+  }) as unknown as typeof fetch);
+  return fetchMock;
+}
+
 describe("ProjectCard git status", () => {
   it("renders git status, last commit and the configured chip", () => {
     const p: ProjectView = {
@@ -70,7 +80,7 @@ describe("ProjectCard open actions", () => {
 
   it("renders a GitHub link from the repo and opens VS Code", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }));
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    stubSessionFetch(fetchMock);
     const p = { ...base, repo: "git@github.com:owner/repo.git" };
     render(<ProjectCard p={p as any} />);
 
@@ -93,7 +103,7 @@ describe("ProjectCard open actions", () => {
 
   it("shows the error when opening fails", async () => {
     const fetchMock = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: "code no está en el PATH" }) }));
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    stubSessionFetch(fetchMock);
     render(<ProjectCard p={{ ...base } as any} />);
     fireEvent.click(screen.getByRole("button", { name: /vs code/i }));
     await waitFor(() => expect(screen.getByText(/code no está en el PATH/)).toBeTruthy());
@@ -116,7 +126,7 @@ describe("ProjectCard branch control", () => {
       }
       return { ok: true, status: 200, json: async () => result };
     });
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    stubSessionFetch(fetchMock);
     return fetchMock;
   }
 
@@ -200,7 +210,7 @@ describe("ProjectCard github counts", () => {
 
   it("loads and shows counts + CI on click", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, prs: 2, issues: 5, ci: "passing" }) }));
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    stubSessionFetch(fetchMock);
     const { container } = render(<ProjectCard p={ghP()} />);
     fireEvent.click(screen.getByRole("button", { name: /prs · issues/i }));
     await waitFor(() => expect(screen.getByText(/PRs: 2 · Issues: 5/)).toBeTruthy());
@@ -212,7 +222,7 @@ describe("ProjectCard github counts", () => {
 
   it("shows 'no disponible' for degraded counts but still shows CI (independent)", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: false, prs: 0, issues: 0, ci: "failing", error: "issues disabled" }) }));
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    stubSessionFetch(fetchMock);
     const { container } = render(<ProjectCard p={ghP()} />);
     fireEvent.click(screen.getByRole("button", { name: /prs · issues/i }));
     await waitFor(() => expect(screen.getByText(/no disponible/i)).toBeTruthy());
@@ -222,7 +232,7 @@ describe("ProjectCard github counts", () => {
 
   it("shows 'no disponible' and retries on reopen when the fetch throws (HTTP error)", async () => {
     const fetchMock = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: "boom" }) }));
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    stubSessionFetch(fetchMock);
     render(<ProjectCard p={ghP()} />);
     const btn = screen.getByRole("button", { name: /prs · issues/i });
     fireEvent.click(btn); // open + fetch (throws → err)
@@ -290,7 +300,7 @@ describe("ProjectCard git sync", () => {
 
   it("Fetch posts gitSync(id,'fetch') and shows the output", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, action: "fetch", output: "Already up to date." }) }));
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    stubSessionFetch(fetchMock);
     render(<ProjectCard p={gitP()} />);
     fireEvent.click(screen.getByRole("button", { name: /^fetch$/i }));
     await waitFor(() => {
@@ -310,7 +320,7 @@ describe("ProjectCard git sync", () => {
 
   it("Push asks for confirmation and only posts after Confirmar", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, action: "push", output: "pushed" }) }));
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    stubSessionFetch(fetchMock);
     render(<ProjectCard p={gitP({ ahead: 2 })} />);
     fireEvent.click(screen.getByRole("button", { name: /^push$/i }));
     // confirm shown, git push not posted yet
@@ -331,7 +341,7 @@ describe("ProjectCard git sync", () => {
       ok: true, status: 200,
       json: async () => ({ ok: false, action: "pull", output: "fatal: Not possible to fast-forward, aborting." }),
     }));
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    stubSessionFetch(fetchMock);
     render(<ProjectCard p={gitP({ behind: 1 })} />);
     fireEvent.click(screen.getByRole("button", { name: /^pull$/i }));
     await waitFor(() => {

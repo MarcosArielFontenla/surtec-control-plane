@@ -2,6 +2,35 @@ import { useEffect, useState } from "react";
 import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth, RailwayStatus } from "../../../lib/state/types";
 import type { Note } from "../../../lib/state/notes";
 
+let sessionTokenPromise: Promise<string> | null = null;
+let sessionFetch: typeof fetch | null = null;
+
+async function sessionToken(): Promise<string> {
+  if (sessionFetch !== fetch) {
+    sessionFetch = fetch;
+    sessionTokenPromise = null;
+  }
+  sessionTokenPromise ??= fetch("/api/session", { cache: "no-store" })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`session failed: ${response.status}`);
+      const body = (await response.json()) as { token?: unknown };
+      if (typeof body.token !== "string" || body.token.length < 16) throw new Error("session returned an invalid token");
+      return body.token;
+    })
+    .catch((error) => {
+      sessionTokenPromise = null;
+      throw error;
+    });
+  return sessionTokenPromise;
+}
+
+async function mutate(path: string, init: RequestInit = {}): Promise<Response> {
+  const token = await sessionToken();
+  const headers = new Headers(init.headers);
+  headers.set("X-Surtec-Session", token);
+  return fetch(path, { ...init, method: init.method ?? "POST", headers });
+}
+
 export async function fetchOverview(): Promise<OverviewModel> {
   const res = await fetch("/api/overview");
   if (!res.ok) throw new Error(`overview failed: ${res.status}`);
@@ -71,7 +100,7 @@ export async function createTask(body: {
   sandbox?: string;
   self_verify?: boolean;
 }): Promise<{ id: string }> {
-  const res = await fetch("/api/tasks", {
+  const res = await mutate("/api/tasks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -84,7 +113,7 @@ export async function createTask(body: {
 }
 
 async function decide(id: string, action: "approve" | "reject"): Promise<{ decision: unknown }> {
-  const res = await fetch(`/api/tasks/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+  const res = await mutate(`/api/tasks/${encodeURIComponent(id)}/${action}`);
   if (!res.ok) {
     const e = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(e.error ?? `${action} failed: ${res.status}`);
@@ -101,7 +130,7 @@ export function rejectTask(id: string): Promise<{ decision: unknown }> {
 }
 
 export async function openProject(id: string, target: "vscode" | "folder"): Promise<void> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/open`, {
+  const res = await mutate(`/api/projects/${encodeURIComponent(id)}/open`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target }),
@@ -127,7 +156,7 @@ export async function getProjectCommands(
 }
 
 export async function runProject(id: string, command: string): Promise<{ runId: string }> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/run`, {
+  const res = await mutate(`/api/projects/${encodeURIComponent(id)}/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ command }),
@@ -140,7 +169,7 @@ export async function runProject(id: string, command: string): Promise<{ runId: 
 }
 
 export async function stopRun(runId: string): Promise<void> {
-  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: "POST" });
+  const res = await mutate(`/api/runs/${encodeURIComponent(runId)}/stop`);
   if (!res.ok) {
     const e = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(e.error ?? `stop failed: ${res.status}`);
@@ -179,7 +208,7 @@ export function streamRun(
 export async function gitSync(
   id: string, action: "fetch" | "pull" | "push",
 ): Promise<{ ok: boolean; action: string; output: string }> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/git`, {
+  const res = await mutate(`/api/projects/${encodeURIComponent(id)}/git`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action }),
@@ -200,7 +229,7 @@ export async function getBranches(id: string): Promise<{ branches: string[]; cur
 export async function branchOp(
   id: string, op: "switch" | "create", name: string,
 ): Promise<{ ok: boolean; output: string }> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/branch`, {
+  const res = await mutate(`/api/projects/${encodeURIComponent(id)}/branch`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ op, name }),
@@ -233,7 +262,7 @@ export async function getNotes(id: string): Promise<{ notes: Note[] }> {
 }
 
 export async function addNote(id: string, text: string): Promise<{ notes: Note[] }> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/notes`, {
+  const res = await mutate(`/api/projects/${encodeURIComponent(id)}/notes`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
   });
   if (!res.ok) {
@@ -244,7 +273,7 @@ export async function addNote(id: string, text: string): Promise<{ notes: Note[]
 }
 
 export async function mutateNote(id: string, noteId: string, action: "toggle" | "delete"): Promise<{ notes: Note[] }> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/notes/${encodeURIComponent(noteId)}`, {
+  const res = await mutate(`/api/projects/${encodeURIComponent(id)}/notes/${encodeURIComponent(noteId)}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }),
   });
   if (!res.ok) {

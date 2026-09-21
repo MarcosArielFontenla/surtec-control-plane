@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
 import type { AgentResult, TaskEnvelope } from "../lib/state/types";
+import { gitEnvironment } from "../lib/security/environment";
+import { redactText } from "../lib/security/redaction";
 
 export function buildPrBody(envelope: TaskEnvelope, result: AgentResult | null): string {
   const lines: string[] = [];
@@ -24,9 +26,9 @@ export function openPullRequest(
   const r = spawnSync(
     "gh",
     ["pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body],
-    { cwd: sourceRepo, encoding: "utf8", timeout: 30_000 },
+    { cwd: sourceRepo, encoding: "utf8", timeout: 30_000, env: gitEnvironment() },
   );
   if (r.status === 0) return { url: (r.stdout ?? "").trim() };
   const err = (r.stderr ?? "") || (r.stdout ?? "") || (r.error ? r.error.message : "");
-  return { error: err.trim() };
+  return { error: redactText(err.trim()) };
 }

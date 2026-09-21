@@ -1,6 +1,8 @@
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
+import { gitEnvironment } from "../../../lib/security/environment";
+import { redactText } from "../../../lib/security/redaction";
 
 export class GitSyncError extends Error {
   constructor(message: string, public status: number) { super(message); this.name = "GitSyncError"; }
@@ -41,10 +43,10 @@ export function runGitSync(repoRoot: string, id: string, action: string, deps: G
   if (!proj) throw new GitSyncError(`unknown project: ${id}`, 404);
 
   const act = action as GitAction;
-  const r = spawnSync("git", ARGV[act](proj.path), { encoding: "utf8", timeout: TIMEOUT_MS });
+  const r = spawnSync("git", ARGV[act](proj.path), { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
   const ok = r.status === 0 && !r.error;
   const stdout = typeof r.stdout === "string" ? r.stdout : (r.stdout as Buffer | null)?.toString() ?? "";
   const stderr = typeof r.stderr === "string" ? r.stderr : (r.stderr as Buffer | null)?.toString() ?? "";
-  const output = (stdout + stderr + (r.error ? r.error.message : "")).trim().slice(-TAIL_CHARS);
+  const output = redactText((stdout + stderr + (r.error ? r.error.message : "")).trim()).slice(-TAIL_CHARS);
   return { ok, action: act, output };
 }

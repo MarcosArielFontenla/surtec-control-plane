@@ -32,9 +32,9 @@ describe("runGitSync", () => {
     runGitSync("/repo", "alpha", "fetch", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
     runGitSync("/repo", "alpha", "pull", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
     runGitSync("/repo", "alpha", "push", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
-    expect(spawnSync.mock.calls[0]).toEqual(["git", ["-C", "/p/alpha", "fetch"], { encoding: "utf8", timeout: 60000 }]);
-    expect(spawnSync.mock.calls[1]).toEqual(["git", ["-C", "/p/alpha", "pull", "--ff-only"], { encoding: "utf8", timeout: 60000 }]);
-    expect(spawnSync.mock.calls[2]).toEqual(["git", ["-C", "/p/alpha", "push"], { encoding: "utf8", timeout: 60000 }]);
+    expect(spawnSync.mock.calls[0]).toEqual(["git", ["-C", "/p/alpha", "fetch"], expect.objectContaining({ encoding: "utf8", timeout: 60000, env: expect.any(Object) })]);
+    expect(spawnSync.mock.calls[1]).toEqual(["git", ["-C", "/p/alpha", "pull", "--ff-only"], expect.objectContaining({ encoding: "utf8", timeout: 60000, env: expect.any(Object) })]);
+    expect(spawnSync.mock.calls[2]).toEqual(["git", ["-C", "/p/alpha", "push"], expect.objectContaining({ encoding: "utf8", timeout: 60000, env: expect.any(Object) })]);
   });
 
   it("returns ok:true with combined output on exit 0", () => {

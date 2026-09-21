@@ -1,11 +1,13 @@
 import { spawnSync } from "node:child_process";
 import type { GitStatus } from "./state/types";
+import { gitEnvironment } from "./security/environment";
+import { redactText } from "./security/redaction";
 
 const TIMEOUT_MS = 10_000;
 
 function git(repoPath: string, args: string[]): { ok: boolean; stdout: string } {
-  const r = spawnSync("git", ["-C", repoPath, ...args], { encoding: "utf8", timeout: TIMEOUT_MS });
-  return { ok: r.status === 0 && !r.error, stdout: r.stdout ?? "" };
+  const r = spawnSync("git", ["-C", repoPath, ...args], { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
+  return { ok: r.status === 0 && !r.error, stdout: redactText(r.stdout ?? "") };
 }
 
 const UNKNOWN: GitStatus = {

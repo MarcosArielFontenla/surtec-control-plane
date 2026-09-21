@@ -8,6 +8,16 @@ import { readTask } from "../../../lib/state/store";
 import type { ProcessManager } from "../../../runner/process-manager";
 import type { RunRecord } from "../../../lib/state/types";
 
+async function apiRequest(app: ReturnType<typeof createApp>, path: string, init?: RequestInit): Promise<Response> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(method)) return app.request(path, init);
+  const session = await app.request("/api/session");
+  const { token } = (await session.json()) as { token: string };
+  const headers = new Headers(init?.headers);
+  headers.set("X-Surtec-Session", token);
+  return app.request(path, { ...init, headers });
+}
+
 function fakeManager(over: Partial<ProcessManager> = {}): ProcessManager {
   return {
     start: vi.fn(),
@@ -128,7 +138,7 @@ describe("api", () => {
   it("POST /api/tasks creates a queued task and returns 201 {id}", async () => {
     const fired: string[] = [];
     const app = createApp(root, (id: string) => { fired.push(id); });
-    const res = await app.request("/api/tasks", {
+    const res = await apiRequest(app, "/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project: "stock-control", agent: "backend-engineer", instructions: "Analyze auth." }),
@@ -141,7 +151,7 @@ describe("api", () => {
 
   it("POST /api/tasks returns 400 for a disallowed agent", async () => {
     const app = createApp(root, () => {});
-    const res = await app.request("/api/tasks", {
+    const res = await apiRequest(app, "/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ project: "stock-control", agent: "frontend-engineer", instructions: "x" }),
@@ -151,7 +161,7 @@ describe("api", () => {
 
   it("POST /api/tasks returns 400 for a malformed JSON body", async () => {
     const app = createApp(root, () => {});
-    const res = await app.request("/api/tasks", {
+    const res = await apiRequest(app, "/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{ not json",
@@ -177,7 +187,7 @@ describe("api", () => {
   it("POST /api/tasks/:id/approve records an approved decision", async () => {
     writeFinishedReadOnly("RV-1");
     const app = createApp(root, () => {});
-    const res = await app.request("/api/tasks/RV-1/approve", { method: "POST" });
+    const res = await apiRequest(app, "/api/tasks/RV-1/approve", { method: "POST" });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.decision.status).toBe("approved");
@@ -187,7 +197,7 @@ describe("api", () => {
   it("POST /api/tasks/:id/reject records a rejected decision", async () => {
     writeFinishedReadOnly("RV-2");
     const app = createApp(root, () => {});
-    const res = await app.request("/api/tasks/RV-2/reject", { method: "POST" });
+    const res = await apiRequest(app, "/api/tasks/RV-2/reject", { method: "POST" });
     expect(res.status).toBe(200);
     expect((await res.json()).decision.status).toBe("rejected");
     expect(readTask("RV-2")!.decision?.status).toBe("rejected");
@@ -195,15 +205,15 @@ describe("api", () => {
 
   it("POST /api/tasks/:id/approve returns 404 for a missing task", async () => {
     const app = createApp(root, () => {});
-    const res = await app.request("/api/tasks/NOPE/approve", { method: "POST" });
+    const res = await apiRequest(app, "/api/tasks/NOPE/approve", { method: "POST" });
     expect(res.status).toBe(404);
   });
 
   it("POST /api/tasks/:id/approve returns 400 when already decided", async () => {
     writeFinishedReadOnly("RV-3");
     const app = createApp(root, () => {});
-    await app.request("/api/tasks/RV-3/approve", { method: "POST" });
-    const res = await app.request("/api/tasks/RV-3/approve", { method: "POST" });
+    await apiRequest(app, "/api/tasks/RV-3/approve", { method: "POST" });
+    const res = await apiRequest(app, "/api/tasks/RV-3/approve", { method: "POST" });
     expect(res.status).toBe(400);
   });
 
@@ -212,7 +222,7 @@ describe("api", () => {
     process.env.SURTEC_PROJECTS_ROOT = empty;
     try {
       const app = createApp(root);
-      const res = await app.request("/api/projects/ghost/open", {
+      const res = await apiRequest(app, "/api/projects/ghost/open", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: "vscode" }),
       });
       expect(res.status).toBe(404);
@@ -227,7 +237,7 @@ describe("api", () => {
     process.env.SURTEC_PROJECTS_ROOT = empty;
     try {
       const app = createApp(root);
-      const res = await app.request("/api/projects/whatever/open", {
+      const res = await apiRequest(app, "/api/projects/whatever/open", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target: "browser" }),
       });
       expect(res.status).toBe(400);
@@ -241,7 +251,7 @@ describe("api", () => {
 describe("git sync route", () => {
   it("POST /api/projects/:id/git with an invalid action → 400", async () => {
     const app = createApp(process.cwd());
-    const res = await app.request("/api/projects/whatever/git", {
+    const res = await apiRequest(app, "/api/projects/whatever/git", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "merge" }),
     });
@@ -255,7 +265,7 @@ describe("git sync route", () => {
     process.env.SURTEC_PROJECTS_ROOT = empty;
     try {
       const app = createApp(process.cwd());
-      const res = await app.request("/api/projects/__nope__/git", {
+      const res = await apiRequest(app, "/api/projects/__nope__/git", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "fetch" }),
       });
@@ -268,7 +278,7 @@ describe("git sync route", () => {
 
   it("POST /api/projects/:id/git with an invalid JSON body → 400", async () => {
     const app = createApp(process.cwd());
-    const res = await app.request("/api/projects/whatever/git", {
+    const res = await apiRequest(app, "/api/projects/whatever/git", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: "not json",
     });
     expect(res.status).toBe(400);
@@ -278,7 +288,7 @@ describe("git sync route", () => {
 describe("branch routes", () => {
   it("POST /api/projects/:id/branch with an invalid op → 400", async () => {
     const app = createApp(process.cwd());
-    const res = await app.request("/api/projects/whatever/branch", {
+    const res = await apiRequest(app, "/api/projects/whatever/branch", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ op: "delete", name: "main" }),
     });
@@ -287,7 +297,7 @@ describe("branch routes", () => {
 
   it("POST /api/projects/:id/branch with an invalid name → 400", async () => {
     const app = createApp(process.cwd());
-    const res = await app.request("/api/projects/whatever/branch", {
+    const res = await apiRequest(app, "/api/projects/whatever/branch", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ op: "switch", name: "-x" }),
     });
@@ -296,7 +306,7 @@ describe("branch routes", () => {
 
   it("POST /api/projects/:id/branch with invalid JSON → 400", async () => {
     const app = createApp(process.cwd());
-    const res = await app.request("/api/projects/whatever/branch", {
+    const res = await apiRequest(app, "/api/projects/whatever/branch", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: "not json",
     });
     expect(res.status).toBe(400);
@@ -307,7 +317,7 @@ describe("branch routes", () => {
     process.env.SURTEC_PROJECTS_ROOT = empty;
     try {
       const app = createApp(process.cwd());
-      const res = await app.request("/api/projects/__nope__/branch", {
+      const res = await apiRequest(app, "/api/projects/__nope__/branch", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ op: "switch", name: "main" }),
       });
@@ -373,7 +383,7 @@ describe("notes routes", () => {
 
   it("POST then GET round-trips a note; toggle then delete mutate it", async () => {
     const app = createApp(process.cwd());
-    const add = await app.request("/api/projects/alpha/notes", {
+    const add = await apiRequest(app, "/api/projects/alpha/notes", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "do the thing" }),
     });
     expect(add.status).toBe(200);
@@ -384,12 +394,12 @@ describe("notes routes", () => {
     const list = await app.request("/api/projects/alpha/notes");
     expect(((await list.json()) as { notes: unknown[] }).notes).toHaveLength(1);
 
-    const tog = await app.request(`/api/projects/alpha/notes/${nid}`, {
+    const tog = await apiRequest(app, `/api/projects/alpha/notes/${nid}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "toggle" }),
     });
     expect((((await tog.json()) as { notes: { done: boolean }[] }).notes)[0].done).toBe(true);
 
-    const del = await app.request(`/api/projects/alpha/notes/${nid}`, {
+    const del = await apiRequest(app, `/api/projects/alpha/notes/${nid}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete" }),
     });
     expect(((await del.json()) as { notes: unknown[] }).notes).toHaveLength(0);
@@ -403,7 +413,7 @@ describe("notes routes", () => {
 
   it("rejects empty text with 400", async () => {
     const app = createApp(process.cwd());
-    const res = await app.request("/api/projects/alpha/notes", {
+    const res = await apiRequest(app, "/api/projects/alpha/notes", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "   " }),
     });
     expect(res.status).toBe(400);
@@ -411,7 +421,7 @@ describe("notes routes", () => {
 
   it("rejects text over 500 chars with 400", async () => {
     const app = createApp(process.cwd());
-    const res = await app.request("/api/projects/alpha/notes", {
+    const res = await apiRequest(app, "/api/projects/alpha/notes", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "a".repeat(501) }),
     });
     expect(res.status).toBe(400);
@@ -419,7 +429,7 @@ describe("notes routes", () => {
 
   it("rejects an invalid action with 400", async () => {
     const app = createApp(process.cwd());
-    const res = await app.request("/api/projects/alpha/notes/n1", {
+    const res = await apiRequest(app, "/api/projects/alpha/notes/n1", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "nuke" }),
     });
     expect(res.status).toBe(400);
@@ -438,7 +448,7 @@ describe("run routes", () => {
 
   it("POST /run with an unconfigured command → 400", async () => {
     const app = createApp(root, () => {}, fakeManager());
-    const res = await app.request("/api/projects/stock-control/run", {
+    const res = await apiRequest(app, "/api/projects/stock-control/run", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ command: "nope" }),
     });
@@ -447,7 +457,7 @@ describe("run routes", () => {
 
   it("POST /run for an unknown project → 404", async () => {
     const app = createApp(process.cwd(), () => {}, fakeManager());
-    const res = await app.request("/api/projects/__nope__/run", {
+    const res = await apiRequest(app, "/api/projects/__nope__/run", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ command: "dev" }),
     });
@@ -458,7 +468,7 @@ describe("run routes", () => {
     const { SlotBusyError } = await import("../../../runner/process-manager");
     const start = vi.fn().mockImplementation(() => { throw new SlotBusyError("dev"); });
     const app = createApp(root, () => {}, fakeManager({ start }));
-    const res = await app.request("/api/projects/stock-control/run", {
+    const res = await apiRequest(app, "/api/projects/stock-control/run", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ command: "build" }),
     });
@@ -468,7 +478,7 @@ describe("run routes", () => {
   it("POST /api/runs/:id/stop → { ok: true }", async () => {
     const stop = vi.fn();
     const app = createApp(process.cwd(), () => {}, fakeManager({ stop }));
-    const res = await app.request("/api/runs/r1/stop", { method: "POST" });
+    const res = await apiRequest(app, "/api/runs/r1/stop", { method: "POST" });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(stop).toHaveBeenCalledWith("r1");

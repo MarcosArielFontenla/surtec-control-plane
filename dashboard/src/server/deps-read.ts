@@ -2,6 +2,8 @@ import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
+import { projectCommandEnvironment } from "../../../lib/security/environment";
+import { redactText } from "../../../lib/security/redaction";
 
 export class DepsError extends Error {
   constructor(message: string, public status: number) { super(message); this.name = "DepsError"; }
@@ -34,8 +36,8 @@ export function readDepsStatus(path: string, deps: DepsDeps = {}): DepsStatus {
   // shell:true is required on Windows so `npm` resolves the `npm.cmd` shim — Node blocks spawning .cmd files
   // without a shell (CVE-2024-27980 → EINVAL). Safe here: the argv is fixed (no user input) and the only
   // dynamic value, the repo path, is passed as the `cwd` option, never interpolated into the shell string.
-  const r = spawnSync("npm", ["outdated", "--json"], { cwd: path, encoding: "utf8", timeout: TIMEOUT_MS, shell: true });
-  if (r.error) return { ok: false, outdated: 0, error: r.error.message };
+  const r = spawnSync("npm", ["outdated", "--json"], { cwd: path, encoding: "utf8", timeout: TIMEOUT_MS, shell: true, env: projectCommandEnvironment() });
+  if (r.error) return { ok: false, outdated: 0, error: redactText(r.error.message) };
   // npm outdated exits 1 when there ARE outdated packages — DO NOT gate on the exit code.
   const out = asStr(r.stdout).trim();
   let obj: unknown;

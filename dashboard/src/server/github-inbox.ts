@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { loadRegistryProjects } from "./registry";
 import { githubRepoSlug } from "../../../lib/github-url";
 import type { IssueItem, InboxItem, RepoStatus, Inbox } from "../../../lib/state/types";
+import { gitEnvironment } from "../../../lib/security/environment";
+import { redactText } from "../../../lib/security/redaction";
 
 export type RunGh = (args: string[]) => Promise<{ status: number; stdout: string; stderr: string }>;
 
@@ -10,11 +12,11 @@ const TAIL_CHARS = 2000;
 
 const defaultRunGh: RunGh = (args) =>
   new Promise((resolve) => {
-    execFile("gh", args, { timeout: TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, encoding: "utf8" }, (err, stdout, stderr) => {
+    execFile("gh", args, { timeout: TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, encoding: "utf8", env: gitEnvironment() }, (err, stdout, stderr) => {
       if (err) {
         const code = (err as NodeJS.ErrnoException).code;
         const status = typeof code === "number" && code !== 0 ? code : 1;
-        resolve({ status, stdout: stdout ?? "", stderr: (stderr ?? "") || err.message });
+        resolve({ status, stdout: stdout ?? "", stderr: redactText((stderr ?? "") || err.message) });
       } else {
         resolve({ status: 0, stdout: stdout ?? "", stderr: stderr ?? "" });
       }
@@ -39,11 +41,11 @@ interface RawIssue { number?: number; title?: string; url?: string; updatedAt?: 
 function toIssueItem(r: RawIssue): IssueItem {
   return {
     number: r.number ?? 0,
-    title: r.title ?? "",
-    url: r.url ?? "",
+    title: redactText(r.title ?? ""),
+    url: redactText(r.url ?? ""),
     updatedAt: r.updatedAt ?? "",
-    labels: Array.isArray(r.labels) ? r.labels.map((l) => l.name ?? "").filter(Boolean) : [],
-    author: r.author?.login ?? null,
+    labels: Array.isArray(r.labels) ? r.labels.map((l) => redactText(l.name ?? "")).filter(Boolean) : [],
+    author: r.author?.login ? redactText(r.author.login) : null,
   };
 }
 
@@ -51,7 +53,7 @@ function toIssueItem(r: RawIssue): IssueItem {
 // `-R slug` so gh never infers a fork's upstream). Never throws.
 export async function readRepoIssues(slug: string, runGh: RunGh = defaultRunGh): Promise<{ ok: boolean; issues: IssueItem[]; error?: string }> {
   const r = await runGh(["issue", "list", "--state", "open", "--limit", "100", "--json", "number,title,url,updatedAt,labels,author", "-R", slug]);
-  if (r.status !== 0) return { ok: false, issues: [], error: (r.stderr + r.stdout).trim().slice(-TAIL_CHARS) };
+  if (r.status !== 0) return { ok: false, issues: [], error: redactText((r.stderr + r.stdout).trim()).slice(-TAIL_CHARS) };
   try {
     const arr = JSON.parse(r.stdout) as RawIssue[];
     return { ok: true, issues: (Array.isArray(arr) ? arr : []).map(toIssueItem) };

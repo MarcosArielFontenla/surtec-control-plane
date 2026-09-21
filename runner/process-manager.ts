@@ -1,6 +1,8 @@
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { RunKind, RunRecord, RunEvent } from "../lib/state/types";
+import { allowlistedEnvironment, projectCommandEnvironment } from "../lib/security/environment";
+import { redactText } from "../lib/security/redaction";
 
 const RING_CAP = 256 * 1024; // bytes/chars
 const HISTORY_PER_PROJECT = 10;
@@ -29,7 +31,7 @@ interface ChildLike {
 
 interface Deps {
   spawn?: (command: string, opts: object) => ChildLike;
-  spawnSync?: (command: string, args: string[]) => unknown;
+  spawnSync?: (command: string, args: string[], opts?: object) => unknown;
   platform?: NodeJS.Platform;
   now?: () => string;
   newId?: () => string;
@@ -44,7 +46,7 @@ interface RunState {
 
 export function createProcessManager(deps: Deps = {}): ProcessManager {
   const spawn = deps.spawn ?? ((c: string, o: object) => nodeSpawn(c, o) as unknown as ChildLike);
-  const spawnSync = deps.spawnSync ?? ((c: string, a: string[]) => nodeSpawnSync(c, a));
+  const spawnSync = deps.spawnSync ?? ((c: string, a: string[], o?: object) => nodeSpawnSync(c, a, o));
   const platform = deps.platform ?? process.platform;
   const now = deps.now ?? (() => new Date().toISOString());
   const newId = deps.newId ?? (() => randomUUID());
@@ -55,6 +57,7 @@ export function createProcessManager(deps: Deps = {}): ProcessManager {
   const emit = (s: RunState, e: RunEvent) => { for (const cb of s.subs) cb(e); };
 
   const append = (s: RunState, chunk: string) => {
+    chunk = redactText(chunk);
     s.log += chunk;
     if (s.log.length > RING_CAP) s.log = s.log.slice(s.log.length - RING_CAP);
     emit(s, { type: "chunk", data: chunk });
@@ -72,7 +75,7 @@ export function createProcessManager(deps: Deps = {}): ProcessManager {
 
   const finish = (s: RunState, status: RunRecord["status"], code: number | null, extra?: string) => {
     if (s.record.status !== "running") return; // terminal transitions happen once
-    if (extra) { s.log += extra; if (s.log.length > RING_CAP) s.log = s.log.slice(s.log.length - RING_CAP); }
+    if (extra) { s.log += redactText(extra); if (s.log.length > RING_CAP) s.log = s.log.slice(s.log.length - RING_CAP); }
     s.record.status = status;
     s.record.exitCode = code;
     s.record.endedAt = now();
@@ -91,7 +94,7 @@ export function createProcessManager(deps: Deps = {}): ProcessManager {
 
       const runId = newId();
       const record: RunRecord = {
-        runId, projectId: opts.projectId, kind: opts.kind, command: opts.command,
+        runId, projectId: opts.projectId, kind: opts.kind, command: redactText(opts.command),
         status: "running", pid: null, startedAt: now(), endedAt: null, exitCode: null,
       };
       const state: RunState = { record, log: "", subs: new Set(), child: null };
@@ -100,7 +103,7 @@ export function createProcessManager(deps: Deps = {}): ProcessManager {
 
       let child: ChildLike;
       try {
-        child = spawn(opts.command, { cwd: opts.cwd, shell: true, windowsHide: true });
+        child = spawn(opts.command, { cwd: opts.cwd, shell: true, windowsHide: true, env: projectCommandEnvironment() });
       } catch (err) {
         finish(state, "failed", null, `spawn error: ${(err as Error).message}\n`);
         return record;
@@ -124,7 +127,7 @@ export function createProcessManager(deps: Deps = {}): ProcessManager {
       const pid = s.record.pid;
       if (pid != null) {
         if (platform === "win32") {
-          spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
+          spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { env: allowlistedEnvironment() });
         } else {
           try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
         }
