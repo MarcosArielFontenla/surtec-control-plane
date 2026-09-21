@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "quality-missing-evidence",
+  "description": "A code change with no changed files, tests, or passed verification must fail quality gates.",
+  "role": "backend-engineer",
+  "task_types": ["bugfix"],
+  "candidate": {
+    "sandbox": "workspace-write",
+    "result": {
+      "task_id": "quality-missing-evidence",
+      "agent": "backend-engineer",
+      "status": "completed",
+      "summary": "Claims the backend correction is complete but supplies no deterministic implementation evidence.",
+      "files_changed": [],
+      "commands_run": [],
+      "tests_run": [],
+      "risks": [],
+      "blockers": [],
+      "next_steps": ["Provide actual implementation and verification evidence."],
+      "artifacts": [],
+      "logs_path": "reports/quality-missing-evidence.jsonl",
+      "verification": null
+    },
+    "allowed_commands": [],
+    "requested_actions": [],
+    "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expected": { "verdict": "fail", "hard_failure_codes": [] }
+}

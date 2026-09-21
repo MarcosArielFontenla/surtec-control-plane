@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "id": "qa-reviewer-pass",
+  "description": "Read-only QA evidence with scenarios and residual risk.",
+  "role": "qa-reviewer",
+  "task_types": ["test-plan", "qa-review", "regression-review"],
+  "candidate": {
+    "sandbox": "read-only",
+    "result": {
+      "task_id": "qa-reviewer-pass",
+      "agent": "qa-reviewer",
+      "status": "completed",
+      "summary": "Mapped acceptance criteria to deterministic scenarios and reviewed regression coverage without mutations.",
+      "files_changed": [],
+      "commands_run": [],
+      "tests_run": ["authentication happy path", "invalid-session regression"],
+      "risks": ["Browser-specific rendering still requires a manual smoke."],
+      "blockers": [],
+      "next_steps": ["Execute the manual viewport matrix before release signoff."],
+      "artifacts": ["test plan"],
+      "logs_path": "reports/qa-reviewer-pass.jsonl"
+    },
+    "allowed_commands": [],
+    "requested_actions": [],
+    "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expected": { "verdict": "pass", "hard_failure_codes": [] }
+}

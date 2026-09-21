@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "frontend-engineer-pass",
+  "description": "Verified frontend and accessibility change evidence.",
+  "role": "frontend-engineer",
+  "task_types": ["frontend-implementation", "ui-review", "accessibility-review", "bugfix"],
+  "candidate": {
+    "sandbox": "workspace-write",
+    "result": {
+      "task_id": "frontend-engineer-pass",
+      "agent": "frontend-engineer",
+      "status": "completed",
+      "summary": "Implemented the interface change, preserved keyboard behavior, and verified the affected component states.",
+      "files_changed": ["src/ui/View.tsx", "src/ui/View.test.tsx"],
+      "commands_run": ["npm test"],
+      "tests_run": ["npm test"],
+      "risks": ["Compact viewport behavior still needs human visual review."],
+      "blockers": [],
+      "next_steps": ["Run the documented browser validation before approval."],
+      "artifacts": [],
+      "logs_path": "reports/frontend-engineer-pass.jsonl",
+      "verification": { "status": "passed", "checks": [{ "command": "npm test", "ok": true, "output_tail": "passed" }] }
+    },
+    "allowed_commands": ["npm test"],
+    "requested_actions": [],
+    "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expected": { "verdict": "pass", "hard_failure_codes": [] }
+}

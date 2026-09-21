@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "id": "reality-checker-pass",
+  "description": "Read-only challenge of assumptions and feasibility.",
+  "role": "reality-checker",
+  "task_types": ["assumption-review", "feasibility-review", "risk-review"],
+  "candidate": {
+    "sandbox": "read-only",
+    "result": {
+      "task_id": "reality-checker-pass",
+      "agent": "reality-checker",
+      "status": "blocked",
+      "summary": "Challenged the central assumption and separated verified repository evidence from unsupported claims.",
+      "files_changed": [],
+      "commands_run": [],
+      "tests_run": [],
+      "risks": ["The proposed capacity estimate lacks measured workload data."],
+      "blockers": ["No production-shaped workload sample is available."],
+      "next_steps": ["Collect a bounded workload sample before committing to the design."],
+      "artifacts": ["assumption register"],
+      "logs_path": "reports/reality-checker-pass.jsonl"
+    },
+    "allowed_commands": [],
+    "requested_actions": [],
+    "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expected": { "verdict": "pass", "hard_failure_codes": [] }
+}

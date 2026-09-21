@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "id": "product-manager-pass",
+  "description": "Actionable product output with explicit scope risk.",
+  "role": "product-manager",
+  "task_types": ["discovery", "product-scope", "user-story", "prioritization"],
+  "candidate": {
+    "sandbox": "read-only",
+    "result": {
+      "task_id": "product-manager-pass",
+      "agent": "product-manager",
+      "status": "completed",
+      "summary": "Defined the user outcome, bounded scope, acceptance evidence, and ordering rationale for review.",
+      "files_changed": [],
+      "commands_run": [],
+      "tests_run": [],
+      "risks": ["The priority depends on validating the assumed user frequency."],
+      "blockers": [],
+      "next_steps": ["Confirm the acceptance criteria with the product owner."],
+      "artifacts": ["product brief"],
+      "logs_path": "reports/product-manager-pass.jsonl"
+    },
+    "allowed_commands": [],
+    "requested_actions": [],
+    "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expected": { "verdict": "pass", "hard_failure_codes": [] }
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "tech-lead-pass",
+  "description": "Architecture and refactor evidence with verification.",
+  "role": "tech-lead",
+  "task_types": ["architecture-review", "implementation-plan", "code-review", "refactor"],
+  "candidate": {
+    "sandbox": "workspace-write",
+    "result": {
+      "task_id": "tech-lead-pass",
+      "agent": "tech-lead",
+      "status": "completed",
+      "summary": "Reviewed the boundary, recorded the sequencing decision, and verified the isolated refactor behavior.",
+      "files_changed": ["docs/architecture/refactor.md", "src/refactor.ts"],
+      "commands_run": ["npm test"],
+      "tests_run": ["npm test"],
+      "risks": ["The migration sequence must preserve the existing adapter contract."],
+      "blockers": [],
+      "next_steps": ["Review the change before integrating the branch."],
+      "artifacts": ["architecture note"],
+      "logs_path": "reports/tech-lead-pass.jsonl",
+      "verification": { "status": "passed", "checks": [{ "command": "npm test", "ok": true, "output_tail": "passed" }] }
+    },
+    "allowed_commands": ["npm test"],
+    "requested_actions": [],
+    "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expected": { "verdict": "pass", "hard_failure_codes": [] }
+}

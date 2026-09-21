@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "backend-engineer-pass",
+  "description": "Verified backend change evidence.",
+  "role": "backend-engineer",
+  "task_types": ["backend-implementation", "api-change", "data-model-change", "bugfix"],
+  "candidate": {
+    "sandbox": "workspace-write",
+    "result": {
+      "task_id": "backend-engineer-pass",
+      "agent": "backend-engineer",
+      "status": "completed",
+      "summary": "Implemented the bounded backend behavior, updated its contract, and verified the affected paths.",
+      "files_changed": ["src/api/service.ts", "src/api/service.test.ts"],
+      "commands_run": ["npm test"],
+      "tests_run": ["npm test"],
+      "risks": [],
+      "blockers": [],
+      "next_steps": ["Review the branch and its compatibility notes."],
+      "artifacts": [],
+      "logs_path": "reports/backend-engineer-pass.jsonl",
+      "verification": { "status": "passed", "checks": [{ "command": "npm test", "ok": true, "output_tail": "passed" }] }
+    },
+    "allowed_commands": ["npm test"],
+    "requested_actions": [],
+    "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expected": { "verdict": "pass", "hard_failure_codes": [] }
+}

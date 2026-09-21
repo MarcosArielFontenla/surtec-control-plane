@@ -44,6 +44,9 @@ jobs:
       - name: Scan repository for secrets
         run: pnpm secrets:check
 
+      - name: Run deterministic agent evaluations
+        run: pnpm evals:check
+
       - name: Run tests
         run: pnpm test
 

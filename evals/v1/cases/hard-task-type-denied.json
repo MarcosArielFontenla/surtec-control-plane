@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "hard-task-type-denied",
+  "description": "A backend role cannot claim a frontend task type.",
+  "role": "backend-engineer",
+  "task_types": ["frontend-implementation"],
+  "candidate": {
+    "sandbox": "workspace-write",
+    "result": {
+      "task_id": "hard-task-type-denied",
+      "agent": "backend-engineer",
+      "status": "completed",
+      "summary": "Implemented and verified a complete change while using a task type denied to this role.",
+      "files_changed": ["src/ui.ts"],
+      "commands_run": ["npm test"],
+      "tests_run": ["npm test"],
+      "risks": [],
+      "blockers": [],
+      "next_steps": ["Review the role assignment."],
+      "artifacts": [],
+      "logs_path": "reports/hard-task-type-denied.jsonl",
+      "verification": { "status": "passed", "checks": [{ "command": "npm test", "ok": true, "output_tail": "passed" }] }
+    },
+    "allowed_commands": ["npm test"],
+    "requested_actions": [],
+    "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expected": { "verdict": "hard-fail", "hard_failure_codes": ["policy.task-type-denied"] }
+}

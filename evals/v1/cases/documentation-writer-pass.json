@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "id": "documentation-writer-pass",
+  "description": "Documentation changes with explicit artifacts.",
+  "role": "documentation-writer",
+  "task_types": ["documentation", "runbook", "changelog"],
+  "candidate": {
+    "sandbox": "workspace-write",
+    "result": {
+      "task_id": "documentation-writer-pass",
+      "agent": "documentation-writer",
+      "status": "completed",
+      "summary": "Updated the operator documentation with verified commands, safety notes, and rollback guidance.",
+      "files_changed": ["docs/runbooks/evaluations.md"],
+      "commands_run": [],
+      "tests_run": [],
+      "risks": [],
+      "blockers": [],
+      "next_steps": ["Have an operator follow the runbook from a clean checkout."],
+      "artifacts": ["evaluation runbook"],
+      "logs_path": "reports/documentation-writer-pass.jsonl"
+    },
+    "allowed_commands": [],
+    "requested_actions": [],
+    "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expected": { "verdict": "pass", "hard_failure_codes": [] }
+}
