@@ -1,17 +1,37 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentOutcome, AgentResult } from "../lib/state/types";
+import type { AgentExecutor } from "./agent-executor";
 import { readTask, writeTask } from "../lib/state/store";
 import { expandHome } from "../lib/expand-home";
-import { runAgent } from "./claude";
+import { codexExecutor } from "./codex-executor";
 import { buildSystemPrompt, buildUserPrompt } from "./agent-prompt";
+import { AGENT_REPORT_SCHEMA } from "./agent-report";
 import { loadRegistryAgents } from "./registry-agents";
 import { toAgentResult, failureResult } from "./result";
 import { createWorktree, commitAndDiff } from "./worktree";
 import { runVerification } from "./verify";
 import { loadProjectVerifyCommands } from "./registry-project";
 
-export async function runTask(taskId: string, repoRoot: string = process.cwd()): Promise<void> {
+function redactLogText(value: string): string {
+  return value
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[REDACTED]")
+    .replace(/\b(authorization|api[_-]?key|access[_-]?token|bearer)\s*[:=]\s*\S+/gi, "$1=[REDACTED]");
+}
+
+function safeLogJson(value: unknown): string {
+  const secretKey = /(authorization|api[_-]?key|access[_-]?token|password|secret)/i;
+  return redactLogText(JSON.stringify(value, (key, item) => {
+    if (key && secretKey.test(key)) return "[REDACTED]";
+    return typeof item === "string" ? redactLogText(item) : item;
+  }));
+}
+
+export async function runTask(
+  taskId: string,
+  repoRoot: string = process.cwd(),
+  executor: AgentExecutor = codexExecutor,
+): Promise<void> {
   const rec = readTask(taskId);
   if (!rec) return;
   if (rec.lifecycle !== "queued") return; // already running/finished — do not re-run/clobber
@@ -39,18 +59,13 @@ export async function runTask(taskId: string, repoRoot: string = process.cwd()):
 
   const writeLog = (obj: unknown): void => {
     try {
-      writeFileSync(absLogsPath, JSON.stringify(obj) + "\n", { encoding: "utf8", flag: "a" });
+      writeFileSync(absLogsPath, safeLogJson(obj) + "\n", { encoding: "utf8", flag: "a" });
     } catch {
       /* logging must never break the run */
     }
   };
 
   try {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      writeLog({ error: "missing ANTHROPIC_API_KEY" });
-      finish("failed", failureResult(rec.envelope, "missing ANTHROPIC_API_KEY", logsPath));
-      return;
-    }
     const cwd = expandHome(rec.envelope.repo_path);
     if (!existsSync(cwd)) {
       const reason = `repo not found at ${cwd}`;
@@ -76,8 +91,22 @@ export async function runTask(taskId: string, repoRoot: string = process.cwd()):
         : "read-only";
     const systemPrompt = buildSystemPrompt(agent, agentsMd, mode, verifyCommands);
     const prompt = buildUserPrompt(rec.envelope);
-
     const controller = new AbortController();
+    const runAgent = (runCwd: string) => executor.run(
+      {
+        cwd: runCwd,
+        developerInstructions: systemPrompt,
+        prompt,
+        mode,
+        model: process.env.SURTEC_CODEX_MODEL?.trim() || undefined,
+        reasoningEffort: process.env.SURTEC_CODEX_REASONING_EFFORT?.trim() || undefined,
+        verifyCommands,
+        outputSchema: AGENT_REPORT_SCHEMA as unknown as Record<string, unknown>,
+      },
+      (event) => writeLog({ event }),
+      controller.signal,
+    );
+
     const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000);
     try {
       if (rec.envelope.sandbox === "workspace-write") {
@@ -85,24 +114,21 @@ export async function runTask(taskId: string, repoRoot: string = process.cwd()):
           throw new Error(`not a git repository: ${cwd}`);
         }
         const { branch, worktreePath } = createWorktree(cwd, rec.envelope.id, rec.envelope.agent);
-        const { text, costUsd, tokens } = await runAgent(
-          { cwd: worktreePath, systemPrompt, prompt, mode, verifyCommands },
-          controller.signal,
-        );
+        const agentRun = await runAgent(worktreePath);
         const { filesChanged, diffstat, committed } = commitAndDiff(
           worktreePath,
           `agent ${rec.envelope.id}: ${rec.envelope.title}`.slice(0, 72),
         );
         const verification = committed ? runVerification(worktreePath, verifyCommands) : null;
-        writeLog({ task_id: rec.envelope.id, mode, branch, worktree_path: worktreePath, committed, diffstat, verification, cost_usd: costUsd, tokens, text });
-        rec.envelope.metadata.run = { mode, branch, worktree_path: worktreePath, diffstat, committed, verification, cost_usd: costUsd, tokens };
-        const result = toAgentResult(rec.envelope, text, logsPath, filesChanged, verification);
+        writeLog({ task_id: rec.envelope.id, mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, branch, worktree_path: worktreePath, committed, diffstat, verification, usage: agentRun.usage, structured_output: agentRun.structuredOutput });
+        rec.envelope.metadata.run = { mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, branch, worktree_path: worktreePath, diffstat, committed, verification, usage: agentRun.usage };
+        const result = toAgentResult(rec.envelope, agentRun.structuredOutput, agentRun.finalText, logsPath, filesChanged, verification);
         finish(result.status, result);
       } else {
-        const { text, costUsd, tokens } = await runAgent({ cwd, systemPrompt, prompt, mode }, controller.signal);
-        writeLog({ task_id: rec.envelope.id, mode, cost_usd: costUsd, tokens, text });
-        rec.envelope.metadata.run = { mode, cost_usd: costUsd, tokens };
-        const result = toAgentResult(rec.envelope, text, logsPath);
+        const agentRun = await runAgent(cwd);
+        writeLog({ task_id: rec.envelope.id, mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, usage: agentRun.usage, structured_output: agentRun.structuredOutput });
+        rec.envelope.metadata.run = { mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, usage: agentRun.usage };
+        const result = toAgentResult(rec.envelope, agentRun.structuredOutput, agentRun.finalText, logsPath);
         finish(result.status, result);
       }
     } finally {

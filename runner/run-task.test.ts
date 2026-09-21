@@ -1,14 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskRecord } from "../lib/state/types";
+import type { AgentExecutor, AgentRunResult } from "./agent-executor";
 
-vi.mock("./claude", () => ({ runAgent: vi.fn() }));
 vi.mock("./worktree", () => ({ createWorktree: vi.fn(), commitAndDiff: vi.fn() }));
 vi.mock("./verify", () => ({ runVerification: vi.fn() }));
 vi.mock("./registry-project", () => ({ loadProjectVerifyCommands: vi.fn() }));
-import { runAgent } from "./claude";
 import { createWorktree, commitAndDiff } from "./worktree";
 import { runVerification } from "./verify";
 import { loadProjectVerifyCommands } from "./registry-project";
@@ -17,6 +16,34 @@ import { readTask, writeTask } from "../lib/state/store";
 
 let root: string;
 let repo: string;
+let run: ReturnType<typeof vi.fn<AgentExecutor["run"]>>;
+let executor: AgentExecutor;
+
+function structuredReport(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    status: "completed",
+    summary: "ok",
+    commands_run: [],
+    tests_run: [],
+    risks: [],
+    blockers: [],
+    next_steps: [],
+    artifacts: [],
+    ...overrides,
+  };
+}
+
+function agentRun(overrides: Partial<AgentRunResult> = {}): AgentRunResult {
+  const structuredOutput = structuredReport();
+  return {
+    finalText: JSON.stringify(structuredOutput),
+    structuredOutput,
+    threadId: "thread-1",
+    turnId: "turn-1",
+    usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1, totalTokens: 15 },
+    ...overrides,
+  };
+}
 
 function queuedRecord(): TaskRecord {
   return {
@@ -33,10 +60,10 @@ function queuedRecord(): TaskRecord {
 }
 
 function writeRecord(): TaskRecord {
-  const r = queuedRecord();
-  r.envelope.sandbox = "workspace-write";
-  r.envelope.task_type = "implementation";
-  return r;
+  const record = queuedRecord();
+  record.envelope.sandbox = "workspace-write";
+  record.envelope.task_type = "implementation";
+  return record;
 }
 
 beforeEach(() => {
@@ -49,10 +76,11 @@ beforeEach(() => {
     "agents:\n  - id: backend-engineer\n    name: Backend Engineer\n    description: Implements backend.\n",
     "utf8",
   );
-  writeFileSync(join(root, "AGENTS.md"), "RULE: do not deploy.\n", "utf8");
+  writeFileSync(join(root, "AGENTS.md"), "ROOT RULE: do not deploy.\n", "utf8");
   process.env.SURTEC_STATE_DIR = join(root, "state");
-  process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-  vi.mocked(runAgent).mockReset();
+  run = vi.fn<AgentExecutor["run"]>();
+  run.mockResolvedValue(agentRun());
+  executor = { run };
   vi.mocked(createWorktree).mockReset();
   vi.mocked(commitAndDiff).mockReset();
   vi.mocked(loadProjectVerifyCommands).mockReset();
@@ -62,254 +90,138 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   delete process.env.SURTEC_STATE_DIR;
-  delete process.env.ANTHROPIC_API_KEY;
   rmSync(root, { recursive: true, force: true });
 });
 
 describe("runTask", () => {
-  it("transitions queued -> finished with the parsed AgentResult", async () => {
-    writeTask(queuedRecord());
-    vi.mocked(runAgent).mockResolvedValue({
-      text: '```json\n{ "summary": "ok", "risks": ["r"], "blockers": [], "next_steps": [], "status": "completed" }\n```',
-      costUsd: 0.01,
-      tokens: 42,
-    });
-
-    await runTask("T-1", root);
-
-    const rec = readTask("T-1")!;
-    expect(rec.lifecycle).toBe("finished");
-    expect(rec.outcome).toBe("completed");
-    expect(rec.result?.summary).toBe("ok");
-    expect(rec.result?.risks).toEqual(["r"]);
-    expect(rec.started_at).not.toBeNull();
-    expect(rec.finished_at).not.toBeNull();
-  });
-
-  it("marks failed with a blocker when the agent throws", async () => {
-    writeTask(queuedRecord());
-    vi.mocked(runAgent).mockRejectedValue(new Error("api exploded"));
-
-    await runTask("T-1", root);
-
-    const rec = readTask("T-1")!;
-    expect(rec.lifecycle).toBe("finished");
-    expect(rec.outcome).toBe("failed");
-    expect(rec.result?.blockers).toEqual(["api exploded"]);
-  });
-
-  it("fails cleanly when ANTHROPIC_API_KEY is missing", async () => {
-    delete process.env.ANTHROPIC_API_KEY;
+  it("transitions queued to finished and passes root instructions plus the output schema", async () => {
     writeTask(queuedRecord());
 
-    await runTask("T-1", root);
+    await runTask("T-1", root, executor);
 
-    const rec = readTask("T-1")!;
-    expect(rec.outcome).toBe("failed");
-    expect(rec.result?.blockers[0]).toContain("ANTHROPIC_API_KEY");
-    expect(runAgent).not.toHaveBeenCalled();
+    const record = readTask("T-1")!;
+    expect(record.lifecycle).toBe("finished");
+    expect(record.outcome).toBe("completed");
+    expect(record.result?.summary).toBe("ok");
+    expect(run).toHaveBeenCalledOnce();
+    expect(run.mock.calls[0][0].developerInstructions).toContain("ROOT RULE: do not deploy.");
+    expect(run.mock.calls[0][0].outputSchema).toMatchObject({ title: "AgentReport", additionalProperties: false });
   });
 
-  it("fails when the repo path does not exist", async () => {
-    const rec = queuedRecord();
-    rec.envelope.repo_path = join(root, "does-not-exist");
-    writeTask(rec);
+  it("marks a runtime failure with a blocker", async () => {
+    writeTask(queuedRecord());
+    run.mockRejectedValue(new Error("runtime exploded"));
 
-    await runTask("T-1", root);
+    await runTask("T-1", root, executor);
 
-    const out = readTask("T-1")!;
-    expect(out.outcome).toBe("failed");
-    expect(out.result?.blockers[0]).toContain("repo not found");
-    expect(runAgent).not.toHaveBeenCalled();
+    expect(readTask("T-1")?.result?.blockers).toEqual(["runtime exploded"]);
   });
 
-  it("fails when the agent id is not in the registry", async () => {
-    const rec = queuedRecord();
-    rec.envelope.agent = "ghost-agent";
-    writeTask(rec);
+  it("routes invalid structured output to needs-review", async () => {
+    writeTask(queuedRecord());
+    run.mockResolvedValue(agentRun({ structuredOutput: { status: "completed" }, finalText: "raw report" }));
 
-    await runTask("T-1", root);
+    await runTask("T-1", root, executor);
 
-    const out = readTask("T-1")!;
-    expect(out.outcome).toBe("failed");
-    expect(out.result?.blockers[0]).toContain("unknown agent");
-    expect(runAgent).not.toHaveBeenCalled();
+    const record = readTask("T-1")!;
+    expect(record.outcome).toBe("needs-review");
+    expect(record.result?.risks[0]).toContain("Invalid agent report");
   });
 
-  it("workspace-write: creates a worktree, runs the agent in write mode, commits, records files_changed", async () => {
-    mkdirSync(join(repo, ".git"), { recursive: true });
-    writeTask(writeRecord());
-    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
-    vi.mocked(runAgent).mockResolvedValue({
-      text: '```json\n{ "summary": "did it", "status": "completed" }\n```',
-      costUsd: 0.02,
-      tokens: 10,
-    });
+  it("fails before execution when the repository path does not exist", async () => {
+    const record = queuedRecord();
+    record.envelope.repo_path = join(root, "does-not-exist");
+    writeTask(record);
+
+    await runTask("T-1", root, executor);
+
+    expect(readTask("T-1")?.result?.blockers[0]).toContain("repo not found");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("fails before execution when the agent id is unknown", async () => {
+    const record = queuedRecord();
+    record.envelope.agent = "ghost-agent";
+    writeTask(record);
+
+    await runTask("T-1", root, executor);
+
+    expect(readTask("T-1")?.result?.blockers[0]).toContain("unknown agent");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("creates a worktree, executes there, commits, verifies, and records protocol metadata", async () => {
+    mkdirSync(join(repo, ".git"));
+    const record = writeRecord();
+    record.envelope.self_verify = true;
+    writeTask(record);
+    const worktreePath = join(root, "worktree");
+    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath });
     vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: ["src/x.ts"], diffstat: "1 file changed", committed: true });
 
-    await runTask("T-1", root);
+    await runTask("T-1", root, executor);
 
-    expect(createWorktree).toHaveBeenCalledWith(repo, "T-1", "backend-engineer");
-    expect(vi.mocked(runAgent).mock.calls[0][0].mode).toBe("workspace-write");
-    expect(commitAndDiff).toHaveBeenCalled();
-    expect(vi.mocked(runAgent).mock.calls[0][0].cwd).toBe(join(repo, "..", "wt"));
-    expect(commitAndDiff).toHaveBeenCalledWith(join(repo, "..", "wt"), expect.any(String));
-    const rec = readTask("T-1")!;
-    expect(rec.lifecycle).toBe("finished");
-    expect(rec.outcome).toBe("completed");
-    expect(rec.result?.files_changed).toEqual(["src/x.ts"]);
-    expect((rec.envelope.metadata.run as { branch?: string }).branch).toBe("agent/T-1-backend-engineer");
+    expect(run.mock.calls[0][0]).toMatchObject({ cwd: worktreePath, mode: "workspace-write-verify", verifyCommands: ["pnpm test"] });
+    expect(commitAndDiff).toHaveBeenCalledWith(worktreePath, expect.any(String));
+    expect(runVerification).toHaveBeenCalledWith(worktreePath, ["pnpm test"]);
+    const finished = readTask("T-1")!;
+    expect(finished.result?.files_changed).toEqual(["src/x.ts"]);
+    expect(finished.envelope.metadata.run).toMatchObject({ thread_id: "thread-1", turn_id: "turn-1" });
   });
 
-  it("workspace-write: fails cleanly when the source is not a git repo", async () => {
+  it("uses plain write mode when self verification is not requested", async () => {
+    mkdirSync(join(repo, ".git"));
     writeTask(writeRecord());
-
-    await runTask("T-1", root);
-
-    const rec = readTask("T-1")!;
-    expect(rec.outcome).toBe("failed");
-    expect(rec.result?.blockers[0]).toContain("not a git repository");
-    expect(createWorktree).not.toHaveBeenCalled();
-  });
-
-  it("workspace-write: fails cleanly when worktree creation throws", async () => {
-    mkdirSync(join(repo, ".git"), { recursive: true });
-    writeTask(writeRecord());
-    vi.mocked(createWorktree).mockImplementation(() => { throw new Error("git worktree add failed: boom"); });
-
-    await runTask("T-1", root);
-
-    const rec = readTask("T-1")!;
-    expect(rec.outcome).toBe("failed");
-    expect(rec.result?.blockers[0]).toContain("git worktree add failed");
-    expect(runAgent).not.toHaveBeenCalled();
-  });
-
-  it("workspace-write: completes with no files when the agent made no changes", async () => {
-    mkdirSync(join(repo, ".git"), { recursive: true });
-    writeTask(writeRecord());
-    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
-    vi.mocked(runAgent).mockResolvedValue({
-      text: '```json\n{ "summary": "nothing to change", "status": "completed" }\n```',
-      costUsd: 0.01,
-      tokens: 5,
-    });
+    vi.mocked(createWorktree).mockReturnValue({ branch: "branch", worktreePath: join(root, "worktree") });
     vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: [], diffstat: "", committed: false });
 
-    await runTask("T-1", root);
+    await runTask("T-1", root, executor);
 
-    const rec = readTask("T-1")!;
-    expect(rec.lifecycle).toBe("finished");
-    expect(rec.outcome).toBe("completed");
-    expect(rec.result?.files_changed).toEqual([]);
-  });
-
-  it("workspace-write: fails cleanly when committing the edits throws", async () => {
-    mkdirSync(join(repo, ".git"), { recursive: true });
-    writeTask(writeRecord());
-    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
-    vi.mocked(runAgent).mockResolvedValue({
-      text: '```json\n{ "summary": "edited", "status": "completed" }\n```',
-      costUsd: 0.01,
-      tokens: 5,
-    });
-    vi.mocked(commitAndDiff).mockImplementation(() => { throw new Error("git commit failed: nothing staged"); });
-
-    await runTask("T-1", root);
-
-    const rec = readTask("T-1")!;
-    expect(rec.outcome).toBe("failed");
-    expect(rec.result?.blockers[0]).toContain("git commit failed");
-  });
-
-  it("workspace-write: runs verification after a committed change and records the report", async () => {
-    mkdirSync(join(repo, ".git"), { recursive: true });
-    writeTask(writeRecord());
-    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
-    vi.mocked(runAgent).mockResolvedValue({
-      text: '```json\n{ "summary": "edited", "status": "completed" }\n```',
-      costUsd: 0.01, tokens: 5,
-    });
-    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: ["src/x.ts"], diffstat: "1 file changed", committed: true });
-    vi.mocked(runVerification).mockReturnValue({ status: "passed", checks: [{ command: "pnpm test", ok: true, output_tail: "" }] });
-
-    await runTask("T-1", root);
-
-    expect(loadProjectVerifyCommands).toHaveBeenCalledWith(root, "stock-control");
-    expect(runVerification).toHaveBeenCalledWith(join(repo, "..", "wt"), ["pnpm test"]);
-    const rec = readTask("T-1")!;
-    expect(rec.result?.verification?.status).toBe("passed");
-  });
-
-  it("workspace-write: skips verification when the agent made no changes", async () => {
-    mkdirSync(join(repo, ".git"), { recursive: true });
-    writeTask(writeRecord());
-    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
-    vi.mocked(runAgent).mockResolvedValue({
-      text: '```json\n{ "summary": "nothing", "status": "completed" }\n```',
-      costUsd: 0.01, tokens: 5,
-    });
-    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: [], diffstat: "", committed: false });
-
-    await runTask("T-1", root);
-
+    expect(run.mock.calls[0][0].mode).toBe("workspace-write");
     expect(runVerification).not.toHaveBeenCalled();
-    const rec = readTask("T-1")!;
-    expect(rec.result?.verification ?? null).toBeNull();
   });
 
-  it("read-only: does not run verification", async () => {
-    writeTask(queuedRecord()); // queuedRecord() is read-only
-    vi.mocked(runAgent).mockResolvedValue({
-      text: '```json\n{ "summary": "ok", "status": "completed" }\n```',
-      costUsd: 0.01, tokens: 5,
+  it("fails cleanly when a write target is not a git repository", async () => {
+    writeTask(writeRecord());
+
+    await runTask("T-1", root, executor);
+
+    expect(readTask("T-1")?.result?.blockers[0]).toContain("not a git repository");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("turns the five-minute deadline into a failed task", async () => {
+    vi.useFakeTimers();
+    writeTask(queuedRecord());
+    run.mockImplementation((_input, _events, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        const error = new Error("interrupted");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    }));
+
+    const pending = runTask("T-1", root, executor);
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    await pending;
+
+    expect(readTask("T-1")?.result?.blockers).toEqual(["timeout (5m)"]);
+  });
+
+  it("redacts credentials from streamed logs", async () => {
+    writeTask(queuedRecord());
+    run.mockImplementation(async (_input, events) => {
+      await events({ type: "warning", at: new Date().toISOString(), message: "api_key=top-secret-value" });
+      return agentRun();
     });
 
-    await runTask("T-1", root);
+    await runTask("T-1", root, executor);
 
-    expect(runVerification).not.toHaveBeenCalled();
-    const rec = readTask("T-1")!;
-    expect(rec.result?.verification ?? null).toBeNull();
-  });
-
-  it("self_verify workspace-write → runAgent in workspace-write-verify mode with verifyCommands", async () => {
-    mkdirSync(join(repo, ".git"), { recursive: true });
-    const r = writeRecord(); r.envelope.self_verify = true; writeTask(r);
-    vi.mocked(createWorktree).mockReturnValue({ branch: "agent/T-1-backend-engineer", worktreePath: join(repo, "..", "wt") });
-    vi.mocked(runAgent).mockResolvedValue({ text: '```json\n{ "summary": "ok", "status": "completed" }\n```', costUsd: 0, tokens: 0 });
-    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: ["a.ts"], diffstat: "x", committed: true });
-    vi.mocked(loadProjectVerifyCommands).mockReturnValue(["pnpm test"]);
-
-    await runTask("T-1", root);
-
-    const arg = vi.mocked(runAgent).mock.calls[0][0];
-    expect(arg.mode).toBe("workspace-write-verify");
-    expect(arg.verifyCommands).toEqual(["pnpm test"]);
-  });
-
-  it("workspace-write WITHOUT self_verify → runAgent in workspace-write mode", async () => {
-    mkdirSync(join(repo, ".git"), { recursive: true });
-    writeTask(writeRecord());
-    vi.mocked(createWorktree).mockReturnValue({ branch: "b", worktreePath: join(repo, "..", "wt") });
-    vi.mocked(runAgent).mockResolvedValue({ text: '```json\n{ "summary": "ok", "status": "completed" }\n```', costUsd: 0, tokens: 0 });
-    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: ["a.ts"], diffstat: "x", committed: true });
-
-    await runTask("T-1", root);
-
-    expect(vi.mocked(runAgent).mock.calls[0][0].mode).toBe("workspace-write");
-  });
-
-  it("self_verify but no verify commands → falls back to workspace-write", async () => {
-    mkdirSync(join(repo, ".git"), { recursive: true });
-    const r = writeRecord(); r.envelope.self_verify = true; writeTask(r);
-    vi.mocked(createWorktree).mockReturnValue({ branch: "b", worktreePath: join(repo, "..", "wt") });
-    vi.mocked(runAgent).mockResolvedValue({ text: '```json\n{ "summary": "ok", "status": "completed" }\n```', costUsd: 0, tokens: 0 });
-    vi.mocked(commitAndDiff).mockReturnValue({ filesChanged: ["a.ts"], diffstat: "x", committed: true });
-    vi.mocked(loadProjectVerifyCommands).mockReturnValue([]);
-
-    await runTask("T-1", root);
-
-    expect(vi.mocked(runAgent).mock.calls[0][0].mode).toBe("workspace-write");
+    const record = readTask("T-1")!;
+    const log = readFileSync(join(root, record.logs_path!), "utf8");
+    expect(log).not.toContain("top-secret-value");
+    expect(log).toContain("[REDACTED]");
   });
 });

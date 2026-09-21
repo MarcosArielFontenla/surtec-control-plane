@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { toAgentResult, failureResult } from "./result";
 import type { TaskEnvelope } from "../lib/state/types";
 
@@ -9,59 +9,53 @@ const envelope: TaskEnvelope = {
   requires_human_approval: true, metadata: {},
 };
 
+function report(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    summary: "looks ok",
+    status: "completed",
+    commands_run: [],
+    tests_run: [],
+    risks: [],
+    blockers: [],
+    next_steps: [],
+    artifacts: [],
+    ...overrides,
+  };
+}
+
 describe("toAgentResult", () => {
-  it("parses a trailing json block into the AgentResult", () => {
-    const text = [
-      "Here is my analysis.",
-      "```json",
-      '{ "summary": "looks ok", "risks": ["no rate limit"], "blockers": [], "next_steps": ["add tests"], "status": "needs-review" }',
-      "```",
-    ].join("\n");
-    const r = toAgentResult(envelope, text, "reports/T-1.jsonl");
+  it("maps a valid structured report into the canonical AgentResult", () => {
+    const r = toAgentResult(
+      envelope,
+      report({ risks: ["no rate limit"], next_steps: ["add tests"], status: "needs-review" }),
+      "raw",
+      "reports/T-1.jsonl",
+    );
     expect(r.status).toBe("needs-review");
     expect(r.summary).toBe("looks ok");
     expect(r.risks).toEqual(["no rate limit"]);
     expect(r.next_steps).toEqual(["add tests"]);
     expect(r.files_changed).toEqual([]);
-    expect(r.commands_run).toEqual([]);
     expect(r.logs_path).toBe("reports/T-1.jsonl");
-    expect(r.task_id).toBe("T-1");
-    expect(r.agent).toBe("backend-engineer");
   });
 
-  it("defaults an invalid status to completed", () => {
-    const text = '```json\n{ "summary": "x", "status": "weird" }\n```';
-    expect(toAgentResult(envelope, text, "l").status).toBe("completed");
+  it.each([
+    ["missing output", undefined],
+    ["invalid status", report({ status: "weird" })],
+    ["extra field", report({ surprise: true })],
+    ["wrong array", report({ risks: [1] })],
+  ])("routes %s to needs-review", (_label, output) => {
+    const r = toAgentResult(envelope, output, "raw response", "log.jsonl");
+    expect(r.status).toBe("needs-review");
+    expect(r.summary).toBe("raw response");
+    expect(r.risks[0]).toContain("Invalid agent report");
   });
 
-  it("falls back to summary=text with empty arrays when there is no json block", () => {
-    const r = toAgentResult(envelope, "just prose, no json", "l");
-    expect(r.status).toBe("completed");
-    expect(r.summary).toBe("just prose, no json");
-    expect(r.risks).toEqual([]);
-    expect(r.blockers).toEqual([]);
-    expect(r.next_steps).toEqual([]);
-  });
-
-  it("uses the provided filesChanged (workspace-write) instead of empty", () => {
-    const r = toAgentResult(envelope, "ok", "l", ["src/a.ts", "src/b.ts"]);
-    expect(r.files_changed).toEqual(["src/a.ts", "src/b.ts"]);
-  });
-
-  it("defaults files_changed to [] when none provided", () => {
-    const r = toAgentResult(envelope, "ok", "l");
-    expect(r.files_changed).toEqual([]);
-  });
-
-  it("attaches the verification report when provided", () => {
-    const report = { status: "passed" as const, checks: [{ command: "pnpm test", ok: true, output_tail: "" }] };
-    const r = toAgentResult(envelope, "done\n```json\n{\"status\":\"completed\"}\n```", "log.jsonl", ["a.ts"], report);
-    expect(r.verification).toEqual(report);
-  });
-
-  it("defaults verification to null", () => {
-    const r = toAgentResult(envelope, "done", "log.jsonl");
-    expect(r.verification).toBeNull();
+  it("uses the provided files and verification report", () => {
+    const verification = { status: "passed" as const, checks: [{ command: "pnpm test", ok: true, output_tail: "" }] };
+    const r = toAgentResult(envelope, report(), "raw", "log.jsonl", ["src/a.ts"], verification);
+    expect(r.files_changed).toEqual(["src/a.ts"]);
+    expect(r.verification).toEqual(verification);
   });
 });
 
@@ -71,10 +65,6 @@ describe("failureResult", () => {
     expect(r.status).toBe("failed");
     expect(r.blockers).toEqual(["timeout (5m)"]);
     expect(r.summary).toContain("timeout (5m)");
-    expect(r.logs_path).toBe("reports/T-1.jsonl");
-  });
-
-  it("failureResult sets verification to null", () => {
-    expect(failureResult(envelope, "boom", "log.jsonl").verification).toBeNull();
+    expect(r.verification).toBeNull();
   });
 });

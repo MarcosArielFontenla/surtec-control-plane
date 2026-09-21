@@ -1,52 +1,45 @@
-import type { AgentResult, AgentOutcome, TaskEnvelope, VerificationReport } from "../lib/state/types";
-
-const OUTCOMES: AgentOutcome[] = ["completed", "partial", "blocked", "failed", "needs-review"];
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-function asStringArray(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-}
-
-// Parses the LAST ```json fenced block. The content is untrusted LLM output, so we
-// only accept a plain JSON object — bare arrays/scalars/garbage fall back to null.
-function parseTrailingJson(text: string): Record<string, unknown> | null {
-  const matches = [...text.matchAll(/```json\s*([\s\S]*?)```/g)];
-  if (matches.length === 0) return null;
-  try {
-    const value: unknown = JSON.parse(matches[matches.length - 1][1]);
-    return isPlainObject(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
+import type { AgentResult, TaskEnvelope, VerificationReport } from "../lib/state/types";
+import { validateAgentReport } from "./agent-report";
 
 export function toAgentResult(
   envelope: TaskEnvelope,
-  text: string,
+  structuredOutput: unknown,
+  rawText: string,
   logsPath: string,
   filesChanged: string[] = [],
   verification: VerificationReport | null = null,
 ): AgentResult {
-  const parsed = parseTrailingJson(text);
-  const rawStatus = parsed?.status;
-  const status: AgentOutcome = OUTCOMES.includes(rawStatus as AgentOutcome)
-    ? (rawStatus as AgentOutcome)
-    : "completed";
+  const validated = validateAgentReport(structuredOutput);
+  if (!validated.ok) {
+    return {
+      task_id: envelope.id,
+      agent: envelope.agent,
+      status: "needs-review",
+      summary: rawText.trim() || "Agent returned no usable structured report.",
+      files_changed: filesChanged,
+      commands_run: [],
+      tests_run: [],
+      risks: [`Invalid agent report: ${validated.reason}`],
+      blockers: [],
+      next_steps: ["Review the raw run log and retry the task."],
+      artifacts: [],
+      logs_path: logsPath,
+      verification,
+    };
+  }
+  const report = validated.report;
   return {
     task_id: envelope.id,
     agent: envelope.agent,
-    status,
-    summary: typeof parsed?.summary === "string" ? parsed.summary : text.trim(),
+    status: report.status,
+    summary: report.summary,
     files_changed: filesChanged,
-    commands_run: [],
-    tests_run: [],
-    risks: asStringArray(parsed?.risks),
-    blockers: asStringArray(parsed?.blockers),
-    next_steps: asStringArray(parsed?.next_steps),
-    artifacts: [],
+    commands_run: report.commands_run,
+    tests_run: report.tests_run,
+    risks: report.risks,
+    blockers: report.blockers,
+    next_steps: report.next_steps,
+    artifacts: report.artifacts,
     logs_path: logsPath,
     verification,
   };

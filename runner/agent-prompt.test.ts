@@ -18,14 +18,13 @@ const envelope: TaskEnvelope = {
 };
 
 describe("buildSystemPrompt", () => {
-  it("includes role, read-only constraint, AGENTS.md, and the json-report instruction", () => {
+  it("includes role, read-only constraint, AGENTS.md, and structured-report instruction", () => {
     const p = buildSystemPrompt(agent, "RULE: do not deploy.");
     expect(p).toContain("Backend Engineer");
     expect(p).toContain("Implements backend services.");
     expect(p).toContain("READ-ONLY");
     expect(p).toContain("RULE: do not deploy.");
-    expect(p).toContain("```json");
-    expect(p).toContain('"status"');
+    expect(p).toContain("structured report");
     expect(p).toContain("Allowed task types");
     expect(p).toContain("bugfix");
   });
@@ -42,7 +41,7 @@ describe("buildSystemPrompt", () => {
     expect(p).not.toContain("READ-ONLY");
     expect(p).toContain("edit files");
     expect(p).toContain("must NOT run");
-    expect(p).toContain("```json");
+    expect(p).toContain("output schema");
   });
 });
 
