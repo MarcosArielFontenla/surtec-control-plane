@@ -27,6 +27,14 @@ describe("createWorktree", () => {
     expect(existsSync(worktreePath)).toBe(true);
     expect(existsSync(join(worktreePath, "README.md"))).toBe(true);
   });
+
+  it("returns the same managed worktree when a retry repeats creation", () => {
+    const first = createWorktree(repo, "STK-1", "backend-engineer");
+    const second = createWorktree(repo, "STK-1", "backend-engineer");
+
+    expect(second).toEqual(first);
+    expect(listManagedWorktrees(repo)).toEqual([first]);
+  });
 });
 
 describe("commitAndDiff", () => {

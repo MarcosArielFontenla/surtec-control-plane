@@ -46,7 +46,21 @@ export function createWorktree(sourceRepo: string, taskId: string, agentId: stri
   assertManagedBranch(branch);
   const worktreeRoot = managedRoot(sourceRepo);
   const worktreePath = join(worktreeRoot, `${basename(sourceRepo)}-${sanitizeId(taskId)}-${sanitizeId(agentId)}`);
-  const r = git(["-C", sourceRepo, "worktree", "add", "-b", branch, worktreePath]);
+  const expectedPath = canonicalPath(worktreePath);
+  const registered = parsedWorktrees(sourceRepo);
+  const byBranch = registered.find((item) => item.branch === branch);
+  const byPath = registered.find((item) => canonicalPath(item.worktreePath) === expectedPath);
+  if (byBranch && byPath && canonicalPath(byBranch.worktreePath) === expectedPath && byPath.branch === branch) {
+    return { branch, worktreePath: assertPathWithin(worktreeRoot, byBranch.worktreePath, "worktree path") };
+  }
+  if (byBranch || byPath) throw new Error("managed worktree identity conflicts with the task branch or path");
+
+  const existingBranch = git(["-C", sourceRepo, "branch", "--list", branch]);
+  if (!existingBranch.ok) throw new Error(`git branch --list failed: ${(existingBranch.stderr || existingBranch.stdout).trim()}`);
+  const args = existingBranch.stdout.trim()
+    ? ["-C", sourceRepo, "worktree", "add", worktreePath, branch]
+    : ["-C", sourceRepo, "worktree", "add", "-b", branch, worktreePath];
+  const r = git(args);
   if (!r.ok) throw new Error(`git worktree add failed: ${(r.stderr || r.stdout).trim()}`);
   return { branch, worktreePath };
 }

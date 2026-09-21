@@ -11,6 +11,9 @@ import { createWorktree, commitAndDiff } from "./worktree";
 import { runVerification } from "./verify";
 import { runTask } from "./run-task";
 import { readTask, writeTask } from "../lib/state/store";
+import { updateTask } from "../lib/state/store";
+import { defaultTaskOrchestration } from "../lib/state/orchestration";
+import { readTaskEvents } from "../lib/state/events";
 
 let root: string;
 let repo: string;
@@ -194,7 +197,7 @@ describe("runTask", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it("turns the five-minute deadline into a failed task", async () => {
+  it("turns the five-minute runtime budget into a terminal failed task", async () => {
     vi.useFakeTimers();
     writeTask(queuedRecord());
     run.mockImplementation((_input, _events, signal) => new Promise((_resolve, reject) => {
@@ -209,7 +212,110 @@ describe("runTask", () => {
     await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
     await pending;
 
-    expect(readTask("T-1")?.result?.blockers).toEqual(["timeout (5m)"]);
+    const finished = readTask("T-1")!;
+    expect(finished.result?.blockers).toEqual(["runtime budget exhausted (300000ms)"]);
+    expect(finished.orchestration?.last_failure?.kind).toBe("budget");
+  });
+
+  it("persists thread, turn, usage, and append-only lifecycle events", async () => {
+    writeTask(queuedRecord());
+    run.mockImplementation(async (_input, events) => {
+      await events({ type: "thread-started", at: "2026-09-21T10:00:00Z", threadId: "thread-durable" });
+      await events({ type: "turn-started", at: "2026-09-21T10:00:01Z", threadId: "thread-durable", turnId: "turn-durable" });
+      await events({
+        type: "usage",
+        at: "2026-09-21T10:00:02Z",
+        threadId: "thread-durable",
+        turnId: "turn-durable",
+        usage: { inputTokens: 8, cachedInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 13 },
+      });
+      return agentRun({ threadId: "thread-durable", turnId: "turn-durable" });
+    });
+
+    await runTask("T-1", root, executor);
+
+    const finished = readTask("T-1")!;
+    expect(finished.envelope.metadata.run).toMatchObject({ thread_id: "thread-durable", turn_id: "turn-durable" });
+    expect(finished.orchestration?.cumulative_tokens).toBe(15);
+    expect(readTaskEvents("T-1").map((event) => event.type)).toEqual([
+      "claimed", "started", "thread-started", "turn-started", "usage", "usage", "completed",
+    ]);
+  });
+
+  it("resumes the persisted Codex thread on a retry", async () => {
+    const record = queuedRecord();
+    record.envelope.metadata.run = { thread_id: "thread-existing" };
+    writeTask(record);
+
+    await runTask("T-1", root, executor);
+
+    expect(run.mock.calls[0][0].threadId).toBe("thread-existing");
+  });
+
+  it("delivers durable cancellation through the external abort signal", async () => {
+    writeTask(queuedRecord());
+    const controller = new AbortController();
+    run.mockImplementation((_input, _events, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        const error = new Error("interrupted");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true });
+    }));
+
+    const pending = runTask("T-1", root, executor, { signal: controller.signal });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    updateTask("T-1", (record) => {
+      record.orchestration!.cancel_requested_at = new Date().toISOString();
+    });
+    controller.abort();
+    const completion = await pending;
+
+    expect(completion).toMatchObject({ outcome: "cancelled", retryable: false, stale: false });
+    expect(readTask("T-1")).toMatchObject({ lifecycle: "finished", outcome: "cancelled", result: { status: "cancelled" } });
+  });
+
+  it("aborts when cumulative token usage exceeds the task budget", async () => {
+    const record = queuedRecord();
+    record.orchestration = { ...defaultTaskOrchestration(), max_total_tokens: 10 };
+    record.revision = 1;
+    writeTask(record);
+    run.mockImplementation(async (_input, events, signal) => {
+      await events({
+        type: "usage",
+        at: new Date().toISOString(),
+        threadId: "thread-1",
+        turnId: "turn-1",
+        usage: { inputTokens: 11, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 11 },
+      });
+      expect(signal.aborted).toBe(true);
+      const error = new Error("interrupted");
+      error.name = "AbortError";
+      throw error;
+    });
+
+    await runTask("T-1", root, executor);
+
+    expect(readTask("T-1")?.orchestration).toMatchObject({ cumulative_tokens: 11, last_failure: { kind: "budget" } });
+    expect(readTask("T-1")?.result?.blockers).toEqual(["token budget exhausted (10)"]);
+  });
+
+  it("does not let a stale attempt overwrite a replacement lease", async () => {
+    writeTask(queuedRecord());
+    let resolveRun!: (value: AgentRunResult) => void;
+    run.mockImplementation(() => new Promise((resolve) => { resolveRun = resolve; }));
+
+    const pending = runTask("T-1", root, executor);
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    updateTask("T-1", (record) => {
+      record.orchestration!.lease!.run_id = "replacement-run";
+      record.orchestration!.lease!.worker_id = "replacement-worker";
+    });
+    resolveRun(agentRun());
+    const completion = await pending;
+
+    expect(completion).toMatchObject({ stale: true });
+    expect(readTask("T-1")).toMatchObject({ lifecycle: "running", orchestration: { lease: { run_id: "replacement-run" } } });
   });
 
   it("redacts credentials from streamed logs", async () => {

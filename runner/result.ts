@@ -74,3 +74,21 @@ export function failureResult(envelope: TaskEnvelope, reason: string, logsPath: 
     verification: null,
   });
 }
+
+export function cancelledResult(envelope: TaskEnvelope, reason: string, logsPath: string): AgentResult {
+  return assertAgentResult({
+    task_id: envelope.id,
+    agent: envelope.agent,
+    status: "cancelled",
+    summary: `Run cancelled: ${reason}`,
+    files_changed: [],
+    commands_run: [],
+    tests_run: [],
+    risks: [],
+    blockers: [],
+    next_steps: ["Retry the task if the work is still required."],
+    artifacts: [],
+    logs_path: logsPath,
+    verification: null,
+  });
+}

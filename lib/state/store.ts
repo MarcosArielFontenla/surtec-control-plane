@@ -86,13 +86,14 @@ export function readTask(id: string, dir: string = tasksDir()): TaskRecord | nul
   }
 }
 
-export function updateTask(id: string, mutate: (record: TaskRecord) => void, dir: string = tasksDir()): TaskRecord | null {
+export function updateTask(id: string, mutate: (record: TaskRecord) => void | boolean, dir: string = tasksDir()): TaskRecord | null {
   assertSafeIdentifier(id, "task id");
   return withStateLock(id, () => {
     const record = readTask(id, dir);
     if (!record) return null;
-    mutate(record);
-    record.revision = (record.revision ?? 0) + 1;
+    const previousRevision = record.revision ?? 0;
+    if (mutate(record) === false) return record;
+    record.revision = previousRevision + 1;
     writeTask(record, dir);
     return record;
   }, join(dirname(dir), "locks"));
