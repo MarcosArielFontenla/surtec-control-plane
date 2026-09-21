@@ -21,7 +21,7 @@
 
 ## Files modified
 
-Forty repository files changed across these groups:
+Forty-two repository files changed across these groups:
 
 - Contracts and persistence: `schemas/task-record.schema.json`, `schemas/task-event.schema.json`, `schemas/agent-result.schema.json`, and `lib/state/{types,paths,validation,orchestration,store,events,derive}.ts` plus tests.
 - Runtime and scheduling: `runner/{run-task,task-orchestrator,worktree,result,reconcile}.ts` plus tests and the agent-report type boundary.
@@ -87,7 +87,9 @@ Forty repository files changed across these groups:
 - `1644788` — `feat: add durable task orchestrator`
 - `938b252` — `feat: expose durable task controls`
 - `0492ae9` — `docs: define durable worker operations`
-- Final verification and roadmap status — this commit.
+- `7c87248` — `docs: complete phase 2 verification`
+- `ea7e60f` — `docs: normalize phase 2 markdown endings`
+- Final verification metadata correction — this commit.
 
 ## Recommended next phase
 
