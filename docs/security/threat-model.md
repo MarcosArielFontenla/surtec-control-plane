@@ -34,7 +34,8 @@
 
 - One `PolicyService` validates registry schemas, agent references, sandbox ceilings, task types, exact verification commands, and canonical repository containment.
 - Dispatch, execution, and review revalidate current policy. A persisted task cannot broaden access by changing its repository path or sandbox.
-- Task records, project overrides, agent reports, and agent results have runtime JSON Schema validation.
+- Task records, append-only task events, project overrides, agent reports, and agent results have runtime JSON Schema validation.
+- Task mutations use per-task cross-process locks and atomic snapshot replacement. Scheduler claims also use a short global lock.
 - Identifiers are allowlisted before becoming paths or process arguments. Worktree cleanup accepts only contained managed paths and `agent/` branches.
 
 ### Agent and subprocess isolation
@@ -47,6 +48,8 @@
 - Fail-closed handling of unknown or out-of-scope approvals, malformed protocol data, and malformed structured results.
 - Approval requests must match the active thread and turn and the exact approved command or path.
 - Central redaction is applied before subprocess output, errors, structured logs, and persisted events are surfaced.
+- Attempt ownership is tied to a unique run id. Git effects recheck ownership before starting, and a stale process cannot publish progress or overwrite a newer terminal result.
+- Runtime, cumulative-token, and retry budgets are persisted per task. Concurrent work is bounded, and workspace writes are serialized per project.
 
 ### Browser and review boundary
 
@@ -54,7 +57,7 @@
 - Every HTTP mutation requires a random in-memory same-origin session token compared in constant time.
 - Review decisions persist intermediate state and checkpoints around push, PR creation, and cleanup.
 - PR publication first searches for an existing open PR for the branch. Worktree cleanup is idempotent.
-- Startup closes interrupted running tasks and records, but never automatically deletes, unknown managed worktrees.
+- Cancellation intent is persisted before the in-memory abort is delivered. Startup recovers only expired leases and never automatically deletes unknown managed worktrees.
 
 ### Supply chain and verification
 
@@ -67,7 +70,11 @@
 
 - This is a single-user local application, not a security boundary against another process running as the same operating-system user.
 - The session token is CSRF and local-request protection, not multi-user authentication, and resets with the server.
-- File-first state has no durable queue, cross-record transaction, or multi-process concurrency control; Phase 2 owns those guarantees.
+- Snapshot replacement and event append are not one transaction; snapshot revision gaps make missing events detectable, but an I/O failure can leave history incomplete.
+- File locks coordinate local control-plane processes only. This design is not a distributed lock and does not defend against arbitrary same-user filesystem mutation.
+- The worker shares the API process, so crash recovery begins after lease expiry rather than continuing immediately in a separate service.
+- Git and filesystem effects cannot participate in the task-snapshot transaction. Lease expiry during a non-interruptible Git operation can leave a managed artifact that needs inspection, though stale snapshot completion remains fenced.
+- Cancelling a write task preserves its known managed worktree so a manual retry can resume safely. Cleanup remains an explicit review action rather than an automatic destructive effect.
 - In-memory project processes are not reconciled after a server crash.
 - Registry project commands are privileged administrator configuration. The policy service restricts selection to exact configured commands but does not make a malicious configured command safe.
 - Orphan cleanup remains manual because automatic deletion would turn ambiguous state into destructive action.

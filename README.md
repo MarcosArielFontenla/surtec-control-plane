@@ -42,7 +42,9 @@ See `docs/runbooks/local-development.md` for environment variables and troublesh
 - Shows Git status, GitHub activity, dependency status, deployment health, notes, and local process output.
 - Dispatches analysis work in a read-only sandbox.
 - Dispatches implementation work in an isolated Git worktree and task branch.
-- Records normalized runtime events, thread and turn identifiers, token usage, structured results, diffs, and verification evidence.
+- Runs queued tasks behind a durable worker with bounded concurrency and one active write per project.
+- Supports durable cancellation, bounded retry, lease-based crash recovery, App Server thread resume, and per-task runtime/token budgets.
+- Records schema-validated append-only lifecycle events, thread and turn identifiers, token usage, structured results, diffs, and verification evidence.
 - Routes invalid structured reports to `needs-review`.
 - Keeps branch publication behind explicit human review; merge and deploy remain manual.
 - Resumes interrupted approval/rejection effects without duplicating pushes or pull requests.
@@ -56,6 +58,8 @@ Optional settings are documented in `.env.example`:
 - `SURTEC_CODEX_BIN`
 - `SURTEC_CODEX_MODEL`
 - `SURTEC_CODEX_REASONING_EFFORT`
+- `SURTEC_WORKER_*` scheduler, lease, and retry limits
+- `SURTEC_TASK_*` attempt, runtime, and cumulative-token budgets
 
 Protocol bindings are generated from the installed CLI:
 

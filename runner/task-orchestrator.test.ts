@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SandboxMode, TaskRecord } from "../lib/state/types";
@@ -8,6 +8,7 @@ import { readTask, updateTask, writeTask } from "../lib/state/store";
 import { readTaskEvents } from "../lib/state/events";
 import { TaskControlError, TaskOrchestrator } from "./task-orchestrator";
 import type { TaskRunCompletion, TaskRunOptions } from "./run-task";
+import type { AgentExecutor } from "./agent-executor";
 
 function record(id: string, sandbox: SandboxMode = "read-only", project = "p", order = 0): TaskRecord {
   return {
@@ -64,6 +65,7 @@ describe("TaskOrchestrator", () => {
 
   afterEach(() => {
     delete process.env.SURTEC_STATE_DIR;
+    delete process.env.SURTEC_PROJECTS_ROOT;
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -216,5 +218,39 @@ describe("TaskOrchestrator", () => {
       task.orchestration!.attempts = task.orchestration!.max_attempts;
     });
     expect(() => worker.retry("T-1")).toThrow(TaskControlError);
+  });
+
+  it("runs a claimed task through the real runner boundary with a fake executor", async () => {
+    const projectsRoot = join(root, "projects");
+    const projectPath = join(projectsRoot, "p");
+    mkdirSync(join(projectPath, ".git"), { recursive: true });
+    mkdirSync(join(root, "registry"), { recursive: true });
+    process.env.SURTEC_PROJECTS_ROOT = projectsRoot;
+    writeFileSync(join(root, "AGENTS.md"), "Do not deploy.\n", "utf8");
+    writeFileSync(join(root, "registry", "agents.yml"), "agents:\n  - id: agent\n    name: Agent\n    type: engineering\n    description: Works.\n    default_sandbox: read-only\n    allowed_task_types: [analysis]\n    requires_human_approval_for: [merge]\n", "utf8");
+    writeFileSync(join(root, "registry", "projects.yml"), "projects:\n  p:\n    allowed_agents: [agent]\n    sandbox:\n      default: read-only\n", "utf8");
+    const queued = record("T-1");
+    queued.envelope.repo_path = projectPath;
+    writeTask(queued);
+    const executor: AgentExecutor = {
+      run: vi.fn().mockResolvedValue({
+        finalText: JSON.stringify({ status: "completed", summary: "done", commands_run: [], tests_run: [], risks: [], blockers: [], next_steps: [], artifacts: [] }),
+        structuredOutput: { status: "completed", summary: "done", commands_run: [], tests_run: [], risks: [], blockers: [], next_steps: [], artifacts: [] },
+        threadId: "thread-1",
+        turnId: "turn-1",
+        usage: { inputTokens: 4, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0, totalTokens: 6 },
+      }),
+    };
+    const worker = new TaskOrchestrator({ repoRoot: root, executor, maxConcurrent: 1, now: () => new Date(nowMs) });
+
+    expect(await worker.runOnce()).toBe(1);
+    await vi.waitFor(() => expect(readTask("T-1")?.lifecycle).toBe("finished"));
+
+    expect(readTask("T-1")).toMatchObject({
+      outcome: "completed",
+      result: { summary: "done" },
+      orchestration: { attempts: 1, cumulative_tokens: 6, lease: null },
+    });
+    expect(readTaskEvents("T-1").map((event) => event.type)).toEqual(["claimed", "started", "usage", "completed"]);
   });
 });

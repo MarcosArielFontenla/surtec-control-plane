@@ -10,9 +10,9 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 - `dashboard/src/server`: Hono API and infrastructure adapters for Git, GitHub, deployment health, Railway, dependencies, and local open actions.
 - `lib/policy`: the canonical typed policy boundary for project, agent, sandbox, task-type, repository, command, and approval configuration.
 - `lib/security`: shared identifier, canonical path-containment, environment-allowlist, and redaction primitives.
-- `lib/state`: schema-validated file-first task and project state with atomic replacement writes.
+- `lib/state`: schema-validated file-first task and project state with per-task locks, atomic replacement writes, and append-only task events.
 - Other `lib` modules: discovery, Git status, portfolio derivation, and URL helpers.
-- `runner`: agent execution, worktrees, verification, process management, review publication, and startup reconciliation.
+- `runner`: durable task scheduling, agent execution, worktrees, verification, process management, review publication, and startup reconciliation.
 - `registry`: trusted project and agent configuration.
 - `schemas`: persisted and structured-output contracts.
 
@@ -28,14 +28,25 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 
 ### Agent task
 
-1. Validate a dashboard request through `PolicyService` and write a schema-valid queued task record.
-2. Re-resolve current project and agent policy at execution time; reject stale paths or broadened capabilities.
-3. For a write task, create an isolated Git worktree and managed `agent/` branch under the worktree root.
-4. Invoke `AgentExecutor`; the production implementation uses Codex App Server over local `stdio`.
-5. Persist normalized operational events, thread/turn identifiers, and usage.
-6. Commit agent edits and run registry verification commands.
-7. Validate the structured result and mark the task finished.
-8. A human may approve publication or reject and clean up. The review state machine persists intent and each completed effect so a retry resumes rather than duplicates work.
+1. Validate a dashboard request through `PolicyService`, write a schema-valid queued task snapshot, and append a `queued` event.
+2. The API notifies `TaskOrchestrator` and returns. It never executes the task in the request handler.
+3. Under the scheduler lock, the worker enforces global capacity and per-project write exclusion, then atomically claims the task with a unique run id and expiring lease.
+4. Re-resolve current project and agent policy at execution time; reject stale paths or broadened capabilities.
+5. For a write task, create or safely reuse its isolated Git worktree and managed `agent/` branch.
+6. Invoke `AgentExecutor`; the production implementation uses Codex App Server over local `stdio` and resumes a persisted thread when available.
+7. Persist concise lifecycle events, thread/turn identifiers, cumulative usage, lease heartbeats, and the current task snapshot. Cancellation reaches App Server through `turn/interrupt`.
+8. Commit agent edits and run registry verification commands only while the attempt still owns the current lease.
+9. Validate the structured result and finish the task. Transient failures retry with bounded backoff while attempt and token budgets remain.
+10. A human may approve publication or reject and clean up. The review state machine persists intent and each completed effect so a retry resumes rather than duplicates work.
+
+### Durable orchestration
+
+- Task JSON is the authoritative current snapshot; `state/events/<task-id>.jsonl` is append-only operational history.
+- A per-task cross-process lock serializes claim, cancel, retry, heartbeat, recovery, and completion. Atomic replacement protects each snapshot.
+- A short global scheduler lock makes the configured concurrency bound and project-write exclusion consistent across local worker processes.
+- A stale run id cannot publish progress or a terminal result after its lease was replaced.
+- Startup leaves current leases alone, requeues expired leases when budgets remain, and terminally fails exhausted attempts. Unknown worktrees are still report-only.
+- See [ADR-0002](../decisions/ADR-0002-file-first-durable-orchestration.md) for the persistence boundary and migration threshold.
 
 ### Review publication
 
@@ -43,7 +54,7 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 2. Persist `approving` or `rejecting` with an attempt count.
 3. Approval pushes once, records that checkpoint, finds an existing open PR before creating one, and then records `approved`.
 4. Rejection removes only a contained managed worktree and `agent/` branch, tolerates already-completed cleanup, and then records `rejected`.
-5. Startup marks interrupted running tasks as failed and writes an orphan-worktree report. Unknown worktrees are reported, never automatically deleted.
+5. Startup recovers expired task leases and writes an orphan-worktree report. Unknown worktrees are reported, never automatically deleted.
 
 ### Project processes
 
@@ -65,8 +76,9 @@ The production API binds to `127.0.0.1`. API middleware rejects non-loopback `Ho
 ## Known limitations
 
 - Some long operations still block the API event loop.
-- Task orchestration is in-process and has no durable queue.
-- File-first state uses atomic file replacement but does not provide cross-record transactions or multi-process locking.
+- Worker execution shares the API process; a process crash waits for lease expiry before recovery.
+- Snapshot replacement and event append are two separate durable operations. A revision can therefore reveal a missing event after an I/O failure, but the pair is not one filesystem transaction.
+- File locks coordinate cooperating control-plane processes, not arbitrary same-user filesystem writers or distributed hosts.
 - Project-process history and the HTTP session token do not survive a server restart.
 - Orphan worktrees require an explicit human cleanup decision after inspecting the reconciliation report.
 - Pattern-based redaction and secret scanning reduce accidental exposure but are not general data-loss-prevention systems.

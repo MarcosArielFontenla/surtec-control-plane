@@ -23,6 +23,8 @@ pnpm audit:check
 
 Set `SURTEC_PROJECTS_ROOT` when sibling repositories are not under the control plane's parent directory. Keep machine-specific values outside Git.
 
+The durable worker defaults to two concurrent tasks and one workspace-write task per project. `.env.example` lists scheduler, lease, retry, attempt, runtime, and token controls. Keep the heartbeat comfortably below the lease duration.
+
 ## Run
 
 ```text
@@ -46,5 +48,7 @@ pnpm start
 Use `pnpm smoke:api` for the local API smoke. The production-style API listens on `127.0.0.1`; browser mutations obtain an in-memory session token automatically. A server restart intentionally invalidates the previous token.
 
 At startup, inspect warnings about orphaned worktrees before taking cleanup action. The report is written under `state/reconciliation/orphan-worktrees.json`; reconciliation never deletes an unknown path.
+
+Current task snapshots are under `state/tasks/`; append-only lifecycle events are under `state/events/`. On restart, unexpired leases remain owned, while expired leases are requeued only when their persisted budgets permit it. Cancellation and manual retry are available from the dashboard and protected API.
 
 Real agent execution is never part of the normal test suite; see the Codex runtime runbook for the explicit smoke command.
