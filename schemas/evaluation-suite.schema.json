@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/evaluation-suite.schema.json",
+  "title": "EvaluationSuiteManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "suite_id", "minimum_score", "fixtures"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "suite_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "minimum_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\\.json$" }
+    }
+  }
+}
