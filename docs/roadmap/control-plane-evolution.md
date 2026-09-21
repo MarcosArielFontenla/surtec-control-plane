@@ -22,6 +22,8 @@ Status: complete on 2026-09-21. See [Phase 2 verification](phase-2-verification.
 
 Add an evidence-backed Today view and a complete task detail view with lifecycle events, diffs, commands, verification, policy decisions, approvals, usage, retries, and cleanup state. Add optional tracing without making it a runtime dependency.
 
+Status: complete on 2026-09-21. See [Phase 3 verification](phase-3-verification.md).
+
 ## Phase 4 — Evaluations and quality gates
 
 Build versioned fixture-based evaluations by role and task type. Prefer deterministic checks; make security and policy violations hard failures regardless of aggregate scores.
