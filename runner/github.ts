@@ -32,3 +32,24 @@ export function openPullRequest(
   const err = (r.stderr ?? "") || (r.stdout ?? "") || (r.error ? r.error.message : "");
   return { error: redactText(err.trim()) };
 }
+
+export function ensurePullRequest(
+  sourceRepo: string,
+  branch: string,
+  base: string,
+  title: string,
+  body: string,
+): { url?: string; error?: string } {
+  const existing = spawnSync(
+    "gh",
+    ["pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"],
+    { cwd: sourceRepo, encoding: "utf8", timeout: 30_000, env: gitEnvironment() },
+  );
+  if (existing.status !== 0) {
+    const error = (existing.stderr ?? "") || (existing.stdout ?? "") || (existing.error ? existing.error.message : "");
+    return { error: redactText(error.trim() || "gh pr list failed") };
+  }
+  const existingUrl = existing.status === 0 ? (existing.stdout ?? "").trim() : "";
+  if (existingUrl) return { url: existingUrl };
+  return openPullRequest(sourceRepo, branch, base, title, body);
+}

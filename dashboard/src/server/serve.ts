@@ -6,10 +6,14 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { createApp } from "./index";
-import { reconcileRunning } from "../../../runner/reconcile";
+import { reconcileStartup } from "../../../runner/reconcile";
 
-const interrupted = reconcileRunning();
-if (interrupted > 0) console.log(`Reconciled ${interrupted} interrupted task(s) from a previous run.`);
+const reconciliation = reconcileStartup();
+if (reconciliation.interrupted > 0) console.log(`Reconciled ${reconciliation.interrupted} interrupted task(s) from a previous run.`);
+if (reconciliation.worktrees.orphans.length > 0) {
+  console.warn(`Found ${reconciliation.worktrees.orphans.length} orphaned managed worktree(s); see the reconciliation report before cleanup.`);
+}
+for (const error of reconciliation.worktrees.errors) console.warn(`Worktree reconciliation warning: ${error}`);
 
 const app = createApp();
 app.use("/*", serveStatic({ root: "./dashboard/dist" }));

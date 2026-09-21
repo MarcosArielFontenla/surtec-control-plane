@@ -7,8 +7,8 @@ import { expandHome } from "../../../lib/expand-home";
 
 vi.mock("../../../runner/worktree", () => ({ pushBranch: vi.fn(), removeWorktree: vi.fn() }));
 import { pushBranch, removeWorktree } from "../../../runner/worktree";
-vi.mock("../../../runner/github", () => ({ openPullRequest: vi.fn(), buildPrBody: vi.fn(() => "PR_BODY") }));
-import { openPullRequest } from "../../../runner/github";
+vi.mock("../../../runner/github", () => ({ ensurePullRequest: vi.fn(), buildPrBody: vi.fn(() => "PR_BODY") }));
+import { ensurePullRequest } from "../../../runner/github";
 import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
 import { writeTask, readTask } from "../../../lib/state/store";
 
@@ -38,8 +38,8 @@ beforeEach(() => {
   vi.mocked(pushBranch).mockReset();
   vi.mocked(removeWorktree).mockReset();
   vi.mocked(pushBranch).mockReturnValue({ pushed: true });
-  vi.mocked(openPullRequest).mockReset();
-  vi.mocked(openPullRequest).mockReturnValue({ url: "https://github.com/x/pull/1" });
+  vi.mocked(ensurePullRequest).mockReset();
+  vi.mocked(ensurePullRequest).mockReturnValue({ url: "https://github.com/x/pull/1" });
 });
 afterEach(() => {
   delete process.env.SURTEC_STATE_DIR;
@@ -53,7 +53,7 @@ describe("approveTask", () => {
     expect(d.status).toBe("approved");
     expect(pushBranch).toHaveBeenCalledWith(expandHome("~/dev/x"), "agent/RV-1-backend-engineer");
     expect(d.pushed).toBe(true);
-    expect(openPullRequest).toHaveBeenCalledWith(expandHome("~/dev/x"), "agent/RV-1-backend-engineer", "main", "t", "PR_BODY");
+    expect(ensurePullRequest).toHaveBeenCalledWith(expandHome("~/dev/x"), "agent/RV-1-backend-engineer", "main", "t", "PR_BODY");
     expect(d.pr_url).toBe("https://github.com/x/pull/1");
     expect(readTask("RV-1")!.decision?.pr_url).toBe("https://github.com/x/pull/1");
   });
@@ -65,12 +65,14 @@ describe("approveTask", () => {
     const d = approveTask("RV-2", root);
     expect(d.status).toBe("approved");
     expect(pushBranch).not.toHaveBeenCalled();
-    expect(openPullRequest).not.toHaveBeenCalled();
+    expect(ensurePullRequest).not.toHaveBeenCalled();
   });
 
-  it("throws ReviewError when already decided", () => {
+  it("returns an existing approval without repeating effects", () => {
     writeTask(record("RV-3", { decision: { status: "approved", at: "2026-05-29T11:00:00Z" } }));
-    expect(() => approveTask("RV-3")).toThrow(ReviewError);
+    expect(approveTask("RV-3").status).toBe("approved");
+    expect(pushBranch).not.toHaveBeenCalled();
+    expect(ensurePullRequest).not.toHaveBeenCalled();
   });
 
   it("throws ReviewError when not finished", () => {
@@ -82,24 +84,45 @@ describe("approveTask", () => {
     expect(() => approveTask("NOPE")).toThrow(TaskNotFoundError);
   });
 
-  it("records pushed:false with the error when the push fails", () => {
-    vi.mocked(pushBranch).mockReturnValue({ pushed: false, error: "no upstream" });
+  it("persists a failed push and resumes it on the next approval", () => {
+    vi.mocked(pushBranch)
+      .mockReturnValueOnce({ pushed: false, error: "no upstream" })
+      .mockReturnValueOnce({ pushed: true });
     writeTask(record("RV-7"));
-    const d = approveTask("RV-7", root);
-    expect(d.status).toBe("approved");
-    expect(d.pushed).toBe(false);
-    expect(d.error).toBe("no upstream");
-    expect(openPullRequest).not.toHaveBeenCalled();
+    const pending = approveTask("RV-7", root);
+    expect(pending.status).toBe("approving");
+    expect(pending.pushed).toBe(false);
+    expect(pending.error).toBe("no upstream");
+    expect(ensurePullRequest).not.toHaveBeenCalled();
+
+    const completed = approveTask("RV-7", root);
+    expect(completed.status).toBe("approved");
+    expect(completed.attempts).toBe(2);
+    expect(pushBranch).toHaveBeenCalledTimes(2);
+    expect(ensurePullRequest).toHaveBeenCalledTimes(1);
   });
 
-  it("records the PR error but stays approved when gh fails", () => {
-    vi.mocked(openPullRequest).mockReturnValue({ error: "gh: command not found" });
+  it("persists a failed PR creation and resumes without pushing twice", () => {
+    vi.mocked(ensurePullRequest)
+      .mockReturnValueOnce({ error: "gh: command not found" })
+      .mockReturnValueOnce({ url: "https://github.com/x/pull/8" });
     writeTask(record("RV-8"));
-    const d = approveTask("RV-8", root);
-    expect(d.status).toBe("approved");
-    expect(d.pushed).toBe(true);
-    expect(d.pr_url).toBeUndefined();
-    expect(d.error).toContain("gh: command not found");
+    const pending = approveTask("RV-8", root);
+    expect(pending.status).toBe("approving");
+    expect(pending.pushed).toBe(true);
+    expect(pending.pr_url).toBeUndefined();
+    expect(pending.error).toContain("gh: command not found");
+
+    const completed = approveTask("RV-8", root);
+    expect(completed.status).toBe("approved");
+    expect(completed.pr_url).toBe("https://github.com/x/pull/8");
+    expect(pushBranch).toHaveBeenCalledTimes(1);
+    expect(ensurePullRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects the opposite action while approval is pending", () => {
+    writeTask(record("RV-9", { decision: { status: "approving", at: "2026-05-29T11:00:00Z" } }));
+    expect(() => rejectTask("RV-9")).toThrow(ReviewError);
   });
 });
 
@@ -108,15 +131,27 @@ describe("rejectTask", () => {
     writeTask(record("RV-5"));
     const d = rejectTask("RV-5");
     expect(d.status).toBe("rejected");
+    expect(d.cleanup_completed).toBe(true);
     expect(removeWorktree).toHaveBeenCalledWith(expandHome("~/dev/x"), "/tmp/wt", "agent/RV-5-backend-engineer");
     expect(readTask("RV-5")!.decision?.status).toBe("rejected");
+
+    expect(rejectTask("RV-5").status).toBe("rejected");
+    expect(removeWorktree).toHaveBeenCalledTimes(1);
   });
 
-  it("records rejected with an error note when discard throws", () => {
+  it("persists a failed cleanup and resumes it on the next rejection", () => {
     writeTask(record("RV-6"));
-    vi.mocked(removeWorktree).mockImplementation(() => { throw new Error("git worktree remove failed: boom"); });
-    const d = rejectTask("RV-6");
-    expect(d.status).toBe("rejected");
-    expect(d.error).toContain("git worktree remove failed");
+    vi.mocked(removeWorktree)
+      .mockImplementationOnce(() => { throw new Error("git worktree remove failed: boom"); })
+      .mockImplementationOnce(() => undefined);
+    const pending = rejectTask("RV-6");
+    expect(pending.status).toBe("rejecting");
+    expect(pending.error).toContain("git worktree remove failed");
+
+    const completed = rejectTask("RV-6");
+    expect(completed.status).toBe("rejected");
+    expect(completed.cleanup_completed).toBe(true);
+    expect(completed.attempts).toBe(2);
+    expect(removeWorktree).toHaveBeenCalledTimes(2);
   });
 });

@@ -49,11 +49,13 @@ export interface VerificationReport {
 }
 
 export interface ReviewDecision {
-  status: "approved" | "rejected";
+  status: "approving" | "approved" | "rejecting" | "rejected";
   at: string;
+  attempts?: number;
   branch?: string;
   pushed?: boolean;
   pr_url?: string;
+  cleanup_completed?: boolean;
   error?: string;
 }
 

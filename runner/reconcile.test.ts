@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskRecord } from "../lib/state/types";
 import { writeTask, readTask } from "../lib/state/store";
-import { reconcileRunning } from "./reconcile";
+import { reconcileOrphanWorktrees, reconcileRunning } from "./reconcile";
 
 function record(id: string, lifecycle: TaskRecord["lifecycle"]): TaskRecord {
   return {
@@ -41,5 +41,45 @@ describe("reconcileRunning", () => {
     expect(r.outcome).toBe("failed");
     expect(r.result?.blockers[0]).toContain("interrupted");
     expect(readTask("Q-1")!.lifecycle).toBe("queued");
+  });
+});
+
+describe("reconcileOrphanWorktrees", () => {
+  it("reports unknown managed worktrees without deleting them", () => {
+    const known = record("R-2", "finished");
+    known.envelope.metadata = { run: { worktree_path: join(root, "known") } };
+    const reportPath = join(root, "report.json");
+
+    const report = reconcileOrphanWorktrees(root, {
+      tasks: () => [known],
+      projects: () => [{ id: "p", repo_path: join(root, "repo") }],
+      worktrees: () => [
+        { branch: "agent/known", worktreePath: join(root, "known") },
+        { branch: "agent/orphan", worktreePath: join(root, "orphan") },
+      ],
+      reportPath,
+      now: () => "2026-05-29T12:00:00Z",
+    });
+
+    expect(report).toEqual({
+      at: "2026-05-29T12:00:00Z",
+      orphans: [{
+        project: "p",
+        repo_path: join(root, "repo"),
+        worktree_path: join(root, "orphan"),
+        branch: "agent/orphan",
+      }],
+      errors: [],
+    });
+    expect(JSON.parse(readFileSync(reportPath, "utf8"))).toEqual(report);
+  });
+
+  it("records registry failures instead of preventing startup", () => {
+    const report = reconcileOrphanWorktrees(root, {
+      tasks: () => [],
+      projects: () => { throw new Error("invalid registry"); },
+      reportPath: join(root, "error-report.json"),
+    });
+    expect(report.errors).toEqual(["registry: invalid registry"]);
   });
 });

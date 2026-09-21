@@ -22,11 +22,13 @@
           "additionalProperties": false,
           "required": ["status", "at"],
           "properties": {
-            "status": { "type": "string", "enum": ["approved", "rejected"] },
+            "status": { "type": "string", "enum": ["approving", "approved", "rejecting", "rejected"] },
             "at": { "type": "string", "minLength": 1 },
+            "attempts": { "type": "integer", "minimum": 1 },
             "branch": { "type": "string", "minLength": 1 },
             "pushed": { "type": "boolean" },
             "pr_url": { "type": "string", "minLength": 1 },
+            "cleanup_completed": { "type": "boolean" },
             "error": { "type": "string" }
           }
         },
@@ -35,4 +37,3 @@
     }
   }
 }
-

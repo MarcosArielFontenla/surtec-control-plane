@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createWorktree, commitAndDiff, pushBranch, removeWorktree } from "./worktree";
+import { createWorktree, commitAndDiff, listManagedWorktrees, pushBranch, removeWorktree } from "./worktree";
 
 let dir: string;
 let repo: string;
@@ -66,21 +66,33 @@ describe("pushBranch", () => {
   });
 
   it("returns pushed:false with an error when there is no remote", () => {
-    const r = pushBranch(repo, "main");
+    const r = pushBranch(repo, "agent/missing");
     expect(r.pushed).toBe(false);
     expect(r.error && r.error.length > 0).toBe(true);
   });
 });
 
 describe("removeWorktree", () => {
-  it("removes the worktree directory and deletes the branch", () => {
+  it("removes the worktree and branch idempotently", () => {
     const { branch, worktreePath } = createWorktree(repo, "STK-9", "a");
     expect(existsSync(worktreePath)).toBe(true);
+    expect(listManagedWorktrees(repo)).toEqual([{ branch, worktreePath }]);
 
+    removeWorktree(repo, worktreePath, branch);
     removeWorktree(repo, worktreePath, branch);
 
     expect(existsSync(worktreePath)).toBe(false);
     const ls = spawnSync("git", ["-C", repo, "branch", "--list", branch], { encoding: "utf8" });
     expect(ls.stdout.trim()).toBe("");
+  });
+
+  it("refuses to remove a path outside the managed root", () => {
+    expect(() => removeWorktree(repo, join(dir, "outside"), "agent/safe"))
+      .toThrow("worktree path escapes its allowed root");
+  });
+
+  it("refuses unmanaged branch names", () => {
+    expect(() => removeWorktree(repo, join(dir, "surtec-worktrees", "x"), "main"))
+      .toThrow("valid managed agent branch");
   });
 });

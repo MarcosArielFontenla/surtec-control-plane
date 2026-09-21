@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { gitEnvironment } from "../lib/security/environment";
+import { assertPathWithin, canonicalPath } from "../lib/security/paths";
 import { redactText } from "../lib/security/redaction";
 
 export interface WorktreeInfo {
@@ -14,8 +15,23 @@ export interface CommitResult {
   committed: boolean;
 }
 
+export interface ManagedWorktree {
+  branch: string;
+  worktreePath: string;
+}
+
 function sanitizeId(s: string): string {
   return s.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function managedRoot(sourceRepo: string): string {
+  return join(dirname(sourceRepo), "surtec-worktrees");
+}
+
+function assertManagedBranch(branch: string): void {
+  if (!/^agent\/[A-Za-z0-9][A-Za-z0-9._/-]{0,198}$/.test(branch) || branch.includes("..") || branch.endsWith("/")) {
+    throw new Error("branch is not a valid managed agent branch");
+  }
 }
 
 function git(args: string[]): { ok: boolean; stdout: string; stderr: string } {
@@ -27,7 +43,8 @@ function git(args: string[]): { ok: boolean; stdout: string; stderr: string } {
 
 export function createWorktree(sourceRepo: string, taskId: string, agentId: string): WorktreeInfo {
   const branch = `agent/${sanitizeId(taskId)}-${sanitizeId(agentId)}`;
-  const worktreeRoot = join(dirname(sourceRepo), "surtec-worktrees");
+  assertManagedBranch(branch);
+  const worktreeRoot = managedRoot(sourceRepo);
   const worktreePath = join(worktreeRoot, `${basename(sourceRepo)}-${sanitizeId(taskId)}-${sanitizeId(agentId)}`);
   const r = git(["-C", sourceRepo, "worktree", "add", "-b", branch, worktreePath]);
   if (!r.ok) throw new Error(`git worktree add failed: ${(r.stderr || r.stdout).trim()}`);
@@ -48,13 +65,54 @@ export function commitAndDiff(worktreePath: string, message: string): CommitResu
 }
 
 export function pushBranch(sourceRepo: string, branch: string): { pushed: boolean; error?: string } {
+  assertManagedBranch(branch);
   const r = git(["-C", sourceRepo, "push", "origin", branch]);
   return r.ok ? { pushed: true } : { pushed: false, error: (r.stderr || r.stdout).trim() };
 }
 
+function parsedWorktrees(sourceRepo: string): ManagedWorktree[] {
+  const listed = git(["-C", sourceRepo, "worktree", "list", "--porcelain"]);
+  if (!listed.ok) throw new Error(`git worktree list failed: ${(listed.stderr || listed.stdout).trim()}`);
+  return listed.stdout
+    .split(/\r?\n\r?\n/)
+    .map((block) => {
+      const pathLine = block.split(/\r?\n/).find((line) => line.startsWith("worktree "));
+      const branchLine = block.split(/\r?\n/).find((line) => line.startsWith("branch refs/heads/"));
+      if (!pathLine || !branchLine) return null;
+      return {
+        worktreePath: pathLine.slice("worktree ".length),
+        branch: branchLine.slice("branch refs/heads/".length),
+      };
+    })
+    .filter((item): item is ManagedWorktree => item !== null);
+}
+
+export function listManagedWorktrees(sourceRepo: string): ManagedWorktree[] {
+  const root = managedRoot(sourceRepo);
+  return parsedWorktrees(sourceRepo).flatMap((item) => {
+    try {
+      assertManagedBranch(item.branch);
+      return [{ ...item, worktreePath: assertPathWithin(root, item.worktreePath, "worktree path") }];
+    } catch {
+      return [];
+    }
+  });
+}
+
 export function removeWorktree(sourceRepo: string, worktreePath: string, branch: string): void {
-  const rm = git(["-C", sourceRepo, "worktree", "remove", "--force", worktreePath]);
-  if (!rm.ok) throw new Error(`git worktree remove failed: ${(rm.stderr || rm.stdout).trim()}`);
-  const del = git(["-C", sourceRepo, "branch", "-D", branch]);
-  if (!del.ok) throw new Error(`git branch -D failed: ${(del.stderr || del.stdout).trim()}`);
+  assertManagedBranch(branch);
+  const safePath = assertPathWithin(managedRoot(sourceRepo), worktreePath, "worktree path");
+  const registered = parsedWorktrees(sourceRepo).find((item) => canonicalPath(item.worktreePath) === safePath);
+  if (registered && registered.branch !== branch) throw new Error("worktree branch does not match the requested branch");
+  if (registered) {
+    const rm = git(["-C", sourceRepo, "worktree", "remove", "--force", safePath]);
+    if (!rm.ok) throw new Error(`git worktree remove failed: ${(rm.stderr || rm.stdout).trim()}`);
+  }
+
+  const exists = git(["-C", sourceRepo, "branch", "--list", branch]);
+  if (!exists.ok) throw new Error(`git branch --list failed: ${(exists.stderr || exists.stdout).trim()}`);
+  if (exists.stdout.trim()) {
+    const del = git(["-C", sourceRepo, "branch", "-D", branch]);
+    if (!del.ok) throw new Error(`git branch -D failed: ${(del.stderr || del.stdout).trim()}`);
+  }
 }
