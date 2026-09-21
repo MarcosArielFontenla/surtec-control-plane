@@ -16,6 +16,8 @@ Status: complete on 2026-09-21. See [Phase 1 verification](phase-1-verification.
 
 Move execution behind a worker boundary, add bounded concurrency and per-project write exclusion, cancellation, retry, crash recovery, idempotency, append-only task events, resource budgets, and transactional persistence when justified.
 
+Status: complete on 2026-09-21. See [Phase 2 verification](phase-2-verification.md).
+
 ## Phase 3 — Daily operations and observability
 
 Add an evidence-backed Today view and a complete task detail view with lifecycle events, diffs, commands, verification, policy decisions, approvals, usage, retries, and cleanup state. Add optional tracing without making it a runtime dependency.
