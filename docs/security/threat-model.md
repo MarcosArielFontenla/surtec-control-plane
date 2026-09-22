@@ -66,6 +66,16 @@
 - Opt-in read-only smoke with a filesystem before/after assertion.
 - The local secret scanner reports only file, line, and rule, not the matched credential value.
 
+### Integration reads
+
+- The aggregate integration endpoint resolves identifiers, repository paths, repository URLs, and provider configuration through `PolicyService`; request parameters never supply a path, GitHub slug, deployment URL, or Railway identifier directly.
+- Local Git and GitHub readers retain fixed argument vectors, no shell, bounded timeouts, allowlisted environments, and centralized redaction.
+- Deployment providers are explicitly registered in code. They cannot load packages, discover modules, or execute registry commands.
+- HTTP deployment probes accept only `http` or `https` registry URLs without embedded credentials. Railway uses a fixed endpoint and an environment-only credential.
+- Provider failures are isolated. Errors are redacted and capped, URLs are revalidated, unknown fields are discarded, and the complete response must pass its versioned JSON Schema.
+- Tracing receives only project, provider, health, and configuration attributes. Credentials and provider error text are not recorded as trace attributes.
+- The consolidated endpoint is read-only. Push, merge, deployment, rollback, and provider configuration changes remain outside this surface.
+
 ## Residual risk and deferred controls
 
 - This is a single-user local application, not a security boundary against another process running as the same operating-system user.
@@ -80,3 +90,5 @@
 - Orphan cleanup remains manual because automatic deletion would turn ambiguous state into destructive action.
 - Pattern-based redaction and scanning can miss novel credential formats. Credentials must still remain outside repositories and task inputs.
 - Merge, deploy, push outside the explicit review flow, and any real paid Codex smoke remain human-authorized operations.
+- Registry deployment URLs are privileged operator configuration. Scheme and credential checks prevent accidental unsafe forms, but this local single-user product does not attempt to classify every private or link-local network destination.
+- Integration observations are cached in memory and can be stale for the configured TTL. Provider-specific endpoints use separate legacy caches and can temporarily disagree with the aggregate snapshot.

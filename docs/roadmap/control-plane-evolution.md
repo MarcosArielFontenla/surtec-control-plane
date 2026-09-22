@@ -34,6 +34,8 @@ Status: complete on 2026-09-21. See [Phase 4 verification](phase-4-verification.
 
 Narrowly evolve source-control, CI, deployment, and observability integrations when multiple real implementations justify an interface.
 
+Status: complete on 2026-09-21. See [Phase 5 verification](phase-5-verification.md).
+
 ## Phase 6 — Optional collaborative workspace
 
 Only with explicit authorization, add structured role artifacts, comments, traceability, authentication, and multi-user isolation.

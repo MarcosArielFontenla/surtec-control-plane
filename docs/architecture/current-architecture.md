@@ -10,6 +10,7 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 - `dashboard/src/server`: Hono API and infrastructure adapters for Git, GitHub, deployment health, Railway, dependencies, and local open actions.
 - `lib/policy`: the canonical typed policy boundary for project, agent, sandbox, task-type, repository, command, and approval configuration.
 - `lib/security`: shared identifier, canonical path-containment, environment-allowlist, and redaction primitives.
+- `lib/integrations`: versioned project-integration contracts, runtime validation, URL safety, and bounded error normalization.
 - `lib/state`: schema-validated file-first task and project state with per-task locks, atomic replacement writes, and append-only task events.
 - Other `lib` modules: discovery, Git status, portfolio derivation, and URL helpers.
 - `runner`: durable task scheduling, agent execution, worktrees, verification, process management, review publication, and startup reconciliation.
@@ -60,6 +61,17 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 
 Configured `dev`, `build`, `test`, `lint`, and `install` commands run through the in-memory process manager. Output is held in a bounded server buffer and streamed over SSE. Process history does not yet survive a server restart.
 
+### Project integrations
+
+1. `GET /api/projects/:id/integrations` resolves the project through `PolicyService`.
+2. The integration service reads contained local Git status and, for registry-backed GitHub repositories, open pull-request/issue counts and default-branch CI state.
+3. Two explicitly registered deployment providers independently observe the registry-backed HTTP health URL and Railway deployment state.
+4. Provider output is normalized, redacted, URL-filtered, and validated against `project-integrations.schema.json`.
+5. A short in-memory cache avoids multiplying GitHub and deployment reads. Successful Git and branch mutations invalidate the affected aggregate snapshot.
+6. The optional tracer records aggregate and per-deployment-provider spans; the API exposes only a validated trace identifier.
+
+The deployment provider contract exists because HTTP health and Railway are two real implementations. Source control and CI remain concrete integrations until another implementation creates a demonstrated shared abstraction. Provider registration is static code, not dynamic plugin loading.
+
 ### Local HTTP boundary
 
 The production API binds to `127.0.0.1`. API middleware rejects non-loopback `Host` values, cross-origin requests, and cross-site fetch metadata. Mutations additionally require a random in-memory session token obtained by the same-origin dashboard from a no-store endpoint.
@@ -67,7 +79,7 @@ The production API binds to `127.0.0.1`. API middleware rejects non-loopback `Ho
 ## Current trust boundaries
 
 - Registry YAML is privileged configuration but is untrusted data until it passes its JSON Schema and cross-reference checks.
-- Dashboard request bodies, route identifiers, persisted JSON, child-process output, GitHub output, deployment responses, and agent protocol messages are untrusted.
+- Dashboard request bodies, route identifiers, persisted JSON, child-process output, GitHub output, deployment responses, integration-provider output, and agent protocol messages are untrusted.
 - Persisted task and project JSON is validated on both read and write.
 - Non-agent subprocesses receive purpose-specific allowlisted environments, and surfaced output passes through centralized redaction.
 - App Server owns model authentication and sandbox enforcement.
@@ -80,5 +92,7 @@ The production API binds to `127.0.0.1`. API middleware rejects non-loopback `Ho
 - Snapshot replacement and event append are two separate durable operations. A revision can therefore reveal a missing event after an I/O failure, but the pair is not one filesystem transaction.
 - File locks coordinate cooperating control-plane processes, not arbitrary same-user filesystem writers or distributed hosts.
 - Project-process history and the HTTP session token do not survive a server restart.
+- Project-integration caches are process-local; the legacy provider-specific endpoints and aggregate endpoint can briefly expose observations from different cache windows.
+- Only deployment currently has multiple concrete implementations. Source-control, CI, and tracing interfaces must not be generalized without another real implementation.
 - Orphan worktrees require an explicit human cleanup decision after inspecting the reconciliation report.
 - Pattern-based redaction and secret scanning reduce accidental exposure but are not general data-loss-prevention systems.
