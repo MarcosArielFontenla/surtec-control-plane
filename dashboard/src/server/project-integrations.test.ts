@@ -107,7 +107,7 @@ describe("createProjectIntegrationsService", () => {
   it("isolates a failing provider and redacts its error", async () => {
     const failing: DeploymentProvider = {
       id: "railway",
-      async observe() { throw new Error("Authorization: Bearer ghp_12345678901234567890"); },
+      async observe() { throw new Error("secret=railway-redaction-value"); },
     };
     const service = createProjectIntegrationsService("/repo", {
       policy: { project: () => project() },
@@ -122,7 +122,7 @@ describe("createProjectIntegrationsService", () => {
 
     expect(result.deployments[0].health).toBe("ok");
     expect(result.deployments[1]).toMatchObject({ provider: "railway", configured: true, health: "unknown" });
-    expect(JSON.stringify(result)).not.toContain("ghp_");
+    expect(JSON.stringify(result)).not.toContain("railway-redaction-value");
     expect(JSON.stringify(result)).not.toContain("private-value");
     expect(result.source_control.remote.health).toBe("unknown");
     expect(result.ci.status).toBe("unknown");

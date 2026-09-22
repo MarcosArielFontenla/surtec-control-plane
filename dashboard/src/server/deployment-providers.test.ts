@@ -88,14 +88,14 @@ describe("Railway deployment provider", () => {
     const configured = project({ railway: { project_id: "p", service_id: "s", environment_id: "e" } });
     const errorProvider = createRailwayDeploymentProvider({
       token: "tok",
-      readRailway: async () => { throw new Error("Authorization: Bearer ghp_12345678901234567890"); },
+      readRailway: async () => { throw new Error("secret=provider-redaction-value"); },
     });
     const unsafeUrlProvider = createRailwayDeploymentProvider({
       token: "tok",
       readRailway: async () => ({ ok: true, state: "success", at: null, url: "javascript:alert(1)" }),
     });
 
-    expect((await errorProvider.observe(configured, observedAt)).error).not.toContain("ghp_");
+    expect((await errorProvider.observe(configured, observedAt)).error).not.toContain("provider-redaction-value");
     await expect(unsafeUrlProvider.observe(configured, observedAt)).resolves.toMatchObject({
       url: null,
       error: "provider returned an unsafe URL",
