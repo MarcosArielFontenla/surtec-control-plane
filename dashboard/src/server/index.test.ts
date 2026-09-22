@@ -646,3 +646,29 @@ describe("GET /api/projects/:id/railway", () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe("GET /api/projects/:id/integrations", () => {
+  it("returns a versioned snapshot without requiring optional external integrations", async () => {
+    const app = createApp(root);
+    const res = await app.request("/api/projects/stock-control/integrations");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      schema_version: 1,
+      project_id: "stock-control",
+      trace_id: null,
+      source_control: { provider: "git", configured: true },
+      ci: { provider: "github-actions", configured: false, health: "unconfigured" },
+      deployments: [
+        { provider: "http-health", configured: false, health: "unconfigured" },
+        { provider: "railway", configured: false, health: "unconfigured" },
+      ],
+    });
+  });
+
+  it("maps unknown and invalid project identifiers through canonical policy", async () => {
+    const app = createApp(root);
+    expect((await app.request("/api/projects/nope/integrations")).status).toBe(404);
+    expect((await app.request("/api/projects/bad!/integrations")).status).toBe(400);
+  });
+});

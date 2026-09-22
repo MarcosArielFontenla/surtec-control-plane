@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/project-integrations.schema.json",
+  "title": "ProjectIntegrationsSnapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "project_id", "observed_at", "trace_id", "source_control", "ci", "deployments"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "project_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "observed_at": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "trace_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "source_control": { "$ref": "#/$defs/sourceControl" },
+    "ci": { "$ref": "#/$defs/ci" },
+    "deployments": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "$ref": "#/$defs/deployment" }
+    }
+  },
+  "$defs": {
+    "health": {
+      "type": "string",
+      "enum": ["ok", "degraded", "down", "unknown", "unconfigured"]
+    },
+    "error": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "githubRemote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "configured", "health", "pull_requests", "issues"],
+      "properties": {
+        "provider": { "const": "github" },
+        "configured": { "type": "boolean" },
+        "health": { "$ref": "#/$defs/health" },
+        "pull_requests": { "type": ["integer", "null"], "minimum": 0 },
+        "issues": { "type": ["integer", "null"], "minimum": 0 },
+        "error": { "$ref": "#/$defs/error" }
+      }
+    },
+    "sourceControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "configured", "health", "branch", "dirty", "uncommitted", "ahead", "behind", "remote"],
+      "properties": {
+        "provider": { "const": "git" },
+        "configured": { "type": "boolean" },
+        "health": { "$ref": "#/$defs/health" },
+        "branch": { "type": ["string", "null"], "maxLength": 500 },
+        "dirty": { "type": ["boolean", "null"] },
+        "uncommitted": { "type": ["integer", "null"], "minimum": 0 },
+        "ahead": { "type": ["integer", "null"], "minimum": 0 },
+        "behind": { "type": ["integer", "null"], "minimum": 0 },
+        "remote": { "$ref": "#/$defs/githubRemote" },
+        "error": { "$ref": "#/$defs/error" }
+      }
+    },
+    "ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "configured", "health", "status", "branch"],
+      "properties": {
+        "provider": { "const": "github-actions" },
+        "configured": { "type": "boolean" },
+        "health": { "$ref": "#/$defs/health" },
+        "status": {
+          "type": ["string", "null"],
+          "enum": ["passing", "failing", "running", "none", "unknown", null]
+        },
+        "branch": { "type": ["string", "null"], "maxLength": 500 },
+        "error": { "$ref": "#/$defs/error" }
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "configured", "health", "status", "observed_at", "url", "http_status", "latency_ms", "deployed_at"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["http-health", "railway"] },
+        "configured": { "type": "boolean" },
+        "health": { "$ref": "#/$defs/health" },
+        "status": { "type": ["string", "null"], "maxLength": 100 },
+        "observed_at": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "url": { "type": ["string", "null"], "maxLength": 2048 },
+        "http_status": { "type": ["integer", "null"], "minimum": 100, "maximum": 599 },
+        "latency_ms": { "type": ["number", "null"], "minimum": 0 },
+        "deployed_at": { "type": ["string", "null"], "maxLength": 100 },
+        "error": { "$ref": "#/$defs/error" }
+      }
+    }
+  }
+}

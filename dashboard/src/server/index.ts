@@ -26,12 +26,20 @@ import { TaskControlError, type TaskControl } from "../../../runner/task-orchest
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
 import { createHttpSecurity, type HttpSecurity } from "./http-security";
+import { PolicyError } from "../../../lib/policy/service";
+import type { ProjectIntegrationsReader } from "../../../lib/integrations/types";
+import { createProjectIntegrationsService } from "./project-integrations";
+
+export interface AppDependencies {
+  integrations?: ProjectIntegrationsReader;
+}
 
 export function createApp(
   repoRoot: string = process.cwd(),
   taskDispatch: ((id: string) => void) | TaskControl = () => {},
   pm: ProcessManager = processManager,
   httpSecurity: HttpSecurity = createHttpSecurity(),
+  dependencies: AppDependencies = {},
 ): Hono {
   const app = new Hono();
   const taskControl = typeof taskDispatch === "function" ? null : taskDispatch;
@@ -50,6 +58,7 @@ export function createApp(
   const activityCache = createActivityCache();
   const deployCache = createDeployCache();
   const railwayCache = createRailwayCache();
+  const integrations = dependencies.integrations ?? createProjectIntegrationsService(repoRoot);
 
   app.get("/api/overview", (c) => {
     try {
@@ -214,6 +223,7 @@ export function createApp(
         const ignore = [...DEFAULT_IGNORE, ...(process.env.SURTEC_PROJECTS_IGNORE ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
         const proj = discoverProjects(root, ignore).find((p) => p.id === id);
         if (proj) gitStatusCache.invalidate(proj.path);
+        integrations.invalidate(id);
       }
       return c.json(result);
     } catch (err) {
@@ -248,6 +258,7 @@ export function createApp(
         const ignore = [...DEFAULT_IGNORE, ...(process.env.SURTEC_PROJECTS_IGNORE ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
         const proj = discoverProjects(root, ignore).find((p) => p.id === id);
         if (proj) gitStatusCache.invalidate(proj.path);
+        integrations.invalidate(id);
       }
       return c.json(result);
     } catch (err) {
@@ -269,6 +280,18 @@ export function createApp(
       }));
     } catch (err) {
       if (err instanceof GithubError) return c.json({ error: err.message }, err.status as 404);
+      return c.json({ error: (err as Error).message }, 500);
+    }
+  });
+
+  app.get("/api/projects/:id/integrations", async (c) => {
+    try {
+      return c.json(await integrations.read(c.req.param("id")));
+    } catch (err) {
+      if (err instanceof PolicyError) {
+        const status = err.code === "invalid-input" ? 400 : err.code === "not-found" ? 404 : err.code === "denied" ? 403 : 500;
+        return c.json({ error: err.message }, status);
+      }
       return c.json({ error: (err as Error).message }, 500);
     }
   });
