@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { join } from "node:path";
-import { stateDir, tasksDir, fixturesDir, portfolioDir, portfolioProfilesPath } from "./paths";
+import { stateDir, tasksDir, fixturesDir, portfolioDir, portfolioProfilesPath, signalHumanStatePath } from "./paths";
 
 describe("paths", () => {
   afterEach(() => {
@@ -17,6 +17,7 @@ describe("paths", () => {
     expect(tasksDir()).toBe(join("/tmp/custom-state", "tasks"));
     expect(portfolioDir()).toBe(join("/tmp/custom-state", "portfolio"));
     expect(portfolioProfilesPath()).toBe(join("/tmp/custom-state", "portfolio", "projects.json"));
+    expect(signalHumanStatePath()).toBe(join("/tmp/custom-state", "signals", "human-state.json"));
   });
 
   it("defaults fixturesDir to <cwd>/fixtures", () => {

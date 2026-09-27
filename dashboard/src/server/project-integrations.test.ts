@@ -128,6 +128,22 @@ describe("createProjectIntegrationsService", () => {
     expect(result.ci.status).toBe("unknown");
   });
 
+  it("preserves only bounded pull-request decision fields and the CI run start time", async () => {
+    const service = createProjectIntegrationsService("/repo", {
+      policy: { project: () => project() },
+      readLocalGit: () => ({ branch: "main", dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: true }),
+      readGithub: () => ({ ok: true, prs: 1, issues: 0, waitingPullRequests: [{ number: 7, updatedAt: observedAt, reviewDecision: "CHANGES_REQUESTED" }] }),
+      readCi: () => ({ state: "running", startedAt: observedAt, runId: "gh-run-123", updatedAt: observedAt }),
+      deploymentProviders: [],
+      clock: () => new Date(observedAt),
+    });
+    const result = await service.read("alpha");
+    expect(result.source_control.remote.waiting_pull_requests).toEqual([
+      { number: 7, updated_at: observedAt, review_decision: "CHANGES_REQUESTED" },
+    ]);
+    expect(result.ci).toMatchObject({ status: "running", run_started_at: observedAt, run_id: "gh-run-123", run_updated_at: observedAt });
+  });
+
   it("uses a bounded TTL cache, invalidates explicitly, and never caches failures", async () => {
     let now = 0;
     const readLocalGit = vi.fn().mockReturnValue({ branch: "main", dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: true });

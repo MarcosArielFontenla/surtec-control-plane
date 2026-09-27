@@ -8,7 +8,12 @@ export class GithubError extends Error {
   constructor(message: string, public status: number) { super(message); this.name = "GithubError"; }
 }
 
-export interface GithubCounts { ok: boolean; prs: number; issues: number; error?: string }
+export interface GithubPullRequestAction {
+  number: number;
+  updatedAt: string;
+  reviewDecision: "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "APPROVED" | "UNKNOWN";
+}
+export interface GithubCounts { ok: boolean; prs: number; issues: number; waitingPullRequests?: GithubPullRequestAction[]; error?: string }
 
 export type CiState = "passing" | "failing" | "running" | "none" | "unknown";
 export interface GithubOverview { ok: boolean; prs: number; issues: number; ci: CiState; error?: string }
@@ -41,23 +46,33 @@ function countOf(stdout: string | Buffer | undefined): number {
 // (missing/unauth/non-github/disabled-issues/bad-output) yield { ok:false, error }.
 export function readGithubCounts(slug: string, deps: SpawnDep = {}): GithubCounts {
   const spawnSync = deps.spawnSync ?? nodeSpawnSync;
-  const pr = spawnSync("gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: githubCliEnvironment() });
+  const pr = spawnSync("gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", "number,updatedAt,reviewDecision", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: githubCliEnvironment() });
   if (pr.status !== 0 || pr.error) return { ok: false, prs: 0, issues: 0, error: ghErr(pr) };
   const iss = spawnSync("gh", ["issue", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: githubCliEnvironment() });
   if (iss.status !== 0 || iss.error) return { ok: false, prs: 0, issues: 0, error: ghErr(iss) };
   try {
-    return { ok: true, prs: countOf(pr.stdout), issues: countOf(iss.stdout) };
+    const parsedPullRequests = JSON.parse(asStr(pr.stdout)) as { number?: number; updatedAt?: string; reviewDecision?: string | null }[];
+    const waitingPullRequests = (Array.isArray(parsedPullRequests) ? parsedPullRequests : [])
+      .filter((item) => item.reviewDecision === "CHANGES_REQUESTED" || item.reviewDecision === "REVIEW_REQUIRED")
+      .slice(0, 100)
+      .map((item) => ({
+        number: Number.isInteger(item.number) ? item.number! : 0,
+        updatedAt: typeof item.updatedAt === "string" ? item.updatedAt.slice(0, 100) : "",
+        reviewDecision: item.reviewDecision as GithubPullRequestAction["reviewDecision"],
+      }))
+      .filter((item) => item.number > 0 && Boolean(item.updatedAt));
+    return { ok: true, prs: countOf(pr.stdout), issues: countOf(iss.stdout), waitingPullRequests };
   } catch {
     return { ok: false, prs: 0, issues: 0, error: "bad gh output" };
   }
 }
 
 // Reads the latest CI run state on a branch via read-only gh. Never throws — any failure → "unknown".
-export function readCiStatus(slug: string, branch: string, deps: SpawnDep = {}): { state: CiState } {
+export function readCiStatus(slug: string, branch: string, deps: SpawnDep = {}): { state: CiState; startedAt?: string | null; runId?: string | null; updatedAt?: string | null } {
   const spawnSync = deps.spawnSync ?? nodeSpawnSync;
-  const r = spawnSync("gh", ["run", "list", "--branch", branch, "--limit", "1", "--json", "status,conclusion", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: githubCliEnvironment() });
+  const r = spawnSync("gh", ["run", "list", "--branch", branch, "--limit", "1", "--json", "status,conclusion,startedAt,databaseId,updatedAt", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: githubCliEnvironment() });
   if (r.status !== 0 || r.error) return { state: "unknown" };
-  let arr: { status?: string; conclusion?: string | null }[];
+  let arr: { status?: string; conclusion?: string | null; startedAt?: string | null; databaseId?: number | null; updatedAt?: string | null }[];
   try {
     const parsed = JSON.parse(asStr(r.stdout));
     arr = Array.isArray(parsed) ? parsed : [];
@@ -66,8 +81,11 @@ export function readCiStatus(slug: string, branch: string, deps: SpawnDep = {}):
   }
   if (arr.length === 0) return { state: "none" };
   const run = arr[0];
-  if (run.status === "completed") return { state: run.conclusion === "success" ? "passing" : "failing" };
-  return { state: "running" };
+  const runId = Number.isSafeInteger(run.databaseId) && Number(run.databaseId) > 0 ? String(run.databaseId) : undefined;
+  const updatedAt = typeof run.updatedAt === "string" ? run.updatedAt.slice(0, 100) : undefined;
+  const identity = { ...(runId ? { runId } : {}), ...(updatedAt ? { updatedAt } : {}) };
+  if (run.status === "completed") return { state: run.conclusion === "success" ? "passing" : "failing", ...identity };
+  return { state: "running", startedAt: typeof run.startedAt === "string" ? run.startedAt.slice(0, 100) : null, ...identity };
 }
 
 // Resolves a project id to its GitHub { slug, branch } FROM THE TRUSTED REGISTRY (the configured repo +

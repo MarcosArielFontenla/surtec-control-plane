@@ -14,7 +14,7 @@ import type {
   SourceControlObservation,
 } from "../../../lib/integrations/types";
 import { noOpTracer, type Tracer } from "../../../lib/observability/tracing";
-import { readCiStatus, readGithubCounts, type CiState, type GithubCounts } from "./github-read";
+import { readCiStatus, readGithubCounts, type CiState, type GithubCounts, type GithubPullRequestAction } from "./github-read";
 import { createHttpHealthDeploymentProvider, createRailwayDeploymentProvider } from "./deployment-providers";
 
 interface ProjectPolicyReader {
@@ -25,7 +25,7 @@ export interface ProjectIntegrationsDependencies {
   policy?: ProjectPolicyReader;
   readLocalGit?: (repoPath: string) => GitStatus;
   readGithub?: (slug: string) => GithubCounts;
-  readCi?: (slug: string, branch: string) => { state: CiState };
+  readCi?: (slug: string, branch: string) => { state: CiState; startedAt?: string | null; runId?: string | null; updatedAt?: string | null };
   deploymentProviders?: DeploymentProvider[];
   tracer?: Tracer;
   clock?: () => Date;
@@ -123,6 +123,11 @@ function sourceControl(
       health: counts.ok ? "ok" : "unknown",
       pull_requests: counts.ok ? counts.prs : null,
       issues: counts.ok ? counts.issues : null,
+          waiting_pull_requests: counts.ok ? (counts.waitingPullRequests ?? []).map((item: GithubPullRequestAction) => ({
+            number: item.number,
+            updated_at: item.updatedAt,
+            review_decision: item.reviewDecision,
+          })) : [],
       ...(counts.error ? { error: integrationError(counts.error) } : {}),
     };
   } catch (error) {
@@ -141,7 +146,7 @@ function sourceControl(
 function continuousIntegration(
   project: PolicyProject,
   slug: string | null,
-  readCi: (slug: string, branch: string) => { state: CiState },
+  readCi: (slug: string, branch: string) => { state: CiState; startedAt?: string | null; runId?: string | null; updatedAt?: string | null },
 ): CiObservation {
   if (!slug) {
     return {
@@ -154,13 +159,16 @@ function continuousIntegration(
   }
   const branch = project.default_branch ?? "main";
   try {
-    const { state } = readCi(slug, branch);
+    const { state, startedAt, runId, updatedAt } = readCi(slug, branch);
     return {
       provider: "github-actions",
       configured: true,
       health: ciHealth(state),
       status: state,
       branch,
+      ...(state === "running" ? { run_started_at: startedAt ?? null } : {}),
+      ...(runId ? { run_id: runId } : {}),
+      ...(updatedAt ? { run_updated_at: updatedAt } : {}),
       ...(state === "unknown" ? { error: "CI status is unavailable" } : {}),
     };
   } catch (error) {

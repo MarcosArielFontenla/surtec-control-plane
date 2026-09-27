@@ -40,6 +40,17 @@ describe("project integrations schema", () => {
     expect(() => assertProjectIntegrationsSnapshot(snapshot())).not.toThrow();
   });
 
+  it("accepts bounded CI freshness and pull-request decision evidence", () => {
+    const value = snapshot() as { source_control: { remote: Record<string, unknown> }; ci: Record<string, unknown> };
+    value.source_control.remote.waiting_pull_requests = [{ number: 12, updated_at: "2026-09-27T12:00:00.000Z", review_decision: "REVIEW_REQUIRED" }];
+    value.ci.run_started_at = "2026-09-27T11:00:00.000Z";
+    value.ci.run_id = "12345";
+    value.ci.run_updated_at = "2026-09-27T12:00:00.000Z";
+    expect(() => assertProjectIntegrationsSnapshot(snapshot())).not.toThrow();
+    expect(() => assertProjectIntegrationsSnapshot({ ...snapshot(), source_control: value.source_control, ci: value.ci })).not.toThrow();
+    expect(() => assertProjectIntegrationsSnapshot({ ...snapshot(), source_control: { ...value.source_control, remote: { ...value.source_control.remote, payload: { secret: "no" } } } })).toThrow(/additional properties/);
+  });
+
   it("rejects unknown fields and unsupported versions", () => {
     expect(() => assertProjectIntegrationsSnapshot({ ...snapshot(), schema_version: 2 })).toThrow(/schema_version/);
     expect(() => assertProjectIntegrationsSnapshot({ ...snapshot(), credential: "secret" })).toThrow(/additional properties/);

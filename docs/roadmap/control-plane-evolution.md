@@ -36,6 +36,12 @@ Narrowly evolve source-control, CI, deployment, and observability integrations w
 
 Status: complete on 2026-09-21. See [Phase 5 verification](phase-5-verification.md).
 
+## Phase D — Deterministic signal engine
+
+Normalize bounded portfolio evidence into explainable signals, rank them using explicit tiers, isolate provider failures, and persist only human interaction state behind the existing local API protections.
+
+Status: complete on 2026-09-27. See [Phase D verification](phase-d-verification.md). The phase stops before the Today cockpit (Phase E); session evidence remains deferred to Phase G.
+
 ## Phase 6 — Optional collaborative workspace
 
 Only with explicit authorization, add structured role artifacts, comments, traceability, authentication, and multi-user isolation.

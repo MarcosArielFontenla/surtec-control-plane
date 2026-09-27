@@ -32,9 +32,14 @@ import { createHttpSecurity, type HttpSecurity } from "./http-security";
 import { PolicyError, PolicyService } from "../../../lib/policy/service";
 import type { ProjectIntegrationsReader } from "../../../lib/integrations/types";
 import { createProjectIntegrationsService } from "./project-integrations";
+import { createSignalEvidenceReader } from "./signal-evidence";
+import { createSignalService, SignalNotFoundError, type SignalService } from "./signal-service";
+import { validateSignalAction } from "../../../lib/state/validation";
+import { InvalidSignalActionError, UnsupportedSignalStateVersionError } from "../../../lib/state/signals";
 
 export interface AppDependencies {
   integrations?: ProjectIntegrationsReader;
+  signals?: SignalService;
 }
 
 export function createApp(
@@ -62,6 +67,13 @@ export function createApp(
   const deployCache = createDeployCache();
   const railwayCache = createRailwayCache();
   const integrations = dependencies.integrations ?? createProjectIntegrationsService(repoRoot);
+  const signals = dependencies.signals ?? createSignalService({
+    reader: createSignalEvidenceReader(repoRoot, {
+      integrations,
+      inboxCache,
+      readGit: (path) => gitStatusCache.get(path),
+    }),
+  });
 
   app.get("/api/overview", (c) => {
     try {
@@ -401,6 +413,33 @@ export function createApp(
     } catch (err) {
       const status = err instanceof UnsupportedPortfolioSchemaVersionError ? 409 : 500;
       return c.json({ error: (err as Error).message }, status);
+    }
+  });
+
+  app.get("/api/signals", async (c) => {
+    c.header("Cache-Control", "no-store");
+    try {
+      return c.json(await signals.read());
+    } catch (err) {
+      if (err instanceof UnsupportedSignalStateVersionError) return c.json({ error: err.message }, 409);
+      return c.json({ error: "signal feed is unavailable" }, 500);
+    }
+  });
+
+  app.post("/api/signals/:id/action", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const id = c.req.param("id");
+    if (!/^sig_[a-f0-9]{24}$/.test(id)) return c.json({ error: "invalid signal id" }, 400);
+    let body: unknown;
+    try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON body" }, 400); }
+    if (!validateSignalAction(body)) return c.json({ error: "invalid signal action" }, 400);
+    try {
+      return c.json(await signals.act(id, body));
+    } catch (err) {
+      if (err instanceof SignalNotFoundError) return c.json({ error: err.message }, 404);
+      if (err instanceof InvalidSignalActionError) return c.json({ error: err.message }, 400);
+      if (err instanceof UnsupportedSignalStateVersionError) return c.json({ error: err.message }, 409);
+      return c.json({ error: "signal state could not be updated" }, 500);
     }
   });
 

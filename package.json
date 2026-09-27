@@ -15,6 +15,7 @@
     "evals:check": "tsx scripts/run-evals.ts",
     "ci:check": "pnpm repository:check && pnpm schemas:check && pnpm secrets:check && pnpm evals:check && pnpm test && pnpm typecheck && pnpm build",
     "smoke:api": "tsx scripts/api-smoke.ts",
+    "smoke:signals:playwright": "tsx scripts/playwright-signals-smoke.ts",
     "smoke:codex": "tsx scripts/codex-smoke.ts",
     "smoke:codex:write": "tsx scripts/codex-write-smoke.ts",
     "dev:api": "tsx dashboard/src/server/serve.ts",

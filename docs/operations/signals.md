@@ -1,0 +1,17 @@
+# Deterministic signal feed
+
+The read-only portfolio feed is `GET /api/signals`. It returns a versioned, bounded list of signals with source, severity, evidence timestamp, observed timestamp, a plain-language reason, a suggested action, and an explicit ranking tier/order. It uses the existing loopback API protections; the route is marked `Cache-Control: no-store` because it overlays private local operating context.
+
+Signal evidence is assembled server-side from local Git status, the cached aggregate integrations reader, the cached GitHub issue inbox, task snapshots, local portfolio profiles, and local project notes. The consumer makes one feed request rather than one request per project. Integration reads have bounded concurrency and an individual provider/project failure becomes a short warning while other sources continue. Provider errors and response bodies are not copied into signal evidence.
+
+The engine applies these deterministic thresholds: long-running CI is at least 60 minutes; recent high-priority issue activity and recent project activity use 7 days; profile reviews become stale after 30 days; an unresolved note becomes eligible after 14 days; and deadlines are approaching within 7 calendar days in the machine's local calendar. Client deadlines already passed rank ahead of other commitments. Lower numeric profile priority values indicate higher priority.
+
+`POST /api/signals/:id/action` accepts one of `acknowledge`, `snooze` with a future ISO date/time, `pin-for-today`, `dismiss`, or `resolve`. Every mutation requires the same in-memory session token as other local API writes. Signal evidence is recomputed; only the human interaction record is persisted at `state/signals/human-state.json` (ignored by Git). State writes use a cross-process file lock and unique temporary file followed by atomic replacement. Invalid or unsupported future-version files are never repaired or overwritten automatically.
+
+Snoozes reopen when their date/time passes without a read-side write. Pins expire at the next local calendar date. Dismissed occurrences are hidden while their evidence remains present. IDs are stable for a project/source/type/occurrence key. CI run IDs, task ID plus attempt, issue number plus update time, note ID, deadline date, deployment timestamp when available, and PR number plus review state/update time can distinguish separate occurrences. For deployment checks without a deployment timestamp or other transition evidence, recurrence may reuse an earlier ID.
+
+Evidence is intentionally limited: no provider payload, issue title/author/URL, note text, deployment URL, task instructions/result text, credential, or absolute repository path is included. Project IDs, bounded branch names, task/issue/note/PR identifiers, status enums, counts, labels, and timestamps may be present when they explain a rule. State is local and not encrypted by this application; protect it using host account and disk protections.
+
+The engine can accept paused-session evidence, but Phase D has no persisted session source. The production feed therefore emits no session signal until the work-session model is delivered in Phase G.
+
+Run the deterministic browser/API smoke with `pnpm smoke:signals:playwright`. It launches Chromium against an isolated loopback API server, uses synthetic evidence and temporary state, exercises the session-protected action endpoint, restarts the service, then removes only its uniquely named temporary directory. It does not make provider or paid model calls.

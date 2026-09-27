@@ -1,7 +1,10 @@
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { createApp } from "../dashboard/src/server/index";
 import type { ProjectIntegrationsReader, ProjectIntegrationsSnapshot } from "../lib/integrations/types";
+import { createSignalService } from "../dashboard/src/server/signal-service";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const integrationSnapshot: ProjectIntegrationsSnapshot = {
@@ -21,7 +24,15 @@ const integrations: ProjectIntegrationsReader = {
   read: async () => integrationSnapshot,
   invalidate: () => {},
 };
-const app = createApp(root, () => {}, undefined, undefined, { integrations });
+const signals = createSignalService({
+  reader: { read: async () => ({
+    projects: [{ id: "smoke-project", status: "discovered", git: null, profile: null, profile_available: true, integrations: integrationSnapshot, last_activity_at: null, notes: [] }],
+    tasks: [], issues: [],
+  }) },
+  statePath: join(tmpdir(), `surtec-api-smoke-${process.pid}-${randomUUID()}`, "signals", "human-state.json"),
+  clock: () => new Date("2026-09-21T12:00:00.000Z"),
+});
+const app = createApp(root, () => {}, undefined, undefined, { integrations, signals });
 
 const overview = await app.request("/api/overview");
 if (!overview.ok) throw new Error(`overview smoke failed with ${overview.status}`);
@@ -55,6 +66,13 @@ if (integrationBody.schema_version !== 1 || integrationBody.project_id !== "smok
   throw new Error("integrations response is invalid");
 }
 
+const signalResponse = await app.request("/api/signals");
+if (!signalResponse.ok) throw new Error(`signals smoke failed with ${signalResponse.status}`);
+const signalBody = await signalResponse.json() as { schema_version?: number; signals?: unknown; warnings?: unknown };
+if (signalBody.schema_version !== 1 || !Array.isArray(signalBody.signals) || !Array.isArray(signalBody.warnings)) {
+  throw new Error("signals response is invalid");
+}
+
 console.log(JSON.stringify({
   overview_status: overview.status,
   today_status: today.status,
@@ -66,4 +84,6 @@ console.log(JSON.stringify({
   portfolio_profiles: portfolioProfilesBody.profiles.length,
   integrations_status: integrationResponse.status,
   integration_schema_version: integrationBody.schema_version,
+  signals_status: signalResponse.status,
+  signal_count: signalBody.signals.length,
 }));

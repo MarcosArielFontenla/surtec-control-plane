@@ -34,6 +34,11 @@
         "health": { "$ref": "#/$defs/health" },
         "pull_requests": { "type": ["integer", "null"], "minimum": 0 },
         "issues": { "type": ["integer", "null"], "minimum": 0 },
+        "waiting_pull_requests": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/pullRequestAction" }
+        },
         "error": { "$ref": "#/$defs/error" }
       }
     },
@@ -67,7 +72,20 @@
           "enum": ["passing", "failing", "running", "none", "unknown", null]
         },
         "branch": { "type": ["string", "null"], "maxLength": 500 },
+        "run_started_at": { "type": ["string", "null"], "maxLength": 100 },
+        "run_id": { "type": "string", "maxLength": 100 },
+        "run_updated_at": { "type": "string", "maxLength": 100 },
         "error": { "$ref": "#/$defs/error" }
+      }
+    },
+    "pullRequestAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "updated_at", "review_decision"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "updated_at": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "review_decision": { "type": "string", "enum": ["CHANGES_REQUESTED", "REVIEW_REQUIRED", "APPROVED", "UNKNOWN"] }
       }
     },
     "deployment": {

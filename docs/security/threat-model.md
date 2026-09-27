@@ -39,6 +39,9 @@
 - Operating profiles use a separate, ignored `state/portfolio/` store and a strict versioned schema; tracked technical policy stays in `registry/projects.yml`.
 - Portfolio profile writes are locked and atomically replaced; unsupported future versions and invalid existing data fail closed. The secret scanner rejects tracked files under `state/portfolio/`.
 - POSIX owner-only modes are requested for profile storage where supported. Local state is not application-encrypted and relies on host account/disk protections.
+- Signal evidence is assembled from bounded allowlisted fields; raw provider payloads, issue titles/authors/URLs, note text, task instructions/results, deployment URLs, and absolute project paths are excluded. The feed is schema-validated and marked `no-store`.
+- Signal interaction state is separate under ignored `state/signals/human-state.json`; updates use a cross-process lock, unique temporary file, atomic replacement, and strict schema validation. Unsupported future versions and malformed files fail closed. Dismissal and snooze expiry are feed projections, not destructive evidence edits.
+- Signal mutations use the existing loopback, same-origin, and in-memory session-token middleware. This token is local request protection, not multi-user authentication. The deterministic browser smoke uses synthetic inputs and isolated temporary state.
 - Task mutations use per-task cross-process locks and atomic snapshot replacement. Scheduler claims also use a short global lock.
 - Identifiers are allowlisted before becoming paths or process arguments. Worktree cleanup accepts only contained managed paths and `agent/` branches.
 

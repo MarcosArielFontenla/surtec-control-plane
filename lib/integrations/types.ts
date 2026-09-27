@@ -17,10 +17,19 @@ export interface SourceControlObservation {
     configured: boolean;
     health: IntegrationHealth;
     pull_requests: number | null;
+    waiting_pull_requests?: PullRequestActionEvidence[];
     issues: number | null;
     error?: string;
   };
   error?: string;
+}
+
+export type PullRequestReviewDecision = "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | "APPROVED" | "UNKNOWN";
+
+export interface PullRequestActionEvidence {
+  number: number;
+  updated_at: string;
+  review_decision: PullRequestReviewDecision;
 }
 
 export interface CiObservation {
@@ -29,6 +38,9 @@ export interface CiObservation {
   health: IntegrationHealth;
   status: "passing" | "failing" | "running" | "none" | "unknown" | null;
   branch: string | null;
+  run_started_at?: string | null;
+  run_id?: string | null;
+  run_updated_at?: string | null;
   error?: string;
 }
 
