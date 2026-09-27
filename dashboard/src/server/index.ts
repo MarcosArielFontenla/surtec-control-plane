@@ -22,6 +22,9 @@ import { createActivityCache, buildActivityFeed } from "./activity-read";
 import { createDeployCache, readDeployHealth, resolveDeployUrl, DeployError } from "./deploy-read";
 import { createRailwayCache, readRailwayDeploy, resolveRailway, RailwayError } from "./railway-read";
 import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../lib/state/notes";
+import { listProjectProfiles, upsertProjectProfile, UnsupportedPortfolioSchemaVersionError } from "../../../lib/state/portfolio-profiles";
+import type { ProjectProfile } from "../../../lib/portfolio-profile";
+import { validateProjectProfile, describeValidation } from "../../../lib/state/validation";
 import { TaskControlError, type TaskControl } from "../../../runner/task-orchestrator";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
@@ -369,6 +372,36 @@ export function createApp(
     if (action === "toggle") return c.json({ notes: toggleNote(id, noteId) });
     if (action === "delete") return c.json({ notes: deleteNote(id, noteId) });
     return c.json({ error: `invalid action: ${action}` }, 400);
+  });
+
+  app.get("/api/portfolio/profiles", (c) => {
+    c.header("Cache-Control", "no-store");
+    try {
+      return c.json({ profiles: listProjectProfiles() });
+    } catch (err) {
+      const status = err instanceof UnsupportedPortfolioSchemaVersionError ? 409 : 500;
+      return c.json({ error: (err as Error).message }, status);
+    }
+  });
+
+  app.post("/api/projects/:id/profile", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const id = c.req.param("id");
+    if (!isSafeId(id)) return c.json({ error: "invalid id" }, 400);
+    let body: unknown;
+    try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON body" }, 400); }
+    if (!validateProjectProfile(body)) {
+      return c.json({ error: `invalid project profile: ${describeValidation(validateProjectProfile.errors)}` }, 400);
+    }
+    const profile = body as ProjectProfile;
+    if (profile.project_id !== id) return c.json({ error: "profile project_id must match the route project ID" }, 400);
+    try {
+      upsertProjectProfile(profile);
+      return c.json({ profile });
+    } catch (err) {
+      const status = err instanceof UnsupportedPortfolioSchemaVersionError ? 409 : 500;
+      return c.json({ error: (err as Error).message }, status);
+    }
   });
 
   // --- Procesos (B.2): run project commands from the dashboard ---

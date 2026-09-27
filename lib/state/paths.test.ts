@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { join } from "node:path";
-import { stateDir, tasksDir, fixturesDir } from "./paths";
+import { stateDir, tasksDir, fixturesDir, portfolioDir, portfolioProfilesPath } from "./paths";
 
 describe("paths", () => {
   afterEach(() => {
@@ -15,6 +15,8 @@ describe("paths", () => {
     process.env.SURTEC_STATE_DIR = "/tmp/custom-state";
     expect(stateDir()).toBe("/tmp/custom-state");
     expect(tasksDir()).toBe(join("/tmp/custom-state", "tasks"));
+    expect(portfolioDir()).toBe(join("/tmp/custom-state", "portfolio"));
+    expect(portfolioProfilesPath()).toBe(join("/tmp/custom-state", "portfolio", "projects.json"));
   });
 
   it("defaults fixturesDir to <cwd>/fixtures", () => {

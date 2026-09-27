@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "projects": {
+    "demo-console": {
+      "schema_version": 1,
+      "project_id": "demo-console",
+      "kind": "client",
+      "lifecycle": "active",
+      "priority": 2,
+      "criticality": "medium",
+      "current_goal": "Prepare the fictional Northstar demo release.",
+      "next_action": "Review the demo checklist with the sample team.",
+      "deadline": "2026-12-15",
+      "client_id": "client-northstar-demo",
+      "last_reviewed_at": "2026-09-27",
+      "tags": ["example", "synthetic"]
+    }
+  }
+}

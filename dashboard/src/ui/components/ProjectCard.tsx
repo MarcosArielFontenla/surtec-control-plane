@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { GitBranch, Code2, Folder, ExternalLink, ArrowDownToLine, GitPullRequestArrow, ArrowUpFromLine } from "lucide-react";
 import type { ProjectView, GitStatus, DeployHealth, RailwayStatus, RailwayState } from "../../../../lib/state/types";
+import type { ProjectProfile } from "../../../../lib/portfolio-profile";
 import { relativeTime } from "../relative-time";
 import { githubWebUrl } from "../../../../lib/github-url";
 import { openProject, gitSync, getBranches, branchOp, getGithubCounts, getDeps, getDeploy, getRailway } from "../api";
 import { ProjectNotes } from "./ProjectNotes";
+import { ProjectProfileEditor } from "./ProjectProfileEditor";
 
 function GitLine({ git, onBranchClick }: { git: GitStatus | null; onBranchClick: () => void }) {
   if (!git) return null;
@@ -177,7 +179,21 @@ function RailwayLine({ projectId }: { projectId: string }) {
   );
 }
 
-export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: string[] }) {
+export function ProjectCard({
+  p,
+  running = [],
+  profile,
+  profileReady = true,
+  profileLoading = false,
+  onProfileSaved = () => {},
+}: {
+  p: ProjectView;
+  running?: string[];
+  profile?: ProjectProfile;
+  profileReady?: boolean;
+  profileLoading?: boolean;
+  onProfileSaved?: (profile: ProjectProfile) => void;
+}) {
   const [openErr, setOpenErr] = useState<string | null>(null);
   const [branchOpen, setBranchOpen] = useState(false);
   const gs = useGitSync(p);
@@ -237,6 +253,8 @@ export function ProjectCard({ p, running = [] }: { p: ProjectView; running?: str
         <DepsStatus project={p} />
         <ProjectNotes projectId={p.id} />
       </div>
+
+      <ProjectProfileEditor projectId={p.id} profile={profile} ready={profileReady} loading={profileLoading} onSaved={onProfileSaved} />
 
       {branchOpen && <BranchPanel project={p} onClose={() => setBranchOpen(false)} />}
       {openErr && <div className="banner banner--danger">{openErr}</div>}

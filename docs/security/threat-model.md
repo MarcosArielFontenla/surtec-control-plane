@@ -5,6 +5,7 @@
 - Source code and Git history across all managed projects.
 - Local credentials for Codex, GitHub, Railway, package registries, and cloud providers.
 - Task instructions, results, diffs, logs, and usage data.
+- Local portfolio context, including client references, goals, next actions, deadlines, and review dates.
 - The user's ability to approve external side effects intentionally.
 
 ## Trust boundaries
@@ -35,6 +36,9 @@
 - One `PolicyService` validates registry schemas, agent references, sandbox ceilings, task types, exact verification commands, and canonical repository containment.
 - Dispatch, execution, and review revalidate current policy. A persisted task cannot broaden access by changing its repository path or sandbox.
 - Task records, append-only task events, project overrides, agent reports, and agent results have runtime JSON Schema validation.
+- Operating profiles use a separate, ignored `state/portfolio/` store and a strict versioned schema; tracked technical policy stays in `registry/projects.yml`.
+- Portfolio profile writes are locked and atomically replaced; unsupported future versions and invalid existing data fail closed. The secret scanner rejects tracked files under `state/portfolio/`.
+- POSIX owner-only modes are requested for profile storage where supported. Local state is not application-encrypted and relies on host account/disk protections.
 - Task mutations use per-task cross-process locks and atomic snapshot replacement. Scheduler claims also use a short global lock.
 - Identifiers are allowlisted before becoming paths or process arguments. Worktree cleanup accepts only contained managed paths and `agent/` branches.
 

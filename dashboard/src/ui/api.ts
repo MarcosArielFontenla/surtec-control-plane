@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth, RailwayStatus, TaskDetailModel, TodayModel } from "../../../lib/state/types";
 import type { Note } from "../../../lib/state/notes";
+import type { ProjectProfile } from "../../../lib/portfolio-profile";
 
 let sessionTokenPromise: Promise<string> | null = null;
 let sessionFetch: typeof fetch | null = null;
@@ -63,6 +64,28 @@ export async function fetchToday(): Promise<TodayModel> {
   const res = await fetch("/api/today");
   if (!res.ok) throw new Error(`today failed: ${res.status}`);
   return (await res.json()) as TodayModel;
+}
+
+export async function getPortfolioProfiles(): Promise<{ profiles: ProjectProfile[] }> {
+  const res = await fetch("/api/portfolio/profiles", { cache: "no-store" });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `portfolio profiles failed: ${res.status}`);
+  }
+  return (await res.json()) as { profiles: ProjectProfile[] };
+}
+
+export async function saveProjectProfile(profile: ProjectProfile): Promise<{ profile: ProjectProfile }> {
+  const res = await mutate(`/api/projects/${encodeURIComponent(profile.project_id)}/profile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(profile),
+  });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `project profile save failed: ${res.status}`);
+  }
+  return (await res.json()) as { profile: ProjectProfile };
 }
 
 export function useToday(intervalMs = 3000): { data: TodayModel | null; error: string | null } {

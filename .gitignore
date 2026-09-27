@@ -12,6 +12,7 @@ tmp/*
 .DS_Store
 coverage
 .superpowers/
+# Runtime data, including potentially sensitive local portfolio profiles, is never tracked.
 /state/
 dashboard/dist
 

@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { useOverview, useToday } from "./api";
+import { useEffect, useState } from "react";
+import { getPortfolioProfiles, useOverview, useToday } from "./api";
+import type { ProjectProfile } from "../../../lib/portfolio-profile";
 import { Sidebar, type NavItem } from "./components/Sidebar";
 import { ProjectCard } from "./components/ProjectCard";
 import { AttentionPanel } from "./components/AttentionPanel";
@@ -20,6 +21,22 @@ export function App() {
   const { runs } = useRuns();
   const [nav, setNav] = useState<NavItem>("Hoy");
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<Record<string, ProjectProfile>>({});
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const [profilesError, setProfilesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    getPortfolioProfiles()
+      .then(({ profiles: loaded }) => {
+        if (!active) return;
+        setProfiles(Object.fromEntries(loaded.map((profile) => [profile.project_id, profile])));
+        setProfilesError(null);
+      })
+      .catch((reason) => { if (active) setProfilesError((reason as Error).message); })
+      .finally(() => { if (active) setProfilesLoaded(true); });
+    return () => { active = false; };
+  }, []);
 
   const runningByProject = new Map<string, string[]>();
   for (const r of runs) {
@@ -68,8 +85,19 @@ export function App() {
               {!data ? <p className="empty-mini">Cargando…</p> : (
                 <>
                   <div className="section-head"><h2>Proyectos</h2><span className="meta">{data.projects.length} repos</span></div>
+                  {profilesError && <div className="banner banner--warn">No pude leer los perfiles operativos locales ({profilesError}); la edición quedó desactivada para proteger los datos existentes.</div>}
                   <section className="proj-grid">
-                    {data.projects.map((p) => <ProjectCard key={p.id} p={p} running={runningByProject.get(p.id) ?? []} />)}
+                    {data.projects.map((p) => (
+                      <ProjectCard
+                        key={p.id}
+                        p={p}
+                        running={runningByProject.get(p.id) ?? []}
+                        profile={profiles[p.id]}
+                        profileReady={profilesLoaded && !profilesError}
+                        profileLoading={!profilesLoaded}
+                        onProfileSaved={(profile) => setProfiles((current) => ({ ...current, [profile.project_id]: profile }))}
+                      />
+                    ))}
                   </section>
                   <div className="two-col">
                     <div>

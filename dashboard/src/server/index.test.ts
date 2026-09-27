@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -529,6 +529,78 @@ describe("notes routes", () => {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "nuke" }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("portfolio profile routes", () => {
+  const validProfile = {
+    schema_version: 1,
+    project_id: "stock-control",
+    kind: "client",
+    lifecycle: "active",
+    priority: 2,
+    criticality: "high",
+    current_goal: "Prepare the next release.",
+    next_action: "Review the rollout checklist.",
+    deadline: "2026-12-15",
+    client_id: "client-demo",
+    last_reviewed_at: "2026-09-27",
+    tags: ["release", "example"],
+  };
+
+  it("lists an empty local store and saves/reads a profile without changing technical config", async () => {
+    const app = createApp(root);
+    const initial = await app.request("/api/portfolio/profiles");
+    expect(initial.status).toBe(200);
+    expect(initial.headers.get("Cache-Control")).toBe("no-store");
+    expect(await initial.json()).toEqual({ profiles: [] });
+
+    const saved = await apiRequest(app, "/api/projects/stock-control/profile", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProfile),
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({ profile: validProfile });
+
+    const listed = await app.request("/api/portfolio/profiles");
+    expect(await listed.json()).toEqual({ profiles: [validProfile] });
+    expect(readFileSync(join(root, "registry", "projects.yml"), "utf8")).toContain("sandbox:");
+    expect(existsSync(join(stateDir, "portfolio", "projects.json"))).toBe(true);
+  });
+
+  it("requires the local session token and validates IDs, fields, and calendar dates", async () => {
+    const app = createApp(root);
+    const path = "/api/projects/stock-control/profile";
+    expect((await app.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProfile) })).status).toBe(403);
+
+    const mismatch = await apiRequest(app, "/api/projects/other-project/profile", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProfile),
+    });
+    expect(mismatch.status).toBe(400);
+
+    const invalidDate = await apiRequest(app, path, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validProfile, deadline: "2026-02-29" }),
+    });
+    expect(invalidDate.status).toBe(400);
+    const unsafeId = await apiRequest(app, "/api/projects/a..b/profile", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validProfile, project_id: "a..b" }),
+    });
+    expect(unsafeId.status).toBe(400);
+    const empty = await app.request("/api/portfolio/profiles");
+    expect(await empty.json()).toEqual({ profiles: [] });
+  });
+
+  it("fails closed on an unsupported local schema version and preserves the file", async () => {
+    const storePath = join(stateDir, "portfolio", "projects.json");
+    mkdirSync(join(stateDir, "portfolio"), { recursive: true });
+    const futureDocument = JSON.stringify({ schema_version: 2, projects: {} });
+    writeFileSync(storePath, futureDocument, "utf8");
+    const app = createApp(root);
+    expect((await app.request("/api/portfolio/profiles")).status).toBe(409);
+    const attemptedWrite = await apiRequest(app, "/api/projects/stock-control/profile", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProfile),
+    });
+    expect(attemptedWrite.status).toBe(409);
+    expect(readFileSync(storePath, "utf8")).toBe(futureDocument);
   });
 });
 

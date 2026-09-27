@@ -36,6 +36,12 @@ export function scanText(text, file = "<text>") {
   return findings;
 }
 
+function portfolioPrivacyFindings(relativePath) {
+  const normalizedPath = relativePath.replaceAll("\\", "/");
+  if (!/^state\/portfolio(?:\/|$)/i.test(normalizedPath)) return [];
+  return [{ file: relativePath, line: 1, rule: "local portfolio state must not be tracked" }];
+}
+
 function repositoryFiles(root) {
   const listed = spawnSync(
     "git",
@@ -52,6 +58,7 @@ function repositoryFiles(root) {
 export function scanRepository(root) {
   const findings = [];
   for (const relativePath of repositoryFiles(root)) {
+    findings.push(...portfolioPrivacyFindings(relativePath));
     const absolutePath = resolve(root, relativePath);
     let stat;
     try { stat = lstatSync(absolutePath); } catch { continue; }
@@ -70,6 +77,9 @@ function selfTest() {
   assert.equal(scanText(`OPENAI_API_KEY=${openAiKey}`).length, 2);
   assert.equal(scanText(`# ${ALLOW_MARKER}\nvalue=${githubToken}`).length, 0);
   assert.equal(scanText("RAILWAY_TOKEN=").length, 0);
+  assert.equal(portfolioPrivacyFindings("state/portfolio/projects.json").length, 1);
+  assert.equal(portfolioPrivacyFindings("state\\portfolio\\projects.json").length, 1);
+  assert.equal(portfolioPrivacyFindings("fixtures/portfolio-profiles.example.json").length, 0);
   console.log("Secret scanner self-test passed.");
 }
 
@@ -78,6 +88,7 @@ if (fileURLToPath(import.meta.url) === invokedPath) {
   if (process.argv.includes("--self-test")) {
     selfTest();
   } else {
+    selfTest();
     const root = process.cwd();
     const findings = scanRepository(root);
     if (findings.length > 0) {

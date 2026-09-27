@@ -27,3 +27,11 @@ export function locksDir(base: string = stateDir()): string {
 export function notesDir(base: string = stateDir()): string {
   return join(base, "notes");
 }
+
+export function portfolioDir(base: string = stateDir()): string {
+  return join(base, "portfolio");
+}
+
+export function portfolioProfilesPath(base: string = stateDir()): string {
+  return join(portfolioDir(base), "projects.json");
+}

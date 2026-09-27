@@ -31,6 +31,11 @@ for (const field of ["projects", "inProgress", "history", "attention"]) {
 }
 const projects = overviewBody.projects as unknown[];
 
+const portfolioProfiles = await app.request("/api/portfolio/profiles");
+if (!portfolioProfiles.ok) throw new Error(`portfolio profiles smoke failed with ${portfolioProfiles.status}`);
+const portfolioProfilesBody = await portfolioProfiles.json() as { profiles?: unknown };
+if (!Array.isArray(portfolioProfilesBody.profiles)) throw new Error("portfolio profiles response is invalid");
+
 const today = await app.request("/api/today");
 if (!today.ok) throw new Error(`today smoke failed with ${today.status}`);
 const todayBody = await today.json() as Record<string, unknown>;
@@ -57,6 +62,8 @@ console.log(JSON.stringify({
   discovered_projects: projects.length,
   dispatch_options_status: options.status,
   configured_projects: optionsBody.projects.length,
+  portfolio_profiles_status: portfolioProfiles.status,
+  portfolio_profiles: portfolioProfilesBody.profiles.length,
   integrations_status: integrationResponse.status,
   integration_schema_version: integrationBody.schema_version,
 }));
