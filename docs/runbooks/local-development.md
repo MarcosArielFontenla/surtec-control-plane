@@ -13,6 +13,7 @@
 ```text
 pnpm install --frozen-lockfile
 pnpm codex:generate-protocol
+pnpm repository:check
 pnpm schemas:check
 pnpm secrets:check
 pnpm evals:check

@@ -10,6 +10,8 @@ The control plane uses the authentication already configured for the installed C
 - `SURTEC_CODEX_MODEL`: optional model override; omitted uses the user's configured default.
 - `SURTEC_CODEX_REASONING_EFFORT`: optional reasoning-effort override.
 - `SURTEC_CODEX_SMOKE=1`: explicit opt-in for the real read-only smoke test.
+- `SURTEC_CODEX_WRITE_SMOKE=1`: separate explicit opt-in for the disposable write smoke.
+- `SURTEC_CODEX_READ_SMOKE_CANCEL_AFTER_MS`: optional extra read-only turn that tests cancellation; valid values are 250–120000 ms and consume additional model quota.
 
 Worker and task limits:
 
@@ -40,9 +42,34 @@ Approval requests fail closed unless they match the active App Server thread and
 ```text
 $env:SURTEC_CODEX_SMOKE='1'
 pnpm smoke:codex
+$env:SURTEC_CODEX_SMOKE=$null
 ```
 
-The smoke runs against `fixtures/codex-smoke`, snapshots its files before and after, and fails if anything changes. It reports the thread, turn, final status, and usage when available. It does not print credentials.
+The fixture path is fixed in code to `fixtures/codex-smoke`; the command accepts no target path. It checks the repository-owned fixture marker, rejects symbolic links, snapshots all fixture files before and after, and fails if anything changes—even if the Codex turn itself fails. It validates the structured report and captures thread id, turn id, completed terminal status, and usage (including an explicit `null` when the App Server provides none). It does not print the report text, environment variables, or credentials.
+
+Cancellation is covered in fake-protocol tests in the normal test suite. To additionally make a real, quota-consuming cancellation attempt, set a delay before opting in:
+
+```text
+$env:SURTEC_CODEX_READ_SMOKE_CANCEL_AFTER_MS='1000'
+$env:SURTEC_CODEX_SMOKE='1'
+pnpm smoke:codex
+$env:SURTEC_CODEX_SMOKE=$null
+$env:SURTEC_CODEX_READ_SMOKE_CANCEL_AFTER_MS=$null
+```
+
+This performs an extra read-only turn and fails if the turn completes before cancellation is observed. It still verifies that the fixture is unchanged.
+
+## Real disposable write smoke
+
+```text
+$env:SURTEC_CODEX_WRITE_SMOKE='1'
+pnpm smoke:codex:write
+$env:SURTEC_CODEX_WRITE_SMOKE=$null
+```
+
+The write smoke takes no repository or path argument. It creates its own temporary Git repository beneath the operating system temporary directory, uses the repository's managed-worktree helper, and gives the agent workspace-write access only to that temporary worktree with network access disabled. The only accepted change is `SMOKE_STATUS=pending` → `SMOKE_STATUS=complete` in `smoke-fixture.txt`. It validates the structured result, captures the commit and diff, runs `node verify-smoke.mjs`, and removes its worktree and temporary repository in a `finally` cleanup path (also on handled Ctrl+C/SIGTERM). It never adds a remote or pushes. A cleanup problem is reported as a failure.
+
+Both real smokes can consume model quota. They are not part of `pnpm test`, `pnpm ci:check`, or GitHub Actions. Do not set their opt-in variables in a shared or CI environment. No credentials are printed or written to fixture files, task state, or logs.
 
 ## Troubleshooting
 
