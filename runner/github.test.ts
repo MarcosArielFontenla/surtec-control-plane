@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ spawnSync: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawnSync: mocks.spawnSync }));
 import { buildPrBody, ensurePullRequest } from "./github";
@@ -12,6 +12,7 @@ const envelope: TaskEnvelope = {
 };
 
 beforeEach(() => mocks.spawnSync.mockReset());
+afterEach(() => vi.unstubAllEnvs());
 
 function result(over: Partial<AgentResult> = {}): AgentResult {
   return {
@@ -59,6 +60,20 @@ describe("ensurePullRequest", () => {
       .toEqual({ url: "https://github.com/x/pull/1" });
     expect(mocks.spawnSync).toHaveBeenCalledTimes(1);
     expect(mocks.spawnSync.mock.calls[0][1]).toContain("list");
+  });
+
+  it("passes GitHub auth to gh without forwarding unrelated service credentials", () => {
+    vi.stubEnv("GH_TOKEN", "github-auth-fixture");
+    vi.stubEnv("OPENAI_API_KEY", "openai-runtime-fixture");
+    vi.stubEnv("RAILWAY_TOKEN", "railway-fixture");
+    mocks.spawnSync.mockReturnValueOnce({ status: 0, stdout: "https://github.com/x/pull/1\n", stderr: "" });
+
+    ensurePullRequest("/repo", "agent/T-1", "main", "title", "body");
+
+    const options = mocks.spawnSync.mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+    expect(options.env.GH_TOKEN).toBe("github-auth-fixture");
+    expect(options.env.OPENAI_API_KEY).toBeUndefined();
+    expect(options.env.RAILWAY_TOKEN).toBeUndefined();
   });
 
   it("creates a PR only after confirming that none is open", () => {

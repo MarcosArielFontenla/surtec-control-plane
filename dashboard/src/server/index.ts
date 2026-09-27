@@ -26,7 +26,7 @@ import { TaskControlError, type TaskControl } from "../../../runner/task-orchest
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
 import { createHttpSecurity, type HttpSecurity } from "./http-security";
-import { PolicyError } from "../../../lib/policy/service";
+import { PolicyError, PolicyService } from "../../../lib/policy/service";
 import type { ProjectIntegrationsReader } from "../../../lib/integrations/types";
 import { createProjectIntegrationsService } from "./project-integrations";
 
@@ -124,11 +124,7 @@ export function createApp(
 
   app.get("/api/dispatch-options", (c) => {
     try {
-      const projects = loadRegistryProjects(repoRoot).map((p) => ({
-        project: p.id,
-        agents: p.allowed_agents ?? [],
-      }));
-      return c.json({ projects });
+      return c.json(new PolicyService(repoRoot).dispatchOptions());
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }

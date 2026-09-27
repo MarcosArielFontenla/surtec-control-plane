@@ -2,6 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { codexAppServerEnvironment } from "../lib/security/process-environments.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const outDir = join(repoRoot, "runner", "generated", "codex-app-server");
@@ -17,6 +18,7 @@ const version = spawnSync(executable, ["--version"], {
   encoding: "utf8",
   shell: false,
   windowsHide: true,
+  env: codexAppServerEnvironment(),
 });
 
 if (version.status !== 0) {
@@ -31,6 +33,7 @@ const generated = spawnSync(executable, ["app-server", "generate-ts", "--out", o
   stdio: "inherit",
   shell: false,
   windowsHide: true,
+  env: codexAppServerEnvironment(),
 });
 
 if (generated.status !== 0) {

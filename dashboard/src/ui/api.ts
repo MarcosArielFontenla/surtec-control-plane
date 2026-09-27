@@ -117,8 +117,33 @@ export async function getRailway(id: string): Promise<RailwayStatus> {
   return (await res.json()) as RailwayStatus;
 }
 
+export type DispatchMode = "read-only" | "workspace-write" | "workspace-write-verify";
+
+export interface DispatchModeCapability {
+  mode: DispatchMode;
+  allowed: boolean;
+  reason: string | null;
+}
+
+export interface DispatchAgentCapability {
+  agent: string;
+  agent_sandbox_ceiling: "read-only" | "workspace-write";
+  allowed_modes: DispatchMode[];
+  default_mode: DispatchMode | null;
+  modes: DispatchModeCapability[];
+}
+
+export interface DispatchProjectCapability {
+  project: string;
+  allowed_agents: string[];
+  project_sandbox_ceiling: "read-only" | "workspace-write";
+  has_local_checkout: boolean;
+  has_verification_commands: boolean;
+  agents: DispatchAgentCapability[];
+}
+
 export interface DispatchOptions {
-  projects: { project: string; agents: string[] }[];
+  projects: DispatchProjectCapability[];
 }
 
 export async function fetchDispatchOptions(): Promise<DispatchOptions> {

@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { gitEnvironment } from "../lib/security/environment";
+import { localGitEnvironment } from "../lib/security/environment";
+import { managedGitArgs } from "../lib/security/managed-git.mjs";
 import { assertPathWithin } from "../lib/security/paths";
 import { redactText } from "../lib/security/redaction";
 import { AGENT_REPORT_SCHEMA, validateAgentReport } from "../runner/agent-report";
@@ -30,11 +31,11 @@ function usageIsValid(value: unknown): value is AgentUsage {
 }
 
 function git(args: string[]): string {
-  const result = spawnSync("git", args, {
+  const result = spawnSync("git", managedGitArgs(args), {
     encoding: "utf8",
     timeout: 30_000,
     windowsHide: true,
-    env: gitEnvironment(),
+    env: localGitEnvironment(),
   });
   if (result.status !== 0 || result.error) {
     const diagnostic = redactText((result.stderr ?? "").trim()).slice(0, 500);

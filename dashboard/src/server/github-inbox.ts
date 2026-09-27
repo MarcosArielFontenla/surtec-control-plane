@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { loadRegistryProjects } from "./registry";
 import { githubRepoSlug } from "../../../lib/github-url";
 import type { IssueItem, InboxItem, RepoStatus, Inbox } from "../../../lib/state/types";
-import { gitEnvironment } from "../../../lib/security/environment";
+import { githubCliEnvironment } from "../../../lib/security/environment";
 import { redactText } from "../../../lib/security/redaction";
 
 export type RunGh = (args: string[]) => Promise<{ status: number; stdout: string; stderr: string }>;
@@ -12,7 +12,7 @@ const TAIL_CHARS = 2000;
 
 const defaultRunGh: RunGh = (args) =>
   new Promise((resolve) => {
-    execFile("gh", args, { timeout: TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, encoding: "utf8", env: gitEnvironment() }, (err, stdout, stderr) => {
+    execFile("gh", args, { timeout: TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, encoding: "utf8", env: githubCliEnvironment() }, (err, stdout, stderr) => {
       if (err) {
         const code = (err as NodeJS.ErrnoException).code;
         const status = typeof code === "number" && code !== 0 ? code : 1;

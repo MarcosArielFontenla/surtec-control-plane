@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +20,15 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
+function installFixtureHook(name: string): void {
+  const hooksPath = join(repo, ".git", "hooks");
+  mkdirSync(hooksPath, { recursive: true });
+  const hookPath = join(hooksPath, name);
+  writeFileSync(hookPath, "#!/bin/sh\nprintf 'hook-ran' > hook-executed.txt\n", "utf8");
+  chmodSync(hookPath, 0o755);
+  spawnSync("git", ["-C", repo, "config", "core.hooksPath", hooksPath], { encoding: "utf8" });
+}
+
 describe("createWorktree", () => {
   it("creates a worktree on a dedicated agent branch", () => {
     const { branch, worktreePath } = createWorktree(repo, "STK-1", "backend-engineer");
@@ -34,6 +43,14 @@ describe("createWorktree", () => {
 
     expect(second).toEqual(first);
     expect(listManagedWorktrees(repo)).toEqual([first]);
+  });
+
+  it("does not execute a repository post-checkout hook while creating a managed worktree", () => {
+    installFixtureHook("post-checkout");
+
+    const { worktreePath } = createWorktree(repo, "STK-HOOK-1", "backend-engineer");
+
+    expect(existsSync(join(worktreePath, "hook-executed.txt"))).toBe(false);
   });
 });
 
@@ -57,6 +74,28 @@ describe("commitAndDiff", () => {
     expect(r.diffstat).toBe("");
     expect(r.patch).toBe("");
     expect(r.patchTruncated).toBe(false);
+  });
+
+  it("does not execute repository pre-commit hooks during a managed commit", () => {
+    const { worktreePath } = createWorktree(repo, "STK-HOOK-2", "backend-engineer");
+    installFixtureHook("pre-commit");
+    writeFileSync(join(worktreePath, "new.txt"), "content\n", "utf8");
+
+    const result = commitAndDiff(worktreePath, "managed commit");
+
+    expect(result.committed).toBe(true);
+    expect(existsSync(join(worktreePath, "hook-executed.txt"))).toBe(false);
+  });
+
+  it("redacts credential-looking content from the captured commit patch", () => {
+    const { worktreePath } = createWorktree(repo, "STK-REDACT-1", "backend-engineer");
+    const syntheticCredential = `ghp_${"a".repeat(32)}`;
+    writeFileSync(join(worktreePath, "fixture.txt"), `api_key=${syntheticCredential}\n`, "utf8");
+
+    const result = commitAndDiff(worktreePath, "credential redaction fixture");
+
+    expect(result.patch).not.toContain(syntheticCredential);
+    expect(result.patch).toContain("[REDACTED]");
   });
 });
 

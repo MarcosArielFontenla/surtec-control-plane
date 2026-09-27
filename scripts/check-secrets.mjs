@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
+import { localGitEnvironment } from "../lib/security/process-environments.mjs";
+import { managedGitArgs } from "../lib/security/managed-git.mjs";
 
 const ALLOW_MARKER = "secret-scan: allow";
 const MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024;
@@ -37,8 +39,11 @@ export function scanText(text, file = "<text>") {
 function repositoryFiles(root) {
   const listed = spawnSync(
     "git",
-    ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    { encoding: "utf8", timeout: 30_000, windowsHide: true },
+    managedGitArgs([
+      "-c", `safe.directory=${root}`,
+      "-C", root, "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+    ]),
+    { encoding: "utf8", timeout: 30_000, windowsHide: true, env: localGitEnvironment() },
   );
   if (listed.status !== 0) throw new Error("git ls-files failed; secret scan did not run");
   return (listed.stdout ?? "").split("\0").filter(Boolean);

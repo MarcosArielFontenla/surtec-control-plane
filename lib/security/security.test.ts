@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isSafeIdentifier } from "./identifiers";
 import { assertPathWithin, isPathWithin } from "./paths";
-import { allowlistedEnvironment, gitEnvironment, projectCommandEnvironment } from "./environment";
+import {
+  allowlistedEnvironment,
+  codexAppServerEnvironment,
+  githubCliEnvironment,
+  gitNetworkEnvironment,
+  localGitEnvironment,
+  openActionEnvironment,
+  projectCommandEnvironment,
+  systemProcessEnvironment,
+} from "./environment";
 import { redactText, safeJson } from "./redaction";
 
 describe("security primitives", () => {
@@ -35,10 +44,32 @@ describe("security primitives", () => {
   });
 
   it("passes only explicit environment names", () => {
-    const source = { PATH: "bin", SECRET: "no", GH_TOKEN: "ghp_123", APP_PORT: "1", SURTEC_RUN_ENV_ALLOWLIST: "APP_PORT" };
+    const source = {
+      PATH: "bin",
+      SECRET: "no",
+      GH_TOKEN: "github-auth-fixture",
+      GITHUB_TOKEN: "github-token-fixture",
+      GH_HOST: "github.enterprise.test",
+      GH_CONFIG_DIR: "C:/Users/test/.config/gh",
+      GIT_CONFIG_GLOBAL: "C:/Users/test/.gitconfig",
+      OPENAI_API_KEY: "openai-runtime-fixture",
+      RAILWAY_TOKEN: "railway-fixture",
+      NPM_TOKEN: "registry-fixture",
+      SSH_AUTH_SOCK: "ssh-agent-socket",
+      APP_PORT: "1",
+      SURTEC_RUN_ENV_ALLOWLIST: "APP_PORT,OPENAI_API_KEY",
+    };
     expect(allowlistedEnvironment(source)).toEqual({ PATH: "bin" });
-    expect(gitEnvironment(source)).toEqual({ PATH: "bin", GH_TOKEN: "ghp_123" });
-    expect(projectCommandEnvironment(source)).toEqual({ PATH: "bin", APP_PORT: "1" });
+    expect(localGitEnvironment(source)).toEqual({ PATH: "bin" });
+    expect(githubCliEnvironment(source)).toEqual({
+      PATH: "bin", GH_TOKEN: "github-auth-fixture", GITHUB_TOKEN: "github-token-fixture", GH_HOST: "github.enterprise.test",
+      GH_CONFIG_DIR: "C:/Users/test/.config/gh",
+    });
+    expect(gitNetworkEnvironment(source)).toEqual({ PATH: "bin", GIT_CONFIG_GLOBAL: "C:/Users/test/.gitconfig", SSH_AUTH_SOCK: "ssh-agent-socket", GIT_TERMINAL_PROMPT: "0" });
+    expect(projectCommandEnvironment(source)).toEqual({ PATH: "bin", APP_PORT: "1", OPENAI_API_KEY: "openai-runtime-fixture" });
+    expect(codexAppServerEnvironment(source)).toEqual({ PATH: "bin", OPENAI_API_KEY: "openai-runtime-fixture" });
+    expect(systemProcessEnvironment(source)).toEqual({ PATH: "bin" });
+    expect(openActionEnvironment(source)).toEqual({ PATH: "bin" });
   });
 
   it("redacts common tokens, assignments, URLs, and nested secret fields", () => {

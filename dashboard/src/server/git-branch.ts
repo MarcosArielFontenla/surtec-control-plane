@@ -1,7 +1,8 @@
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
-import { gitEnvironment } from "../../../lib/security/environment";
+import { localGitEnvironment } from "../../../lib/security/environment";
+import { managedGitArgs } from "../../../lib/security/managed-git.mjs";
 import { redactText } from "../../../lib/security/redaction";
 
 export class BranchError extends Error {
@@ -47,11 +48,11 @@ function asStr(v: string | Buffer | undefined): string {
 export function listBranches(repoRoot: string, id: string, deps: GitBranchDeps = {}): BranchListResult {
   const spawnSync = deps.spawnSync ?? nodeSpawnSync;
   const path = resolvePath(repoRoot, id, deps);
-  const list = spawnSync("git", ["-C", path, "branch", "--format=%(refname:short)"], { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
+  const list = spawnSync("git", managedGitArgs(["-C", path, "branch", "--format=%(refname:short)"]), { encoding: "utf8", timeout: TIMEOUT_MS, env: localGitEnvironment() });
   const branches = list.status === 0 && !list.error
     ? asStr(list.stdout).split("\n").map((s) => s.trim()).filter(Boolean)
     : [];
-  const head = spawnSync("git", ["-C", path, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
+  const head = spawnSync("git", managedGitArgs(["-C", path, "rev-parse", "--abbrev-ref", "HEAD"]), { encoding: "utf8", timeout: TIMEOUT_MS, env: localGitEnvironment() });
   const cur = head.status === 0 && !head.error ? asStr(head.stdout).trim() : "";
   const current = cur && cur !== "HEAD" ? cur : null;
   return { branches, current };
@@ -67,7 +68,7 @@ export function switchBranch(repoRoot: string, id: string, name: string, deps: G
   if (!validateBranchName(name)) return { ok: false, output: `invalid branch name: ${name}` };
   const spawnSync = deps.spawnSync ?? nodeSpawnSync;
   const path = resolvePath(repoRoot, id, deps);
-  const status = spawnSync("git", ["-C", path, "status", "--porcelain"], { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
+  const status = spawnSync("git", managedGitArgs(["-C", path, "status", "--porcelain"]), { encoding: "utf8", timeout: TIMEOUT_MS, env: localGitEnvironment() });
   if (asStr(status.stdout).trim().length > 0) {
     return { ok: false, output: "working tree no está limpio; commiteá o descartá los cambios para cambiar de branch" };
   }
@@ -75,7 +76,7 @@ export function switchBranch(repoRoot: string, id: string, name: string, deps: G
   if (!branches.includes(name)) {
     return { ok: false, output: `la branch no existe: ${name}` };
   }
-  const r = spawnSync("git", ["-C", path, "switch", name], { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
+  const r = spawnSync("git", managedGitArgs(["-C", path, "switch", name]), { encoding: "utf8", timeout: TIMEOUT_MS, env: localGitEnvironment() });
   return { ok: r.status === 0 && !r.error, output: combine(r) };
 }
 
@@ -85,6 +86,6 @@ export function createBranch(repoRoot: string, id: string, name: string, deps: G
   if (!validateBranchName(name)) return { ok: false, output: `invalid branch name: ${name}` };
   const spawnSync = deps.spawnSync ?? nodeSpawnSync;
   const path = resolvePath(repoRoot, id, deps);
-  const r = spawnSync("git", ["-C", path, "switch", "-c", name], { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
+  const r = spawnSync("git", managedGitArgs(["-C", path, "switch", "-c", name]), { encoding: "utf8", timeout: TIMEOUT_MS, env: localGitEnvironment() });
   return { ok: r.status === 0 && !r.error, output: combine(r) };
 }

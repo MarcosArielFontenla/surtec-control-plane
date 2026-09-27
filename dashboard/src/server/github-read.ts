@@ -1,7 +1,7 @@
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { loadRegistryProjects } from "./registry";
 import { githubRepoSlug } from "../../../lib/github-url";
-import { gitEnvironment } from "../../../lib/security/environment";
+import { githubCliEnvironment } from "../../../lib/security/environment";
 import { redactText } from "../../../lib/security/redaction";
 
 export class GithubError extends Error {
@@ -41,9 +41,9 @@ function countOf(stdout: string | Buffer | undefined): number {
 // (missing/unauth/non-github/disabled-issues/bad-output) yield { ok:false, error }.
 export function readGithubCounts(slug: string, deps: SpawnDep = {}): GithubCounts {
   const spawnSync = deps.spawnSync ?? nodeSpawnSync;
-  const pr = spawnSync("gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
+  const pr = spawnSync("gh", ["pr", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: githubCliEnvironment() });
   if (pr.status !== 0 || pr.error) return { ok: false, prs: 0, issues: 0, error: ghErr(pr) };
-  const iss = spawnSync("gh", ["issue", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
+  const iss = spawnSync("gh", ["issue", "list", "--state", "open", "--limit", "100", "--json", "number", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: githubCliEnvironment() });
   if (iss.status !== 0 || iss.error) return { ok: false, prs: 0, issues: 0, error: ghErr(iss) };
   try {
     return { ok: true, prs: countOf(pr.stdout), issues: countOf(iss.stdout) };
@@ -55,7 +55,7 @@ export function readGithubCounts(slug: string, deps: SpawnDep = {}): GithubCount
 // Reads the latest CI run state on a branch via read-only gh. Never throws — any failure → "unknown".
 export function readCiStatus(slug: string, branch: string, deps: SpawnDep = {}): { state: CiState } {
   const spawnSync = deps.spawnSync ?? nodeSpawnSync;
-  const r = spawnSync("gh", ["run", "list", "--branch", branch, "--limit", "1", "--json", "status,conclusion", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
+  const r = spawnSync("gh", ["run", "list", "--branch", branch, "--limit", "1", "--json", "status,conclusion", "-R", slug], { encoding: "utf8", timeout: TIMEOUT_MS, env: githubCliEnvironment() });
   if (r.status !== 0 || r.error) return { state: "unknown" };
   let arr: { status?: string; conclusion?: string | null }[];
   try {

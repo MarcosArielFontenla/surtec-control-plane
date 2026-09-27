@@ -1,7 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { runGitSync, GitSyncError } from "./git-sync";
+import { managedHooksDirectory } from "../../../lib/security/managed-git.mjs";
 
 const discoverAlpha = () => [{ id: "alpha", path: "/p/alpha" }];
+
+afterEach(() => vi.unstubAllEnvs());
 
 function okSpawn(stdout = "Already up to date.", stderr = "") {
   return vi.fn().mockReturnValue({ status: 0, stdout, stderr });
@@ -28,13 +31,27 @@ describe("runGitSync", () => {
   });
 
   it("maps fetch/pull/push to the exact git argv", () => {
+    vi.stubEnv("GH_TOKEN", "github-auth-fixture");
+    vi.stubEnv("OPENAI_API_KEY", "openai-runtime-fixture");
+    vi.stubEnv("RAILWAY_TOKEN", "railway-fixture");
+    const managedConfig = ["-c", `core.hooksPath=${managedHooksDirectory()}`];
     const spawnSync = okSpawn();
     runGitSync("/repo", "alpha", "fetch", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
     runGitSync("/repo", "alpha", "pull", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
     runGitSync("/repo", "alpha", "push", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
-    expect(spawnSync.mock.calls[0]).toEqual(["git", ["-C", "/p/alpha", "fetch"], expect.objectContaining({ encoding: "utf8", timeout: 60000, env: expect.any(Object) })]);
-    expect(spawnSync.mock.calls[1]).toEqual(["git", ["-C", "/p/alpha", "pull", "--ff-only"], expect.objectContaining({ encoding: "utf8", timeout: 60000, env: expect.any(Object) })]);
-    expect(spawnSync.mock.calls[2]).toEqual(["git", ["-C", "/p/alpha", "push"], expect.objectContaining({ encoding: "utf8", timeout: 60000, env: expect.any(Object) })]);
+    for (const [index, command] of [[0, "fetch"], [1, "pull"], [2, "push"]] as const) {
+      const [executable, args, options] = spawnSync.mock.calls[index] as [string, string[], { encoding: string; timeout: number; env: NodeJS.ProcessEnv }];
+      expect(executable).toBe("git");
+      expect(args.slice(0, managedConfig.length)).toEqual(managedConfig);
+      expect(args.slice(managedConfig.length)).toEqual(command === "fetch"
+        ? ["-C", "/p/alpha", "fetch"]
+        : command === "pull" ? ["-C", "/p/alpha", "pull", "--ff-only"] : ["-C", "/p/alpha", "push"]);
+      expect(options).toMatchObject({ encoding: "utf8", timeout: 60000, env: { GIT_TERMINAL_PROMPT: "0" } });
+      expect(options.env.GH_TOKEN).toBeUndefined();
+      expect(options.env.GITHUB_TOKEN).toBeUndefined();
+      expect(options.env.OPENAI_API_KEY).toBeUndefined();
+      expect(options.env.RAILWAY_TOKEN).toBeUndefined();
+    }
   });
 
   it("returns ok:true with combined output on exit 0", () => {

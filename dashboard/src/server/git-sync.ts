@@ -1,7 +1,8 @@
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
-import { gitEnvironment } from "../../../lib/security/environment";
+import { gitNetworkEnvironment } from "../../../lib/security/environment";
+import { managedGitArgs } from "../../../lib/security/managed-git.mjs";
 import { redactText } from "../../../lib/security/redaction";
 
 export class GitSyncError extends Error {
@@ -43,7 +44,7 @@ export function runGitSync(repoRoot: string, id: string, action: string, deps: G
   if (!proj) throw new GitSyncError(`unknown project: ${id}`, 404);
 
   const act = action as GitAction;
-  const r = spawnSync("git", ARGV[act](proj.path), { encoding: "utf8", timeout: TIMEOUT_MS, env: gitEnvironment() });
+  const r = spawnSync("git", managedGitArgs(ARGV[act](proj.path)), { encoding: "utf8", timeout: TIMEOUT_MS, env: gitNetworkEnvironment() });
   const ok = r.status === 0 && !r.error;
   const stdout = typeof r.stdout === "string" ? r.stdout : (r.stdout as Buffer | null)?.toString() ?? "";
   const stderr = typeof r.stderr === "string" ? r.stderr : (r.stderr as Buffer | null)?.toString() ?? "";

@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { dirname } from "node:path";
 import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
-import { allowlistedEnvironment } from "../../../lib/security/environment";
+import { openActionEnvironment } from "../../../lib/security/environment";
 
 export class OpenError extends Error {
   constructor(message: string, public status: number) {
@@ -54,7 +54,7 @@ export function openProject(repoRoot: string, id: string, target: string, deps: 
     throw new OpenError(`unsafe command: ${command}`, 400);
   }
   try {
-    const child = spawn(command, args, { detached: true, stdio: "ignore", shell, env: allowlistedEnvironment() });
+    const child = spawn(command, args, { detached: true, stdio: "ignore", shell, env: openActionEnvironment() });
     child.unref?.();
   } catch (e) {
     throw new OpenError((e as Error).message, 500);

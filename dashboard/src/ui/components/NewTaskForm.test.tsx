@@ -3,13 +3,40 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { NewTaskForm } from "./NewTaskForm";
 
+function dispatchOptions(overrides: { hasCheckout?: boolean; hasVerification?: boolean } = {}) {
+  const hasCheckout = overrides.hasCheckout ?? true;
+  const hasVerification = overrides.hasVerification ?? true;
+  const writeAllowed = hasCheckout;
+  const verifyAllowed = hasCheckout && hasVerification;
+  return {
+    projects: [{
+      project: "stock-control",
+      allowed_agents: ["backend-engineer"],
+      project_sandbox_ceiling: "workspace-write",
+      has_local_checkout: hasCheckout,
+      has_verification_commands: hasVerification,
+      agents: [{
+        agent: "backend-engineer",
+        agent_sandbox_ceiling: "workspace-write",
+        allowed_modes: ["read-only", ...(writeAllowed ? ["workspace-write"] : []), ...(verifyAllowed ? ["workspace-write-verify"] : [])],
+        default_mode: hasCheckout ? "read-only" : null,
+        modes: [
+          { mode: "read-only", allowed: hasCheckout, reason: hasCheckout ? null : "project has no contained local git checkout" },
+          { mode: "workspace-write", allowed: writeAllowed, reason: writeAllowed ? null : "project has no contained local git checkout" },
+          { mode: "workspace-write-verify", allowed: verifyAllowed, reason: !hasCheckout ? "project has no contained local git checkout" : hasVerification ? null : "project has no verification commands" },
+        ],
+      }],
+    }],
+  };
+}
+
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string, _init?: RequestInit) => {
     if (String(url).endsWith("/api/session")) {
       return { ok: true, status: 200, json: async () => ({ token: "test-session-token" }) } as Response;
     }
     if (String(url).endsWith("/api/dispatch-options")) {
-      return { ok: true, status: 200, json: async () => ({ projects: [{ project: "stock-control", agents: ["backend-engineer"] }] }) } as Response;
+      return { ok: true, status: 200, json: async () => dispatchOptions() } as Response;
     }
     return { ok: true, status: 201, json: async () => ({ id: "T-abc" }) } as Response;
   }) as unknown as typeof fetch);
@@ -75,13 +102,50 @@ describe("NewTaskForm", () => {
     });
   });
 
+  it("defaults to the safest permitted mode and disables self-verify when checks are absent", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).endsWith("/api/session")) {
+        return { ok: true, status: 200, json: async () => ({ token: "test-session-token" }) } as Response;
+      }
+      if (String(url).endsWith("/api/dispatch-options")) {
+        return { ok: true, status: 200, json: async () => dispatchOptions({ hasVerification: false }) } as Response;
+      }
+      return { ok: true, status: 201, json: async () => ({ id: "T-abc" }) } as Response;
+    }) as unknown as typeof fetch);
+
+    render(<NewTaskForm bulkProjectIds={[]} />);
+    await waitFor(() => expect(screen.getByText("backend-engineer")).toBeTruthy());
+
+    const modeSelect = screen.getByLabelText("Modo") as HTMLSelectElement;
+    const verifyOption = screen.getByRole("option", { name: /auto-fix/ }) as HTMLOptionElement;
+    expect(modeSelect.value).toBe("read-only");
+    expect(verifyOption.disabled).toBe(true);
+    expect(screen.getByRole("note").textContent).toContain("no verification commands");
+  });
+
+  it("blocks dispatch when the project has no contained local checkout", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).endsWith("/api/session")) {
+        return { ok: true, status: 200, json: async () => ({ token: "test-session-token" }) } as Response;
+      }
+      if (String(url).endsWith("/api/dispatch-options")) {
+        return { ok: true, status: 200, json: async () => dispatchOptions({ hasCheckout: false }) } as Response;
+      }
+      return { ok: true, status: 201, json: async () => ({ id: "T-abc" }) } as Response;
+    }) as unknown as typeof fetch);
+
+    render(<NewTaskForm bulkProjectIds={[]} />);
+    await waitFor(() => expect(screen.getByText(/no tiene un checkout local contenido/i)).toBeTruthy());
+    expect(screen.getByRole("button", { name: /despachar/i }).hasAttribute("disabled")).toBe(true);
+  });
+
   it("shows an error banner when dispatch fails", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       if (String(url).endsWith("/api/session")) {
         return { ok: true, status: 200, json: async () => ({ token: "test-session-token" }) } as Response;
       }
       if (String(url).endsWith("/api/dispatch-options")) {
-        return { ok: true, status: 200, json: async () => ({ projects: [{ project: "stock-control", agents: ["backend-engineer"] }] }) } as Response;
+        return { ok: true, status: 200, json: async () => dispatchOptions() } as Response;
       }
       return { ok: false, status: 400, json: async () => ({ error: "agent not allowed" }) } as Response;
     }) as unknown as typeof fetch);

@@ -1,7 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { validateBranchName, listBranches, BranchError, switchBranch, createBranch } from "./git-branch";
+import { managedHooksDirectory } from "../../../lib/security/managed-git.mjs";
 
 const discoverAlpha = () => [{ id: "alpha", path: "/p/alpha" }];
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe("validateBranchName", () => {
   it("accepts valid names", () => {
@@ -17,6 +20,23 @@ describe("validateBranchName", () => {
 });
 
 describe("listBranches", () => {
+  it("uses a credential-free environment and fixed empty hooks path for local Git", () => {
+    vi.stubEnv("GH_TOKEN", "github-auth-fixture");
+    vi.stubEnv("OPENAI_API_KEY", "openai-runtime-fixture");
+    vi.stubEnv("RAILWAY_TOKEN", "railway-fixture");
+    const spawnSync = vi.fn().mockReturnValue({ status: 0, stdout: "main\n" });
+
+    listBranches("/repo", "alpha", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
+
+    const args = spawnSync.mock.calls[0]![1] as string[];
+    const options = spawnSync.mock.calls[0]![2] as { env: NodeJS.ProcessEnv };
+    expect(args[0]).toBe("-c");
+    expect(args[1]).toMatch(/^core\.hooksPath=/);
+    expect(options.env.GH_TOKEN).toBeUndefined();
+    expect(options.env.OPENAI_API_KEY).toBeUndefined();
+    expect(options.env.RAILWAY_TOKEN).toBeUndefined();
+  });
+
   it("parses the branch list and detects current", () => {
     const spawnSync = vi.fn().mockImplementation((_cmd, args: string[]) => {
       if (args.includes("branch")) return { status: 0, stdout: "main\ndev\nfeature/x\n" };
@@ -85,7 +105,7 @@ describe("switchBranch", () => {
     const r = switchBranch("/repo", "alpha", "dev", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
     expect(r.ok).toBe(true);
     const switchCall = (spawnSync.mock.calls as unknown[][]).find((c) => (c[1] as string[]).includes("switch"));
-    expect(switchCall![1]).toEqual(["-C", "/p/alpha", "switch", "dev"]);
+    expect(switchCall![1]).toEqual(["-c", `core.hooksPath=${managedHooksDirectory()}`, "-C", "/p/alpha", "switch", "dev"]);
   });
 
   it("rejects an invalid name (defense-in-depth) without spawning", () => {
@@ -102,7 +122,7 @@ describe("createBranch", () => {
     const spawnSync = vi.fn().mockReturnValue({ status: 0, stdout: "Switched to a new branch 'feature/y'" });
     const r = createBranch("/repo", "alpha", "feature/y", { spawnSync: spawnSync as never, discover: discoverAlpha, root: "/root" });
     expect(r.ok).toBe(true);
-    expect(spawnSync.mock.calls[0][1]).toEqual(["-C", "/p/alpha", "switch", "-c", "feature/y"]);
+    expect(spawnSync.mock.calls[0][1]).toEqual(["-c", `core.hooksPath=${managedHooksDirectory()}`, "-C", "/p/alpha", "switch", "-c", "feature/y"]);
   });
 
   it("returns ok:false (no throw) when git fails (e.g. name already exists)", () => {

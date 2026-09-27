@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
-import { gitEnvironment } from "../lib/security/environment";
+import { gitNetworkEnvironment, localGitEnvironment } from "../lib/security/environment";
+import { managedGitArgs } from "../lib/security/managed-git.mjs";
 import { assertPathWithin, canonicalPath } from "../lib/security/paths";
 import { redactText } from "../lib/security/redaction";
 
@@ -36,8 +37,8 @@ function assertManagedBranch(branch: string): void {
   }
 }
 
-function git(args: string[]): { ok: boolean; stdout: string; stderr: string } {
-  const r = spawnSync("git", args, { encoding: "utf8", timeout: 30_000, env: gitEnvironment() });
+function git(args: string[], env: NodeJS.ProcessEnv = localGitEnvironment()): { ok: boolean; stdout: string; stderr: string } {
+  const r = spawnSync("git", managedGitArgs(args), { encoding: "utf8", timeout: 30_000, env });
   const stderr = redactText(r.stderr ?? "");
   // r.error is set when the process couldn't be spawned (e.g. git missing) or timed out.
   return { ok: r.status === 0, stdout: redactText(r.stdout ?? ""), stderr: stderr || (r.error ? redactText(r.error.message) : "") };
@@ -48,8 +49,8 @@ const MAX_DIFF_CHARS = 200_000;
 function committedPatch(worktreePath: string): { patch: string; patchTruncated: boolean } {
   const result = spawnSync(
     "git",
-    ["-C", worktreePath, "show", "--format=", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "HEAD"],
-    { encoding: "utf8", timeout: 30_000, maxBuffer: MAX_DIFF_CHARS + 64_000, env: gitEnvironment() },
+    managedGitArgs(["-C", worktreePath, "show", "--format=", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "HEAD"]),
+    { encoding: "utf8", timeout: 30_000, maxBuffer: MAX_DIFF_CHARS + 64_000, env: localGitEnvironment() },
   );
   const output = redactText(result.stdout ?? "");
   const bufferExceeded = (result.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS";
@@ -103,7 +104,7 @@ export function commitAndDiff(worktreePath: string, message: string): CommitResu
 
 export function pushBranch(sourceRepo: string, branch: string): { pushed: boolean; error?: string } {
   assertManagedBranch(branch);
-  const r = git(["-C", sourceRepo, "push", "origin", branch]);
+  const r = git(["-C", sourceRepo, "push", "origin", branch], gitNetworkEnvironment());
   return r.ok ? { pushed: true } : { pushed: false, error: (r.stderr || r.stdout).trim() };
 }
 

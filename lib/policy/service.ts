@@ -41,6 +41,35 @@ export interface PolicyProject {
   railway: { project_id: string; service_id: string; environment_id: string } | null;
 }
 
+export type DispatchMode = "read-only" | "workspace-write" | "workspace-write-verify";
+
+export interface DispatchModeCapability {
+  mode: DispatchMode;
+  allowed: boolean;
+  reason: string | null;
+}
+
+export interface DispatchAgentCapability {
+  agent: string;
+  agent_sandbox_ceiling: SandboxMode;
+  allowed_modes: DispatchMode[];
+  default_mode: DispatchMode | null;
+  modes: DispatchModeCapability[];
+}
+
+export interface DispatchProjectCapability {
+  project: string;
+  allowed_agents: string[];
+  project_sandbox_ceiling: SandboxMode;
+  has_local_checkout: boolean;
+  has_verification_commands: boolean;
+  agents: DispatchAgentCapability[];
+}
+
+export interface DispatchOptions {
+  projects: DispatchProjectCapability[];
+}
+
 interface AgentRegistryDocument { agents: PolicyAgent[] }
 interface RawProject {
   repo?: string;
@@ -164,21 +193,66 @@ export class PolicyService {
     return agent;
   }
 
+  dispatchOptions(): DispatchOptions {
+    const agents = new Map(this.listAgents().map((agent) => [agent.id, agent]));
+    const modes: { mode: DispatchMode; sandbox: SandboxMode; selfVerify: boolean }[] = [
+      { mode: "read-only", sandbox: "read-only", selfVerify: false },
+      { mode: "workspace-write", sandbox: "workspace-write", selfVerify: false },
+      { mode: "workspace-write-verify", sandbox: "workspace-write", selfVerify: true },
+    ];
+
+    return {
+      projects: this.listProjects().map((project) => ({
+        project: project.id,
+        allowed_agents: [...project.allowed_agents],
+        project_sandbox_ceiling: project.sandbox,
+        has_local_checkout: project.repo_path !== null,
+        has_verification_commands: project.verify_commands.length > 0,
+        agents: project.allowed_agents.flatMap((agentId) => {
+          const agent = agents.get(agentId);
+          if (!agent) return [];
+          const capabilities = modes.map(({ mode, sandbox, selfVerify }) => {
+            const reason = this.dispatchDenial(project, agent, { sandbox, selfVerify });
+            return { mode, allowed: reason === null, reason };
+          });
+          const allowedModes = capabilities.filter((capability) => capability.allowed).map((capability) => capability.mode);
+          return [{
+            agent: agent.id,
+            agent_sandbox_ceiling: agent.default_sandbox,
+            allowed_modes: allowedModes,
+            default_mode: allowedModes[0] ?? null,
+            modes: capabilities,
+          }];
+        }),
+      })),
+    };
+  }
+
   authorizeDispatch(input: { project: string; agent: string; sandbox: SandboxMode; selfVerify: boolean }): { project: PolicyProject; agent: PolicyAgent } {
     const project = this.project(input.project);
     const agent = this.agent(input.agent);
-    if (!project.repo_path) throw new PolicyError(`project '${project.id}' has no contained local git checkout`, "denied");
-    if (!project.allowed_agents.includes(agent.id)) throw new PolicyError(`agent '${agent.id}' is not allowed for project '${project.id}'`, "denied");
+    const reason = this.dispatchDenial(project, agent, input);
+    if (reason) throw new PolicyError(reason, "denied");
+    return { project, agent };
+  }
+
+  private dispatchDenial(
+    project: PolicyProject,
+    agent: PolicyAgent,
+    input: { sandbox: SandboxMode; selfVerify: boolean },
+  ): string | null {
+    if (!project.repo_path) return `project '${project.id}' has no contained local git checkout`;
+    if (!project.allowed_agents.includes(agent.id)) return `agent '${agent.id}' is not allowed for project '${project.id}'`;
     if (input.sandbox === "workspace-write" && project.sandbox !== "workspace-write") {
-      throw new PolicyError(`project '${project.id}' does not allow workspace-write`, "denied");
+      return `project '${project.id}' does not allow workspace-write`;
     }
     if (input.sandbox === "workspace-write" && agent.default_sandbox !== "workspace-write") {
-      throw new PolicyError(`agent '${agent.id}' does not allow workspace-write`, "denied");
+      return `agent '${agent.id}' does not allow workspace-write`;
     }
     if (input.selfVerify && project.verify_commands.length === 0) {
-      throw new PolicyError(`project '${project.id}' has no verification commands`, "denied");
+      return `project '${project.id}' has no verification commands`;
     }
-    return { project, agent };
+    return null;
   }
 
   authorizeTask(envelope: TaskEnvelope): { project: PolicyProject; agent: PolicyAgent } {

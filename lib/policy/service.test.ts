@@ -29,6 +29,37 @@ describe("PolicyService", () => {
     expect(policy.authorizeDispatch({ project: "alpha", agent: "backend-engineer", sandbox: "workspace-write", selfVerify: true }).agent.id).toBe("backend-engineer");
   });
 
+  it("returns effective mode capabilities and defaults to the safest valid mode", () => {
+    const options = new PolicyService(root, { environment: { SURTEC_PROJECTS_ROOT: projectsRoot } }).dispatchOptions();
+
+    expect(options.projects[0]).toMatchObject({
+      project: "alpha",
+      allowed_agents: ["backend-engineer"],
+      project_sandbox_ceiling: "workspace-write",
+      has_local_checkout: true,
+      has_verification_commands: true,
+      agents: [{
+        agent: "backend-engineer",
+        agent_sandbox_ceiling: "workspace-write",
+        allowed_modes: ["read-only", "workspace-write", "workspace-write-verify"],
+        default_mode: "read-only",
+      }],
+    });
+  });
+
+  it("explains why self-verify is unavailable without verification commands", () => {
+    writeFileSync(join(root, "registry", "projects.yml"), `projects:\n  alpha:\n    allowed_agents: [backend-engineer]\n    sandbox:\n      default: workspace-write\n    commands:\n      build: pnpm build\n`, "utf8");
+
+    const capability = new PolicyService(root, { environment: { SURTEC_PROJECTS_ROOT: projectsRoot } }).dispatchOptions().projects[0]!.agents[0]!;
+
+    expect(capability.allowed_modes).toEqual(["read-only", "workspace-write"]);
+    expect(capability.default_mode).toBe("read-only");
+    expect(capability.modes.find((mode) => mode.mode === "workspace-write-verify")).toMatchObject({
+      allowed: false,
+      reason: "project 'alpha' has no verification commands",
+    });
+  });
+
   it("rejects malformed registry values instead of coercing them", () => {
     writeFileSync(join(root, "registry", "projects.yml"), "projects:\n  ../escape:\n    allowed_agents: []\n", "utf8");
     expect(() => new PolicyService(root, { environment: { SURTEC_PROJECTS_ROOT: projectsRoot } }).listProjects()).toThrow(PolicyError);
@@ -46,11 +77,21 @@ describe("PolicyService", () => {
     const project = new PolicyService(root, { environment: { SURTEC_PROJECTS_ROOT: projectsRoot } }).project("outside");
     expect(project.repo_path).toBeNull();
     expect(() => new PolicyService(root, { environment: { SURTEC_PROJECTS_ROOT: projectsRoot } }).authorizeDispatch({ project: "outside", agent: "backend-engineer", sandbox: "read-only", selfVerify: false })).toThrow(/contained local git checkout/);
+    const capability = new PolicyService(root, { environment: { SURTEC_PROJECTS_ROOT: projectsRoot } }).dispatchOptions().projects[0]!.agents[0]!;
+    expect(capability.allowed_modes).toEqual([]);
+    expect(capability.default_mode).toBeNull();
+    expect(capability.modes.every((mode) => !mode.allowed && mode.reason?.includes("contained local git checkout"))).toBe(true);
   });
 
   it("enforces project and agent write ceilings", () => {
     writeFileSync(join(root, "registry", "projects.yml"), "projects:\n  alpha:\n    allowed_agents: [backend-engineer]\n    sandbox:\n      default: read-only\n", "utf8");
     const policy = new PolicyService(root, { environment: { SURTEC_PROJECTS_ROOT: projectsRoot } });
     expect(() => policy.authorizeDispatch({ project: "alpha", agent: "backend-engineer", sandbox: "workspace-write", selfVerify: false })).toThrow(/does not allow workspace-write/);
+    const capability = policy.dispatchOptions().projects[0]!.agents[0]!;
+    expect(capability.allowed_modes).toEqual(["read-only"]);
+    expect(capability.modes.find((mode) => mode.mode === "workspace-write")).toMatchObject({
+      allowed: false,
+      reason: "project 'alpha' does not allow workspace-write",
+    });
   });
 });

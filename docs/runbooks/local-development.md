@@ -25,6 +25,12 @@ pnpm audit:check
 
 Set `SURTEC_PROJECTS_ROOT` when sibling repositories are not under the control plane's parent directory. Keep machine-specific values outside Git.
 
+## Subprocess credentials and managed Git
+
+Child processes receive purpose-specific environments. Local Git inspection receives core OS variables only; GitHub CLI receives its GitHub auth variables; fetch, pull, and push receive core OS variables plus an SSH agent socket when configured and rely on Git's configured credential helper rather than raw service tokens. Project commands and verification keep the explicit `SURTEC_RUN_ENV_ALLOWLIST`; Codex receives only its documented runtime/auth variables; editor and OS-open actions receive a minimal OS environment.
+
+Control-plane-managed Git commands set `core.hooksPath` to the empty, ignored `state/security/managed-git-hooks-empty` directory. The Control Plane creates and verifies that directory before each operation and fails closed if it is redirected or no longer empty. Repository-provided hooks therefore do not run during managed worktree, branch, commit, status, or network operations.
+
 The durable worker defaults to two concurrent tasks and one workspace-write task per project. `.env.example` lists scheduler, lease, retry, attempt, runtime, and token controls. Keep the heartbeat comfortably below the lease duration.
 
 ## Run

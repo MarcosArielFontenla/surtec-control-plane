@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { RunKind, RunRecord, RunEvent } from "../lib/state/types";
-import { allowlistedEnvironment, projectCommandEnvironment } from "../lib/security/environment";
+import { projectCommandEnvironment, systemProcessEnvironment } from "../lib/security/environment";
 import { redactText } from "../lib/security/redaction";
 
 const RING_CAP = 256 * 1024; // bytes/chars
@@ -127,7 +127,7 @@ export function createProcessManager(deps: Deps = {}): ProcessManager {
       const pid = s.record.pid;
       if (pid != null) {
         if (platform === "win32") {
-          spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { env: allowlistedEnvironment() });
+          spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { env: systemProcessEnvironment() });
         } else {
           try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
         }

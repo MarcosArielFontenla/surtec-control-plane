@@ -182,12 +182,29 @@ describe("api", () => {
     });
   });
 
-  it("GET /api/dispatch-options returns projects with their allowed agents", async () => {
+  it("GET /api/dispatch-options returns effective project and agent mode capabilities", async () => {
     const app = createApp(root, () => {});
     const res = await app.request("/api/dispatch-options");
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.projects).toEqual([{ project: "stock-control", agents: ["backend-engineer"] }]);
+    expect(body.projects).toMatchObject([{
+      project: "stock-control",
+      allowed_agents: ["backend-engineer"],
+      project_sandbox_ceiling: "workspace-write",
+      has_local_checkout: true,
+      has_verification_commands: false,
+      agents: [{
+        agent: "backend-engineer",
+        agent_sandbox_ceiling: "workspace-write",
+        allowed_modes: ["read-only", "workspace-write"],
+        default_mode: "read-only",
+        modes: [
+          { mode: "read-only", allowed: true, reason: null },
+          { mode: "workspace-write", allowed: true, reason: null },
+          { mode: "workspace-write-verify", allowed: false, reason: "project 'stock-control' has no verification commands" },
+        ],
+      }],
+    }]);
   });
 
   it("POST /api/tasks creates a queued task and returns 201 {id}", async () => {
