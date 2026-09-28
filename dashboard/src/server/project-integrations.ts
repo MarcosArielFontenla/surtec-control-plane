@@ -6,6 +6,7 @@ import { integrationError, safeHttpUrl } from "../../../lib/integrations/safety"
 import { assertProjectIntegrationsSnapshot } from "../../../lib/integrations/validation";
 import type {
   CiObservation,
+  DependencyObservation,
   DeploymentObservation,
   DeploymentProvider,
   IntegrationHealth,
@@ -16,6 +17,7 @@ import type {
 import { noOpTracer, type Tracer } from "../../../lib/observability/tracing";
 import { readCiStatus, readGithubCounts, type CiState, type GithubCounts, type GithubPullRequestAction } from "./github-read";
 import { createHttpHealthDeploymentProvider, createRailwayDeploymentProvider } from "./deployment-providers";
+import { readDepsStatus, type DepsObservation } from "./deps-read";
 
 interface ProjectPolicyReader {
   project(projectId: string): PolicyProject;
@@ -26,6 +28,7 @@ export interface ProjectIntegrationsDependencies {
   readLocalGit?: (repoPath: string) => GitStatus;
   readGithub?: (slug: string) => GithubCounts;
   readCi?: (slug: string, branch: string) => { state: CiState; startedAt?: string | null; runId?: string | null; updatedAt?: string | null };
+  readDependencies?: (repoPath: string) => DepsObservation;
   deploymentProviders?: DeploymentProvider[];
   tracer?: Tracer;
   clock?: () => Date;
@@ -183,6 +186,43 @@ function continuousIntegration(
   }
 }
 
+function dependencyHealth(
+  project: PolicyProject,
+  readDependencies: (repoPath: string) => DepsObservation,
+  observedAt: string,
+): DependencyObservation {
+  if (!project.repo_path) {
+    return { provider: "npm", configured: false, health: "unconfigured", outdated: null, observed_at: observedAt };
+  }
+  try {
+    const result = readDependencies(project.repo_path);
+    const configured = result.error !== "sin package.json";
+    return {
+      provider: "npm",
+      configured,
+      health: !configured ? "unconfigured" : result.ok ? (result.outdated > 0 ? "degraded" : "ok") : "unknown",
+      outdated: configured ? result.outdated : null,
+      observed_at: result.observed_at,
+      ...(result.error ? { error: integrationError(result.error) } : {}),
+    };
+  } catch (error) {
+    return {
+      provider: "npm",
+      configured: true,
+      health: "unknown",
+      outdated: null,
+      observed_at: observedAt,
+      error: integrationError(error),
+    };
+  }
+}
+
+function deferredDependencyHealth(project: PolicyProject, observedAt: string): DependencyObservation {
+  return project.repo_path
+    ? { provider: "npm", configured: true, health: "unknown", outdated: null, observed_at: observedAt, error: "Detailed dependency check was not requested." }
+    : { provider: "npm", configured: false, health: "unconfigured", outdated: null, observed_at: observedAt };
+}
+
 function providerConfigured(provider: DeploymentProvider, project: PolicyProject): boolean {
   return provider.id === "http-health" ? Boolean(project.deploy_url) : Boolean(project.railway);
 }
@@ -253,19 +293,27 @@ export function createProjectIntegrationsService(
   ];
   const tracer = dependencies.tracer ?? noOpTracer;
   const clock = dependencies.clock ?? (() => new Date());
+  const readDependencies = dependencies.readDependencies ?? ((repoPath: string) => ({
+    ...readDepsStatus(repoPath),
+    observed_at: clock().toISOString(),
+  }));
   const cacheNow = dependencies.cacheNow ?? Date.now;
   const ttlMs = dependencies.ttlMs ?? 60_000;
   const cache = new Map<string, { value: Promise<ProjectIntegrationsSnapshot>; at: number }>();
 
-  const build = async (projectId: string): Promise<ProjectIntegrationsSnapshot> => {
+  const build = async (projectId: string, includeDependencies: boolean): Promise<ProjectIntegrationsSnapshot> => {
     const span = tracer.startSpan("project-integrations.read", { project_id: projectId });
     try {
       const project = policy.project(projectId);
       const observedAt = clock().toISOString();
       const source = sourceControl(project, readLocalGit, readGithub);
       const ci = continuousIntegration(project, source.slug, readCi);
+      const dependency = includeDependencies
+        ? dependencyHealth(project, readDependencies, observedAt)
+        : deferredDependencyHealth(project, observedAt);
       span.addEvent("source-control.observed", { health: source.observation.health, remote_health: source.observation.remote.health });
       span.addEvent("ci.observed", { health: ci.health, status: ci.status });
+      span.addEvent("dependencies.observed", { health: dependency.health, configured: dependency.configured });
 
       const deployments = await Promise.all(providers.map(async (provider) => {
         const providerSpan = tracer.startSpan("project-integrations.deployment", { project_id: project.id, provider: provider.id });
@@ -283,12 +331,13 @@ export function createProjectIntegrationsService(
       }));
 
       const snapshot: ProjectIntegrationsSnapshot = {
-        schema_version: 1,
+        schema_version: 2,
         project_id: project.id,
         observed_at: observedAt,
         trace_id: safeTraceId(span.context?.traceId),
         source_control: source.observation,
         ci,
+        dependencies: dependency,
         deployments,
       };
       assertProjectIntegrationsSnapshot(snapshot);
@@ -301,19 +350,22 @@ export function createProjectIntegrationsService(
   };
 
   return {
-    read(projectId: string): Promise<ProjectIntegrationsSnapshot> {
+    read(projectId: string, options: { includeDependencies?: boolean } = {}): Promise<ProjectIntegrationsSnapshot> {
+      const includeDependencies = options.includeDependencies === true;
+      const cacheKey = `${projectId}\u0000${includeDependencies ? "detail" : "portfolio"}`;
       const at = cacheNow();
-      const hit = cache.get(projectId);
+      const hit = cache.get(cacheKey);
       if (hit && at - hit.at < ttlMs) return hit.value;
-      const value = build(projectId);
-      cache.set(projectId, { value, at });
+      const value = build(projectId, includeDependencies);
+      cache.set(cacheKey, { value, at });
       void value.catch(() => {
-        if (cache.get(projectId)?.value === value) cache.delete(projectId);
+        if (cache.get(cacheKey)?.value === value) cache.delete(cacheKey);
       });
       return value;
     },
     invalidate(projectId: string): void {
-      cache.delete(projectId);
+      cache.delete(`${projectId}\u0000detail`);
+      cache.delete(`${projectId}\u0000portfolio`);
     },
   };
 }

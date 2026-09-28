@@ -8,7 +8,7 @@ import { createSignalService } from "../dashboard/src/server/signal-service";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const integrationSnapshot: ProjectIntegrationsSnapshot = {
-  schema_version: 1,
+  schema_version: 2,
   project_id: "smoke-project",
   observed_at: "2026-09-21T00:00:00.000Z",
   trace_id: null,
@@ -18,6 +18,7 @@ const integrationSnapshot: ProjectIntegrationsSnapshot = {
     remote: { provider: "github", configured: false, health: "unconfigured", pull_requests: null, issues: null },
   },
   ci: { provider: "github-actions", configured: false, health: "unconfigured", status: null, branch: null },
+  dependencies: { provider: "npm", configured: false, health: "unconfigured", outdated: null, observed_at: "2026-09-21T00:00:00.000Z" },
   deployments: [],
 };
 const integrations: ProjectIntegrationsReader = {
@@ -69,7 +70,7 @@ if (!Array.isArray(optionsBody.projects)) throw new Error("dispatch-options resp
 const integrationResponse = await app.request("/api/projects/smoke-project/integrations");
 if (!integrationResponse.ok) throw new Error(`integrations smoke failed with ${integrationResponse.status}`);
 const integrationBody = await integrationResponse.json() as Record<string, unknown>;
-if (integrationBody.schema_version !== 1 || integrationBody.project_id !== "smoke-project") {
+if (integrationBody.schema_version !== 2 || integrationBody.project_id !== "smoke-project") {
   throw new Error("integrations response is invalid");
 }
 

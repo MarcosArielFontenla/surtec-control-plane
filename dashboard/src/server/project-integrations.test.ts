@@ -70,15 +70,16 @@ describe("createProjectIntegrationsService", () => {
       readLocalGit: () => ({ branch: "main", dirty: true, uncommitted: 2, ahead: 1, behind: 0, last_commit: null, ok: true }),
       readGithub: () => ({ ok: true, prs: 3, issues: 4 }),
       readCi: () => ({ state: "passing" }),
+      readDependencies: () => ({ ok: true, outdated: 2, observed_at: observedAt }),
       deploymentProviders: [deploymentProvider("http-health", 5), deploymentProvider("railway")],
       tracer: tracing.tracer,
       clock: () => new Date(observedAt),
     });
 
-    const result = await service.read("alpha");
+    const result = await service.read("alpha", { includeDependencies: true });
 
     expect(result).toMatchObject<Partial<ProjectIntegrationsSnapshot>>({
-      schema_version: 1,
+      schema_version: 2,
       project_id: "alpha",
       observed_at: observedAt,
       trace_id: "trace_123",
@@ -94,6 +95,7 @@ describe("createProjectIntegrationsService", () => {
         remote: { provider: "github", configured: true, health: "ok", pull_requests: 3, issues: 4 },
       },
       ci: { provider: "github-actions", configured: true, health: "ok", status: "passing", branch: "main" },
+      dependencies: { provider: "npm", configured: true, health: "degraded", outdated: 2, observed_at: observedAt },
     });
     expect(result.deployments.map((item) => item.provider)).toEqual(["http-health", "railway"]);
     expect(tracing.spans.map((span) => span.name)).toEqual([
@@ -142,6 +144,51 @@ describe("createProjectIntegrationsService", () => {
       { number: 7, updated_at: observedAt, review_decision: "CHANGES_REQUESTED" },
     ]);
     expect(result.ci).toMatchObject({ status: "running", run_started_at: observedAt, run_id: "gh-run-123", run_updated_at: observedAt });
+  });
+
+  it("keeps dependency health independent and distinguishes an unconfigured manifest from a degraded check", async () => {
+    const noManifest = createProjectIntegrationsService("/repo", {
+      policy: { project: () => project() },
+      readLocalGit: () => ({ branch: null, dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: false }),
+      readDependencies: () => ({ ok: false, outdated: 0, error: "sin package.json", observed_at: observedAt }),
+      deploymentProviders: [],
+      clock: () => new Date(observedAt),
+    });
+    const missingInstall = createProjectIntegrationsService("/repo", {
+      policy: { project: () => project() },
+      readLocalGit: () => ({ branch: null, dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: false }),
+      readDependencies: () => ({ ok: false, outdated: 0, error: "n/a (npm install)", observed_at: observedAt }),
+      deploymentProviders: [],
+      clock: () => new Date(observedAt),
+    });
+
+    await expect(noManifest.read("alpha", { includeDependencies: true })).resolves.toMatchObject({
+      dependencies: { provider: "npm", configured: false, health: "unconfigured", outdated: null, error: "sin package.json" },
+    });
+    await expect(missingInstall.read("alpha", { includeDependencies: true })).resolves.toMatchObject({
+      dependencies: { provider: "npm", configured: true, health: "unknown", outdated: 0, error: "n/a (npm install)" },
+    });
+  });
+
+  it("defers expensive dependency checks for portfolio reads but shares the cache for project detail", async () => {
+    const readDependencies = vi.fn(() => ({ ok: true, outdated: 0, observed_at: observedAt }));
+    const service = createProjectIntegrationsService("/repo", {
+      policy: { project: () => project() },
+      readLocalGit: () => ({ branch: "main", dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: true }),
+      readDependencies,
+      deploymentProviders: [],
+      clock: () => new Date(observedAt),
+    });
+
+    const portfolio = await service.read("alpha");
+    expect(portfolio.dependencies).toMatchObject({ health: "unknown", error: "Detailed dependency check was not requested." });
+    expect(readDependencies).not.toHaveBeenCalled();
+    await service.read("alpha", { includeDependencies: true });
+    await service.read("alpha", { includeDependencies: true });
+    expect(readDependencies).toHaveBeenCalledOnce();
+    service.invalidate("alpha");
+    await service.read("alpha", { includeDependencies: true });
+    expect(readDependencies).toHaveBeenCalledTimes(2);
   });
 
   it("uses a bounded TTL cache, invalidates explicitly, and never caches failures", async () => {

@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import type { Note } from "../../../../lib/state/notes";
 import { getNotes, addNote, mutateNote } from "../api";
 
-export function ProjectNotes({ projectId }: { projectId: string }) {
+export function ProjectNotes({ projectId, expanded = false }: { projectId: string; expanded?: boolean }) {
   const [notes, setNotes] = useState<Note[]>([]);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(expanded);
   const [newText, setNewText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -35,8 +35,8 @@ export function ProjectNotes({ projectId }: { projectId: string }) {
       .finally(() => setBusy(false));
   };
 
-  return (
-    <span className="notes link-pop">
+  const content = (
+    <>
       <button type="button" className="card-link-btn" onClick={() => setOpen((o) => !o)}>
         Notas{pending > 0 ? ` (${pending})` : ""}
       </button>
@@ -60,6 +60,7 @@ export function ProjectNotes({ projectId }: { projectId: string }) {
           {err && <div className="banner banner--danger">{err}</div>}
         </div>
       )}
-    </span>
+    </>
   );
+  return expanded ? <div className="notes notes--detail">{content}</div> : <span className="notes link-pop">{content}</span>;
 }

@@ -10,6 +10,7 @@ export class DepsError extends Error {
 }
 
 export interface DepsStatus { ok: boolean; outdated: number; error?: string }
+export interface DepsObservation extends DepsStatus { observed_at: string }
 
 const TIMEOUT_MS = 60_000;
 
@@ -59,20 +60,34 @@ export function resolveDepsPath(repoRoot: string, id: string, deps: ResolveDeps 
   return proj.path;
 }
 
-export interface DepsCache { get(key: string, compute: () => DepsStatus): DepsStatus; invalidate(key: string): void }
+export interface DepsCache {
+  get(key: string, compute: () => DepsStatus): DepsStatus;
+  getObservation(key: string, compute: () => DepsStatus): DepsObservation;
+  invalidate(key: string): void;
+}
 
-export function createDepsCache(opts: { ttlMs?: number; now?: () => number } = {}): DepsCache {
+export function createDepsCache(opts: { ttlMs?: number; now?: () => number; clock?: () => Date } = {}): DepsCache {
   const ttlMs = opts.ttlMs ?? 300_000;
   const now = opts.now ?? Date.now;
-  const cache = new Map<string, { value: DepsStatus; at: number }>();
+  const clock = opts.clock ?? (() => new Date());
+  const cache = new Map<string, { value: DepsStatus; observedAt: string; at: number }>();
   return {
     get(key: string, compute: () => DepsStatus): DepsStatus {
       const hit = cache.get(key);
       const t = now();
       if (hit && t - hit.at < ttlMs) return hit.value;
       const value = compute();
-      cache.set(key, { value, at: t });
+      cache.set(key, { value, observedAt: clock().toISOString(), at: t });
       return value;
+    },
+    getObservation(key, compute: () => DepsStatus): DepsObservation {
+      const hit = cache.get(key);
+      const t = now();
+      if (hit && t - hit.at < ttlMs) return { ...hit.value, observed_at: hit.observedAt };
+      const value = compute();
+      const observedAt = clock().toISOString();
+      cache.set(key, { value, observedAt, at: t });
+      return { ...value, observed_at: observedAt };
     },
     invalidate(key: string): void {
       cache.delete(key);

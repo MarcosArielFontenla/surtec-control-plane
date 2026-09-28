@@ -35,15 +35,28 @@ const today: TodayModel = {
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    const path = new URL(String(url), "http://localhost").pathname;
     if (String(url).endsWith("/api/dispatch-options")) {
       return { ok: true, status: 200, json: async () => ({ projects: [] }) };
     }
+    if (path === "/api/portfolio/profiles") return { ok: true, status: 200, json: async () => ({ profiles: [] }) };
     if (String(url).endsWith("/api/runs")) {
       return { ok: true, status: 200, json: async () => ({ runs: [] }) };
     }
     if (String(url).endsWith("/api/today")) {
       return { ok: true, status: 200, json: async () => today };
     }
+    if (path === "/api/projects/stock-control/integrations") return { ok: true, status: 200, json: async () => ({
+      schema_version: 2, project_id: "stock-control", observed_at: "2026-09-21T12:00:00Z", trace_id: null,
+      source_control: { provider: "git", configured: false, health: "unconfigured", branch: null, dirty: null, uncommitted: null, ahead: null, behind: null,
+        remote: { provider: "github", configured: false, health: "unconfigured", pull_requests: null, issues: null } },
+      ci: { provider: "github-actions", configured: false, health: "unconfigured", status: null, branch: null },
+      dependencies: { provider: "npm", configured: false, health: "unconfigured", outdated: null, observed_at: "2026-09-21T12:00:00Z" },
+      deployments: [],
+    }) };
+    if (path === "/api/signals") return { ok: true, status: 200, json: async () => ({ schema_version: 1, observed_at: "2026-09-21T12:00:00Z", signals: [], pinned_signal_ids: [], warnings: [] }) };
+    if (path === "/api/activity") return { ok: true, status: 200, json: async () => ({ items: [] }) };
+    if (path === "/api/projects/stock-control/notes") return { ok: true, status: 200, json: async () => ({ notes: [] }) };
     return { ok: true, status: 200, json: async () => overview };
   }) as unknown as typeof fetch);
 });
@@ -58,6 +71,12 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByText("stock-control")).toBeTruthy());
     expect(screen.getAllByText(/STK-002/).length).toBeGreaterThan(0);
     expect(screen.getByText(/No rate limiting/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Detalle operativo de stock-control" }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Integraciones" })).toBeTruthy());
+    expect(screen.getByText("Perfil y próximo paso")).toBeTruthy();
+    expect(screen.getByText(/Persisted work sessions are planned for Phase G/)).toBeTruthy();
+    expect(screen.getByText("Notas locales")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Tareas activas" })).toBeTruthy();
   });
 
   it("shows the error banner when the overview fetch fails", async () => {

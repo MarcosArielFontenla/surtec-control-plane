@@ -6,13 +6,14 @@ const at = "2026-09-27T12:00:00.000Z";
 
 function snapshot(projectId: string): ProjectIntegrationsSnapshot {
   return {
-    schema_version: 1, project_id: projectId, observed_at: at, trace_id: null,
+    schema_version: 2, project_id: projectId, observed_at: at, trace_id: null,
     source_control: {
       provider: "git", configured: true, health: "ok", branch: "main", dirty: false,
       uncommitted: 0, ahead: 0, behind: 0,
       remote: { provider: "github", configured: true, health: "ok", pull_requests: 0, issues: 0, waiting_pull_requests: [] },
     },
     ci: { provider: "github-actions", configured: true, health: "ok", status: "passing", branch: "main" },
+    dependencies: { provider: "npm", configured: true, health: "ok", outdated: 0, observed_at: at },
     deployments: [],
   };
 }

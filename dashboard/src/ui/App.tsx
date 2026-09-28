@@ -13,6 +13,7 @@ import { IssuesView } from "./views/IssuesView";
 import { ActivityView } from "./views/ActivityView";
 import { TodayView } from "./views/TodayView";
 import { TaskDetailView } from "./views/TaskDetailView";
+import { ProjectDetailView } from "./views/ProjectDetailView";
 import { useRuns } from "./useRuns";
 import { deriveKpis, deriveSummary } from "./derive-kpis";
 
@@ -22,6 +23,7 @@ export function App() {
   const { runs } = useRuns();
   const [nav, setNav] = useState<NavItem>("Hoy");
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Record<string, ProjectProfile>>({});
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [profilesError, setProfilesError] = useState<string | null>(null);
@@ -53,21 +55,23 @@ export function App() {
 
   const activeProjectIds = data ? data.projects.filter((p) => p.configured).map((p) => p.id) : [];
   const gitProjectIds = data ? data.projects.filter((p) => p.git?.ok).map((p) => p.id) : [];
+  const selectedProjectView = data?.projects.find((project) => project.id === selectedProject) ?? null;
   const prepareTask = (signal: Signal) => {
     setTaskPrefill({ project: signal.project_id, instructions: `${signal.suggested_action}\n\nEvidence: ${signal.reason}` });
     setSelectedTask(null);
+    setSelectedProject(null);
     setNav("Overview");
   };
   const consumeTaskPrefill = () => setTaskPrefill(null);
 
   return (
     <div className="app">
-      <Sidebar active={nav} onSelect={(item) => { setNav(item); setSelectedTask(null); }} summary={summary} connected={!error && !today.error} />
+      <Sidebar active={nav} onSelect={(item) => { setNav(item); setSelectedTask(null); setSelectedProject(null); }} summary={summary} connected={!error && !today.error} />
       <main className="main">
         <header className="topbar">
           <div className="topbar-left">
-            <h1>{selectedTask ? "Detalle de tarea" : view === "Overview" ? "Estado vivo" : view}</h1>
-            <span className="sub">{selectedTask ?? `${summary.total} repos · ${data?.inProgress.length ?? 0} tareas activas`}</span>
+            <h1>{selectedTask ? "Detalle de tarea" : selectedProject ? "Detalle operativo" : view === "Overview" ? "Estado vivo" : view}</h1>
+            <span className="sub">{selectedTask ?? selectedProject ?? `${summary.total} repos · ${data?.inProgress.length ?? 0} tareas activas`}</span>
           </div>
           <span className={`live${error || today.error ? " live--down" : ""}`}>
             <span className="dot" />{error || today.error ? "Sin conexión" : "En vivo"}
@@ -77,6 +81,27 @@ export function App() {
         <div className="wrap">
           {selectedTask ? (
             <TaskDetailView taskId={selectedTask} onBack={() => setSelectedTask(null)} />
+          ) : selectedProject && data && selectedProjectView ? (
+            <ProjectDetailView
+              project={selectedProjectView}
+              overview={data}
+              today={today.data}
+              profile={profiles[selectedProject]}
+              profileReady={profilesLoaded && !profilesError}
+              profileLoading={!profilesLoaded}
+              profileError={profilesError}
+              onProfileSaved={(profile) => setProfiles((current) => ({ ...current, [profile.project_id]: profile }))}
+              onBack={() => setSelectedProject(null)}
+              onOpenTask={(id) => { setSelectedProject(null); setSelectedTask(id); }}
+              onPrepareTask={(project, instructions) => {
+                setTaskPrefill({ project, instructions });
+                setSelectedProject(null);
+                setSelectedTask(null);
+                setNav("Overview");
+              }}
+            />
+          ) : selectedProject ? (
+            <div className="project-detail-section panel"><p>El proyecto ya no está en el portfolio actual.</p><button type="button" className="ghost-btn" onClick={() => setSelectedProject(null)}>Volver al portfolio</button></div>
           ) : view === "Hoy" ? (
             <TodayView data={today.data} error={today.error} onOpenTask={setSelectedTask} onRefresh={today.refresh}
               onOpenProject={(id) => openProject(id, "vscode")} onPrepareTask={prepareTask} />
@@ -102,10 +127,7 @@ export function App() {
                         key={p.id}
                         p={p}
                         running={runningByProject.get(p.id) ?? []}
-                        profile={profiles[p.id]}
-                        profileReady={profilesLoaded && !profilesError}
-                        profileLoading={!profilesLoaded}
-                        onProfileSaved={(profile) => setProfiles((current) => ({ ...current, [profile.project_id]: profile }))}
+                        onOpenDetail={() => setSelectedProject(p.id)}
                       />
                     ))}
                   </section>

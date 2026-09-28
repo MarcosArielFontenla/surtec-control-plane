@@ -766,16 +766,41 @@ describe("GET /api/projects/:id/integrations", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
-      schema_version: 1,
+      schema_version: 2,
       project_id: "stock-control",
       trace_id: null,
       source_control: { provider: "git", configured: true },
       ci: { provider: "github-actions", configured: false, health: "unconfigured" },
+      dependencies: { provider: "npm", configured: false, health: "unconfigured", outdated: null },
       deployments: [
         { provider: "http-health", configured: false, health: "unconfigured" },
         { provider: "railway", configured: false, health: "unconfigured" },
       ],
     });
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("invalidates the aggregate and shared dependency cache on explicit refresh", async () => {
+    const snapshot = {
+      schema_version: 2 as const,
+      project_id: "stock-control",
+      observed_at: "2026-09-27T12:00:00.000Z",
+      trace_id: null,
+      source_control: { provider: "git" as const, configured: false, health: "unconfigured" as const, branch: null, dirty: null, uncommitted: null, ahead: null, behind: null,
+        remote: { provider: "github" as const, configured: false, health: "unconfigured" as const, pull_requests: null, issues: null } },
+      ci: { provider: "github-actions" as const, configured: false, health: "unconfigured" as const, status: null, branch: null },
+      dependencies: { provider: "npm" as const, configured: false, health: "unconfigured" as const, outdated: null, observed_at: "2026-09-27T12:00:00.000Z" },
+      deployments: [],
+    };
+    const integrations = { read: vi.fn().mockResolvedValue(snapshot), invalidate: vi.fn() };
+    const app = createApp(root, () => {}, undefined, undefined, { integrations });
+
+    const response = await app.request("/api/projects/stock-control/integrations?refresh=true");
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(integrations.invalidate).toHaveBeenCalledWith("stock-control");
+    expect(integrations.read).toHaveBeenCalledWith("stock-control", { includeDependencies: true });
   });
 
   it("maps unknown and invalid project identifiers through canonical policy", async () => {

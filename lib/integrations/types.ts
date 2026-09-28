@@ -44,6 +44,15 @@ export interface CiObservation {
   error?: string;
 }
 
+export interface DependencyObservation {
+  provider: "npm";
+  configured: boolean;
+  health: IntegrationHealth;
+  outdated: number | null;
+  observed_at: string;
+  error?: string;
+}
+
 export interface DeploymentObservation {
   provider: DeploymentProviderId;
   configured: boolean;
@@ -58,12 +67,13 @@ export interface DeploymentObservation {
 }
 
 export interface ProjectIntegrationsSnapshot {
-  schema_version: 1;
+  schema_version: 2;
   project_id: string;
   observed_at: string;
   trace_id: string | null;
   source_control: SourceControlObservation;
   ci: CiObservation;
+  dependencies: DependencyObservation;
   deployments: DeploymentObservation[];
 }
 
@@ -73,6 +83,6 @@ export interface DeploymentProvider {
 }
 
 export interface ProjectIntegrationsReader {
-  read(projectId: string): Promise<ProjectIntegrationsSnapshot>;
+  read(projectId: string, options?: { includeDependencies?: boolean }): Promise<ProjectIntegrationsSnapshot>;
   invalidate(projectId: string): void;
 }

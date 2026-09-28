@@ -67,7 +67,9 @@ export function createApp(
   const activityCache = createActivityCache();
   const deployCache = createDeployCache();
   const railwayCache = createRailwayCache();
-  const integrations = dependencies.integrations ?? createProjectIntegrationsService(repoRoot);
+  const integrations = dependencies.integrations ?? createProjectIntegrationsService(repoRoot, {
+    readDependencies: (path) => depsCache.getObservation(path, () => readDepsStatus(path)),
+  });
   const signals = dependencies.signals ?? createSignalService({
     reader: createSignalEvidenceReader(repoRoot, {
       integrations,
@@ -305,8 +307,15 @@ export function createApp(
   });
 
   app.get("/api/projects/:id/integrations", async (c) => {
+    c.header("Cache-Control", "no-store");
     try {
-      return c.json(await integrations.read(c.req.param("id")));
+      const id = c.req.param("id");
+      if (c.req.query("refresh") === "true") {
+        const project = new PolicyService(repoRoot).project(id);
+        if (project.repo_path) depsCache.invalidate(project.repo_path);
+        integrations.invalidate(id);
+      }
+      return c.json(await integrations.read(id, { includeDependencies: true }));
     } catch (err) {
       if (err instanceof PolicyError) {
         const status = err.code === "invalid-input" ? 400 : err.code === "not-found" ? 404 : err.code === "denied" ? 403 : 500;

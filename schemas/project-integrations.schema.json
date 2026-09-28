@@ -4,14 +4,15 @@
   "title": "ProjectIntegrationsSnapshot",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "project_id", "observed_at", "trace_id", "source_control", "ci", "deployments"],
+  "required": ["schema_version", "project_id", "observed_at", "trace_id", "source_control", "ci", "dependencies", "deployments"],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "project_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
     "observed_at": { "type": "string", "minLength": 1, "maxLength": 100 },
     "trace_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]{1,128}$" },
     "source_control": { "$ref": "#/$defs/sourceControl" },
     "ci": { "$ref": "#/$defs/ci" },
+    "dependencies": { "$ref": "#/$defs/dependencies" },
     "deployments": {
       "type": "array",
       "maxItems": 10,
@@ -75,6 +76,19 @@
         "run_started_at": { "type": ["string", "null"], "maxLength": 100 },
         "run_id": { "type": "string", "maxLength": 100 },
         "run_updated_at": { "type": "string", "maxLength": 100 },
+        "error": { "$ref": "#/$defs/error" }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "configured", "health", "outdated", "observed_at"],
+      "properties": {
+        "provider": { "const": "npm" },
+        "configured": { "type": "boolean" },
+        "health": { "$ref": "#/$defs/health" },
+        "outdated": { "type": ["integer", "null"], "minimum": 0 },
+        "observed_at": { "type": "string", "minLength": 1, "maxLength": 100 },
         "error": { "$ref": "#/$defs/error" }
       }
     },

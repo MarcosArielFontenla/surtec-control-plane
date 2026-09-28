@@ -3,7 +3,7 @@ import { assertProjectIntegrationsSnapshot } from "./validation";
 
 function snapshot(): Record<string, unknown> {
   return {
-    schema_version: 1,
+    schema_version: 2,
     project_id: "alpha",
     observed_at: "2026-09-21T12:00:00.000Z",
     trace_id: null,
@@ -31,6 +31,13 @@ function snapshot(): Record<string, unknown> {
       status: null,
       branch: null,
     },
+    dependencies: {
+      provider: "npm",
+      configured: false,
+      health: "unconfigured",
+      outdated: null,
+      observed_at: "2026-09-21T12:00:00.000Z",
+    },
     deployments: [],
   };
 }
@@ -52,7 +59,7 @@ describe("project integrations schema", () => {
   });
 
   it("rejects unknown fields and unsupported versions", () => {
-    expect(() => assertProjectIntegrationsSnapshot({ ...snapshot(), schema_version: 2 })).toThrow(/schema_version/);
+    expect(() => assertProjectIntegrationsSnapshot({ ...snapshot(), schema_version: 1 })).toThrow(/schema_version/);
     expect(() => assertProjectIntegrationsSnapshot({ ...snapshot(), credential: "secret" })).toThrow(/additional properties/);
   });
 });

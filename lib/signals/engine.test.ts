@@ -29,7 +29,7 @@ function profile(overrides: Partial<ProjectProfile> = {}): ProjectProfile {
 
 function integrations(overrides: Partial<ProjectIntegrationsSnapshot> = {}): ProjectIntegrationsSnapshot {
   return {
-    schema_version: 1,
+    schema_version: 2,
     project_id: "alpha",
     observed_at: observedAt,
     trace_id: null,
@@ -42,6 +42,7 @@ function integrations(overrides: Partial<ProjectIntegrationsSnapshot> = {}): Pro
       },
     },
     ci: { provider: "github-actions", configured: true, health: "ok", status: "passing", branch: "main" },
+    dependencies: { provider: "npm", configured: true, health: "ok", outdated: 0, observed_at: observedAt },
     deployments: [],
     ...overrides,
   };

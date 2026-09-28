@@ -84,4 +84,14 @@ describe("createDepsCache", () => {
     cache.get("/p", compute); // calls = 3 (re-compute after invalidate)
     expect(calls).toBe(3);
   });
+
+  it("shares cached results and exposes the time the dependency check was observed", () => {
+    const observedAt = "2026-09-27T12:00:00.000Z";
+    const compute = vi.fn(() => ({ ok: true, outdated: 1 }));
+    const cache = createDepsCache({ clock: () => new Date(observedAt) });
+
+    expect(cache.getObservation("/p", compute)).toEqual({ ok: true, outdated: 1, observed_at: observedAt });
+    expect(cache.get("/p", compute)).toEqual({ ok: true, outdated: 1 });
+    expect(compute).toHaveBeenCalledTimes(1);
+  });
 });

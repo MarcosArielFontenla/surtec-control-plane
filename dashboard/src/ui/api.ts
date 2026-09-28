@@ -3,9 +3,11 @@ import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, Activi
 import type { Note } from "../../../lib/state/notes";
 import type { ProjectProfile } from "../../../lib/portfolio-profile";
 import type { SignalAction, SignalFeed } from "../../../lib/signals/types";
+import type { ProjectIntegrationsSnapshot } from "../../../lib/integrations/types";
 
 let sessionTokenPromise: Promise<string> | null = null;
 let sessionFetch: typeof fetch | null = null;
+const projectIntegrationRequests = new Map<string, Promise<ProjectIntegrationsSnapshot>>();
 
 async function sessionToken(): Promise<string> {
   if (sessionFetch !== fetch) {
@@ -149,6 +151,30 @@ export async function getActivity(): Promise<ActivityFeed> {
   const res = await fetch("/api/activity");
   if (!res.ok) throw new Error(`activity failed: ${res.status}`);
   return (await res.json()) as ActivityFeed;
+}
+
+export async function getProjectIntegrations(id: string, refresh = false): Promise<ProjectIntegrationsSnapshot> {
+  const requestKey = `${id}:${refresh ? "refresh" : "cached"}`;
+  const existing = projectIntegrationRequests.get(requestKey);
+  if (existing) return existing;
+  const query = refresh ? "?refresh=true" : "";
+  const request = fetch(`/api/projects/${encodeURIComponent(id)}/integrations${query}`, { cache: "no-store" })
+    .then(async (res) => {
+      if (!res.ok) {
+        const e = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(e.error ?? `project integrations failed: ${res.status}`);
+      }
+      return (await res.json()) as ProjectIntegrationsSnapshot;
+    });
+  projectIntegrationRequests.set(requestKey, request);
+  try { return await request; }
+  finally { if (projectIntegrationRequests.get(requestKey) === request) projectIntegrationRequests.delete(requestKey); }
+}
+
+export async function getSignals(): Promise<SignalFeed> {
+  const res = await fetch("/api/signals", { cache: "no-store" });
+  if (!res.ok) throw new Error(`signals failed: ${res.status}`);
+  return (await res.json()) as SignalFeed;
 }
 
 export async function getDeploy(id: string): Promise<DeployHealth> {
