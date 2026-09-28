@@ -79,4 +79,4 @@ The Playwright smoke covers the primary browser flow with fictional fixtures. Se
 
 ## Recommended next phase
 
-Stop for local validation of Phase G. After acceptance, proceed to Phase H (optional collaborative workspace) only if it remains desired in the roadmap; no Phase H work has been started.
+Phase G was ready for local validation. The user later accepted that stop by authorizing Phase H — Client commitments, which is tracked separately in [the current roadmap](control-plane-evolution.md). The unrelated collaborative-workspace item remains the legacy Phase 6 and is not part of Phase H.

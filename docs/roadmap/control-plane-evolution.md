@@ -58,7 +58,13 @@ Status: complete after local validation on 2026-09-27. See [Phase F verification
 
 Add validated local work sessions so a project can be paused and resumed with explicit human context.
 
-Status: implementation ready for local validation on 2026-09-27. See [Phase G verification](phase-g-verification.md). Stop here for Marcos's local validation before starting Phase H.
+Status: accepted when Phase H was authorized. See [Phase G verification](phase-g-verification.md).
+
+## Phase H — Client commitments without turning the product into a CRM
+
+Add a local-only delivery client directory and commitment register, connect commitments to deterministic Today signals, and require explicit selection before any client context enters task instructions. Keep personal work first-class and exclude real client data from Git.
+
+Status: implementation ready for local validation on 2026-09-28. See [Phase H verification](phase-h-verification.md). Stop here for Marcos's local validation before starting Phase I.
 
 ## Phase 6 — Optional collaborative workspace
 

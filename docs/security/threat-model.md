@@ -6,6 +6,7 @@
 - Local credentials for Codex, GitHub, Railway, package registries, and cloud providers.
 - Task instructions, results, diffs, logs, and usage data.
 - Local portfolio context, including client references, goals, next actions, deadlines, and review dates.
+- Local client delivery records and commitments, including confidential notes and SLA context.
 - The user's ability to approve external side effects intentionally.
 
 ## Trust boundaries
@@ -38,6 +39,8 @@
 - Task records, append-only task events, project overrides, agent reports, and agent results have runtime JSON Schema validation.
 - Operating profiles use a separate, ignored `state/portfolio/` store and a strict versioned schema; tracked technical policy stays in `registry/projects.yml`.
 - Portfolio profile writes are locked and atomically replaced; unsupported future versions and invalid existing data fail closed. The secret scanner rejects tracked files under `state/portfolio/`.
+- Client and commitment records share the ignored `state/portfolio/` boundary, strict versioned validation, size limits, cross-process locking, and atomic replacement. Project-to-client links are derived from validated local profiles. Commitment associations are checked against discovered projects and same-project task/session records.
+- Client context availability returns category names only. Task dispatch resolves context server-side only for explicitly selected categories, keeps confidential notes separately selectable, bounds the composed context, and stores the selected category list plus opaque client ID and timestamp as a task audit record. Today signals and project quick-task prefill do not include client notes or automatically copy client profile text.
 - POSIX owner-only modes are requested for profile storage where supported. Local state is not application-encrypted and relies on host account/disk protections.
 - Signal evidence is assembled from bounded allowlisted fields; raw provider payloads, issue titles/authors/URLs, note text, task instructions/results, deployment URLs, and absolute project paths are excluded. The feed is schema-validated and marked `no-store`.
 - Signal interaction state is separate under ignored `state/signals/human-state.json`; updates use a cross-process lock, unique temporary file, atomic replacement, and strict schema validation. Unsupported future versions and malformed files fail closed. Dismissal and snooze expiry are feed projections, not destructive evidence edits.

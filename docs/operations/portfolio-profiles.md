@@ -6,6 +6,14 @@ Operating context belongs in the local-only profile store at `state/portfolio/pr
 
 Each document and each profile uses `schema_version: 1`. Profiles are validated against `schemas/project-profile.schema.json`; the document is validated against `schemas/portfolio-profiles.schema.json`. Unknown fields and unsupported future document versions fail closed. They are not rewritten or automatically migrated; a future schema change must introduce an explicit migration path before writes are enabled.
 
-The profile's `client_id` is an opaque local reference, not a client name or contact record. Phase C does not add a client directory or CRM. `fixtures/portfolio-profiles.example.json` is synthetic documentation/test data and must never be replaced with real client details.
+The profile's `client_id` is an opaque local reference. Phase H adds a delivery-only client directory and commitments in `state/portfolio/clients.json`; its project list is derived from profile references rather than stored as a competing association. It is not a sales CRM and does not manage contacts, deals, or billing. `fixtures/portfolio-profiles.example.json` is synthetic documentation/test data and must never be replaced with real client details.
+
+Manage client delivery records in the dashboard's `Clientes` view. Associate a client with a repository from that project's `Perfil operativo → Cliente asociado` selector. Only discovered projects can be linked to commitments. Client names can be temporarily masked in compact rows; opening a record intentionally reveals the local detail fields.
+
+Client context is never appended to a Codex task implicitly. The task form offers category-only availability and starts with every category unchecked. Select only the categories needed for that task; confidential notes require their own explicit selection. The created task records the chosen category names and opaque client ID, not chain-of-thought. Once selected, the actual chosen context is included in local task instructions and is subject to the same local-state protections as other task inputs.
+
+Local state is plaintext and relies on operating-system account and disk protections. Keep real client data out of tracked files, issue fixtures, screenshots, and reports. The secret scanner protects tracked `state/portfolio/` paths, but it cannot identify every private detail accidentally copied into another tracked file.
+
+The fictional UI workflow can be verified without real projects or client data with `pnpm smoke:client-commitments:playwright`; it starts a temporary Vite server, routes every API request to in-memory synthetic fixtures, and does not dispatch to Codex.
 
 The API and editor are intended for the single-user local dashboard. On filesystems that support POSIX modes, the store is created with owner-only directory/file permissions; Windows relies on inherited host ACLs. Local state is not encrypted by this application; protect it using the host account and disk protections. Back up `state/` only through a private local backup mechanism, never by committing it.
