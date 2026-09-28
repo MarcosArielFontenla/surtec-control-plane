@@ -48,6 +48,18 @@ Transform Today into the portfolio's daily operating surface while preserving Co
 
 Status: complete on 2026-09-27. See [Phase E verification](phase-e-verification.md). Persisted work sessions remain deferred to Phase G; the cockpit declares that capability unavailable instead of fabricating sessions.
 
+## Phase F — Project operating detail
+
+Add an on-demand project page built on the versioned aggregate integration snapshot, with provider-level evidence/freshness, local operating context, tasks, signals, activity, and safe quick actions. Keep expensive dependency checks scoped to the explicit project-detail read so portfolio aggregation remains responsive.
+
+Status: implementation ready for local validation on 2026-09-27. See [Phase F verification](phase-f-verification.md). Persisted work sessions remain deferred to Phase G.
+
+## Phase G — Work sessions and resumable human context
+
+Add validated local work sessions so a project can be paused and resumed with explicit human context.
+
+Status: pending Phase F local validation.
+
 ## Phase 6 — Optional collaborative workspace
 
 Only with explicit authorization, add structured role artifacts, comments, traceability, authentication, and multi-user isolation.
