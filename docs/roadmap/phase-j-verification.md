@@ -8,6 +8,8 @@ Phase J closes the A–I acceptance audit and records a successful real disposab
 
 No organization state, migration, API, UI, existing task workflow, external repository, GitHub setting, runtime, or provider was changed. The reference transition catalog is not wired to application flows and is not yet a production authorization boundary. Phase K was not started.
 
+After delivery, Marcos reproduced the known 5-second `project-integrations.test.ts` timeout in two additional default `pnpm ci:check` runs. The test passed in isolation and the full test suite passed with two workers. As a bounded reliability follow-up, Vitest now uses `maxWorkers: 2`; the test timeout itself remains unchanged. The full default CI command was rerun successfully with this setting.
+
 ## Files modified
 
 - [Phase J plan](phase-j-plan.md) and [Phase J.1 baseline audit](phase-j-baseline-audit.md), including the traceability matrix, updated write-smoke gate, and remaining A–I review gaps.
@@ -16,13 +18,16 @@ No organization state, migration, API, UI, existing task workflow, external repo
 - [Organization state migration contract](../architecture/organization-state-migration.md), with current persisted contract inventory and future versioning, backup, atomicity, rollback, defaults, quarantine, and fixture requirements.
 - [Issue lifecycle v1](../architecture/issue-lifecycle-v1.md), with work scale, status vocabulary, all allowed edges, actor/evidence/policy/approval requirements, and scope/candidate boundaries.
 - `lib/organization/issue-lifecycle.ts` and its tests, implementing only an immutable reference catalog and a pure check for invalid ids, stale revisions, duplicate events, out-of-order sources, unknown statuses, and forbidden edges.
+- `vitest.config.ts`, bounding test concurrency at two workers after the repeated timeout; no application runtime behavior changed.
 
 The user-owned prompts `SURTEC_CONTROL_PLANE_ORGANIZATION_HARNESS_ROADMAP_PROMPT.md` and `SURTEC_CONTROL_PLANE_PORTFOLIO_INTELLIGENCE_PROMPT.md` remain untracked and are not included in either Phase J commit.
 
 ## Commands and exact results
 
 - `pnpm test -- lib/organization/issue-lifecycle.test.ts` — passed: 1 test file, 14 tests. The first iteration exposed two incorrect test expectations about the initial state; the assertions were corrected to compare against each test case's actual pre-state, and the rerun passed.
-- `pnpm ci:check` — passed: repository consistency; 29 JSON Schemas; secret-scanner self-test and 1,001-file scan; EVAL v1 coverage 36/36 and expectations 42/42; outcome suite expectations 8/8; 85 test files / 567 tests; TypeScript typecheck; Vite build with 1,916 modules (4.70 seconds).
+- `pnpm test -- dashboard/src/server/project-integrations.test.ts` — passed after the repeated timeout: 1 file, 7 tests.
+- `pnpm test --maxWorkers=2` — passed: 85 test files, 567 tests, 45.05 seconds.
+- Final `pnpm ci:check` with the persisted two-worker config — passed: repository consistency; 29 JSON Schemas; secret-scanner self-test and 1,002-file scan; EVAL v1 coverage 36/36 and expectations 42/42; outcome suite expectations 8/8; 85 test files / 567 tests (42.50 seconds); TypeScript typecheck; Vite build with 1,916 modules (2.60 seconds).
 - `pnpm smoke:api` — passed. Overview, Today, dispatch options, profiles, clients, commitments, client-context options, integrations, signals, and feedback metrics returned HTTP 200. The response reported 21 discovered projects and 12 configured projects; 0 profiles, 0 clients, 0 commitments; integration schema v2; 3 signals; feedback schema v1.
 - `git diff --check` / staged diff checks — passed for the Phase J changes. Git also printed the existing warning that the global ignore file under the user profile is inaccessible; this did not affect repository checks or commits.
 - `pnpm install --frozen-lockfile` and `pnpm audit:check` — not rerun: Phase J changed no dependencies or lockfile. The baseline audit records their prior results.
@@ -57,6 +62,7 @@ No `pnpm dev`, real Codex dispatch, client data entry, or UI walkthrough is nece
 
 ## Known risks and deferred work
 
+- The worker cap reduces parallel test throughput in exchange for reliability; the full suite took about 42.5 seconds on the verified run. Keep the five-second per-test timeout and revisit worker count only with repeatable measurements on supported CI/local hosts.
 - Current persisted contracts mix explicit `schema_version` stores with legacy unversioned task records, task-event lines, project overrides, and notes. `lib/state/notes.ts` currently maps read/parse errors to an empty list; future migrations must add preservation/quarantine before treating that store as safe to extend.
 - Snapshot and JSONL event writes are not one transaction. Future issue state must define an explicit event/revision recovery contract rather than assume atomicity across files.
 - Issue lifecycle v1 is a reference contract only. It does not yet store issue scope revisions, candidate fingerprints, approvals, decisions, or evidence.
@@ -68,6 +74,7 @@ No `pnpm dev`, real Codex dispatch, client data entry, or UI walkthrough is nece
 
 - `c6dd957` — `docs: update Phase J acceptance audit`.
 - `51b6cb5` — `feat: define organization lifecycle contracts`.
+- `19ed262` — `test: bound Vitest worker concurrency`.
 
 The verification record is delivered in a separate final documentation commit.
 

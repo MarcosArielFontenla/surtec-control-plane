@@ -29,6 +29,7 @@ Date: 2026-09-28
 - `pnpm install --frozen-lockfile`: passed with `CI=true`; lockfile resolution was unchanged and 215 packages were available. The initial non-TTY attempt aborted; the ordinary sandbox then denied tarball downloads, so the same frozen install was completed with network access. pnpm reported the existing ignored `esbuild` build-script policy.
 - `pnpm ci:check`: passed on rerun. Repository consistency passed; 29 schemas validated; secret scan passed across 994 files; EVAL v1 coverage 36/36 and expectations 42/42; outcome suite 8/8; 84 test files and 553 tests passed; typecheck passed; Vite transformed 1,916 modules.
 - The first aggregate test run had one 5-second timeout in `project-integrations.test.ts`; the isolated test passed, and the full suite passed on rerun.
+- After Phase J delivery, Marcos's two repeated `pnpm ci:check` runs hit that same 5-second timeout. The test passed in isolation (7/7), and the full suite passed with `pnpm test --maxWorkers=2` (85 files / 567 tests). A follow-up sets Vitest `maxWorkers: 2`; the final default `pnpm ci:check` then passed all gates, typecheck, and build. The individual test timeout remains 5 seconds.
 - `pnpm audit:check`: passed; no known vulnerabilities.
 - `pnpm smoke:api`: passed. All exercised endpoints returned HTTP 200; 21 projects discovered, 12 configured, zero portfolio profiles/clients/commitments, integration schema v2, three signals, and feedback schema v1.
 - Playwright passed sequentially: Signals, Today, Project Detail, Work Sessions, Client Commitments, and Feedback Metrics.
