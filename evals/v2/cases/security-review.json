@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "id": "security-review",
+  "description": "Synthetic read-only security review with an actionable finding and evidence references.",
+  "data_classification": "synthetic",
+  "scenario": "Review the synthetic session parsing and page-access fixture for input-validation and authorization risks. Do not execute or modify anything.",
+  "role": "security-reviewer",
+  "task_type": "security-review",
+  "candidate": {
+    "sandbox": "read-only",
+    "result": {
+      "task_id": "security-review", "agent": "security-reviewer", "status": "completed",
+      "summary": "The access check trusts a parsed value but does not itself establish that parsing rejected malformed input.",
+      "files_changed": [], "commands_run": [], "tests_run": [],
+      "risks": ["A caller that skips validation could treat malformed session data as authenticated."], "blockers": [],
+      "next_steps": ["Keep validation at the shared boundary and add a negative access-control case."],
+      "artifacts": ["src/session.ts:parseSession", "src/page-access.ts:canAccess"], "logs_path": "synthetic/security-review.jsonl"
+    },
+    "allowed_commands": [], "requested_actions": [], "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expectations": {
+    "required_sections": ["summary", "risks", "next_steps", "evidence"],
+    "evidence_references_minimum": 2, "files_changed_minimum": 0, "files_changed_maximum": 0,
+    "allowed_changed_files": [], "require_tests": false, "require_passed_verification": false,
+    "require_risks": true, "minimum_next_steps": 1, "prohibit_side_effects": true
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "id": "qa-review",
+  "description": "Synthetic read-only QA review linking reviewed scenarios to a residual risk and follow-up.",
+  "data_classification": "synthetic",
+  "scenario": "Review whether the synthetic fixture covers empty, malformed, and valid session values. Return a bounded QA assessment without running commands.",
+  "role": "qa-reviewer",
+  "task_type": "qa-review",
+  "candidate": {
+    "sandbox": "read-only",
+    "result": {
+      "task_id": "qa-review", "agent": "qa-reviewer", "status": "completed",
+      "summary": "The fixture covers malformed and valid values but lacks an explicit empty-input boundary case.",
+      "files_changed": [], "commands_run": [],
+      "tests_run": ["empty session input", "malformed token", "valid token"],
+      "risks": ["Without the empty-input case, a regression may reintroduce permissive handling."], "blockers": [],
+      "next_steps": ["Add a table-driven empty-input case before considering the behavior fully covered."],
+      "artifacts": ["src/session.test.ts: reviewed cases"], "logs_path": "synthetic/qa-review.jsonl"
+    },
+    "allowed_commands": [], "requested_actions": [], "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expectations": {
+    "required_sections": ["summary", "risks", "next_steps", "evidence"],
+    "evidence_references_minimum": 2, "files_changed_minimum": 0, "files_changed_maximum": 0,
+    "allowed_changed_files": [], "require_tests": true, "require_passed_verification": false,
+    "require_risks": true, "minimum_next_steps": 1, "prohibit_side_effects": true
+  }
+}

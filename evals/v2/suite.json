@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "suite_id": "surtec-outcome-golden-v2",
+  "minimum_score": 0.9,
+  "fixtures": [
+    "cases/architecture-review.json",
+    "cases/implementation-plan.json",
+    "cases/frontend-change.json",
+    "cases/backend-change.json",
+    "cases/bug-diagnosis.json",
+    "cases/security-review.json",
+    "cases/qa-review.json",
+    "cases/documentation-update.json"
+  ]
+}

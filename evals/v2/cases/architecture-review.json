@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "id": "architecture-review",
+  "description": "Synthetic read-only architecture review with referenced evidence.",
+  "data_classification": "synthetic",
+  "scenario": "Review the boundaries in the tiny synthetic session fixture. Identify one architecture risk and recommend a small, reversible next step.",
+  "role": "tech-lead",
+  "task_type": "architecture-review",
+  "candidate": {
+    "sandbox": "read-only",
+    "result": {
+      "task_id": "architecture-review",
+      "agent": "tech-lead",
+      "status": "completed",
+      "summary": "The fixture separates session parsing from page access, but its validation contract is not shared by both call sites.",
+      "files_changed": [], "commands_run": [], "tests_run": [],
+      "risks": ["Callers may interpret malformed session values differently."], "blockers": [],
+      "next_steps": ["Document the accepted session format and keep parsing behind one boundary."],
+      "artifacts": ["src/session.ts:parseSession", "src/page-access.ts:canAccess"],
+      "logs_path": "synthetic/architecture-review.jsonl"
+    },
+    "allowed_commands": [], "requested_actions": [], "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expectations": {
+    "required_sections": ["summary", "risks", "next_steps", "evidence"],
+    "evidence_references_minimum": 1, "files_changed_minimum": 0, "files_changed_maximum": 0,
+    "allowed_changed_files": [], "require_tests": false, "require_passed_verification": false,
+    "require_risks": true, "minimum_next_steps": 1, "prohibit_side_effects": true
+  }
+}

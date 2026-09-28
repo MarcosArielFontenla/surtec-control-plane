@@ -45,6 +45,9 @@ export interface SignalHumanRecord {
   pinned_for: string | null;
   dismissed: boolean;
   updated_at: string;
+  first_action?: SignalAction["action"];
+  first_action_at?: string;
+  signal_evidence_at?: string;
 }
 
 export interface SignalHumanStateDocument {

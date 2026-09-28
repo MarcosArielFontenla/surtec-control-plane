@@ -15,6 +15,7 @@ import { TodayView } from "./views/TodayView";
 import { TaskDetailView } from "./views/TaskDetailView";
 import { ProjectDetailView } from "./views/ProjectDetailView";
 import { ClientCommitmentsView } from "./views/ClientCommitmentsView";
+import { FeedbackMetricsView } from "./views/FeedbackMetricsView";
 import { useRuns } from "./useRuns";
 import { deriveKpis, deriveSummary } from "./derive-kpis";
 
@@ -123,6 +124,8 @@ export function App() {
             <IssuesView />
           ) : view === "Actividad" ? (
             <ActivityView />
+          ) : view === "Feedback" ? (
+            <FeedbackMetricsView />
           ) : (
             <>
               {kpis && <KpiStrip kpis={kpis} />}

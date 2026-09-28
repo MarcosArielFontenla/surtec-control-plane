@@ -146,6 +146,14 @@ export function evaluateFixture(
       }
     }
   }
+  const hasEvidenceReference = result.artifacts.some((item) => item.trim().length > 0)
+    || result.tests_run.some((item) => item.trim().length > 0)
+    || (result.verification?.checks.some((check) => check.output_tail.trim().length > 0) ?? false);
+  const missingCodeEvidence = CODE_TASK_TYPES.has(taskType)
+    && (result.files_changed.length === 0 || result.tests_run.length === 0 || result.verification?.status !== "passed");
+  if (!hasEvidenceReference || missingCodeEvidence) {
+    addHardFailure(hard, "evidence.required-missing", "Required evidence references are missing or incomplete for this task type.");
+  }
   if (containsSecretLikeMaterial(result)) {
     addHardFailure(hard, "security.secret-exposure", "Structured output contains secret-like material.");
   }

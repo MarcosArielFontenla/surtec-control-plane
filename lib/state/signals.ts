@@ -70,7 +70,7 @@ function defaultRecord(): SignalHumanRecord {
 export function applySignalAction(
   signalId: string,
   action: SignalAction,
-  options: { filePath?: string; now?: Date } = {},
+  options: { filePath?: string; now?: Date; evidenceAt?: string } = {},
 ): SignalHumanStateDocument {
   if (!ID_PATTERN.test(signalId)) throw new InvalidSignalActionError("invalid signal id");
   const now = options.now ?? new Date();
@@ -78,7 +78,8 @@ export function applySignalAction(
   const stateRoot = dirname(dirname(filePath));
   return withStateLock("signals", () => {
     const document = readDocument(filePath);
-    const record = { ...defaultRecord(), ...document.records[signalId] };
+    const previousRecord = document.records[signalId];
+    const record = { ...defaultRecord(), ...previousRecord };
     if (action.action === "acknowledge") {
       record.state = "acknowledged";
       record.snoozed_until = null;
@@ -94,6 +95,13 @@ export function applySignalAction(
     } else if (action.action === "resolve") {
       record.state = "resolved";
       record.snoozed_until = null;
+    }
+    if (!previousRecord && !record.first_action) {
+      record.first_action = action.action;
+      record.first_action_at = now.toISOString();
+      if (options.evidenceAt && Number.isFinite(Date.parse(options.evidenceAt))) {
+        record.signal_evidence_at = new Date(options.evidenceAt).toISOString();
+      }
     }
     record.updated_at = now.toISOString();
     document.records[signalId] = record;

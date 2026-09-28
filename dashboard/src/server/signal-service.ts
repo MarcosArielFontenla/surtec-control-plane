@@ -64,7 +64,7 @@ export function createSignalService(dependencies: SignalServiceDependencies): Si
       const { now, signals, warnings } = await buildFeed();
       if (!signals.some((signal) => signal.id === signalId)) throw new SignalNotFoundError("signal is no longer present");
       if (readSignalHumanState(statePath).records[signalId]?.dismissed) throw new SignalNotFoundError("signal is no longer present");
-      applySignalAction(signalId, action, { filePath: statePath, now });
+      applySignalAction(signalId, action, { filePath: statePath, now, evidenceAt: signals.find((signal) => signal.id === signalId)?.evidence_at });
       return projectFeed(now, signals, warnings);
     },
   };

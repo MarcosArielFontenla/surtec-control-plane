@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "id": "backend-change",
+  "description": "Synthetic backend contract change bounded to one implementation file and verified.",
+  "data_classification": "synthetic",
+  "scenario": "Reject malformed synthetic session values at the shared parsing boundary. Change only the allowed service file and run its focused test.",
+  "role": "backend-engineer",
+  "task_type": "backend-implementation",
+  "candidate": {
+    "sandbox": "workspace-write",
+    "result": {
+      "task_id": "backend-change", "agent": "backend-engineer", "status": "completed",
+      "summary": "The parser now rejects empty and malformed values before returning a session identity.",
+      "files_changed": ["src/session.ts"],
+      "commands_run": ["pnpm test -- session"], "tests_run": ["pnpm test -- session"],
+      "risks": ["Callers depending on permissive parsing must be reviewed before rollout."], "blockers": [],
+      "next_steps": ["Review compatibility expectations for existing session values."],
+      "artifacts": ["src/session.test.ts: malformed-value cases"], "logs_path": "synthetic/backend-change.jsonl",
+      "verification": { "status": "passed", "checks": [{ "command": "pnpm test -- session", "ok": true, "output_tail": "3 parser cases passed" }] }
+    },
+    "allowed_commands": ["pnpm test -- session"], "requested_actions": [], "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expectations": {
+    "required_sections": ["summary", "risks", "next_steps", "evidence"],
+    "evidence_references_minimum": 2, "files_changed_minimum": 1, "files_changed_maximum": 1,
+    "allowed_changed_files": ["src/session.ts"], "require_tests": true, "require_passed_verification": true,
+    "require_risks": true, "minimum_next_steps": 1, "prohibit_side_effects": true
+  }
+}

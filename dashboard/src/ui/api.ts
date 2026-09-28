@@ -5,10 +5,12 @@ import type { ProjectProfile } from "../../../lib/portfolio-profile";
 import type { SignalAction, SignalFeed } from "../../../lib/signals/types";
 import type { ProjectIntegrationsSnapshot } from "../../../lib/integrations/types";
 import type { ClientCommitment, ClientContextCategory, ClientContextOptions, ClientRecord, ClientSummary } from "../../../lib/client-portfolio";
+import type { FeedbackMetrics } from "../../../lib/feedback-metrics";
 
 let sessionTokenPromise: Promise<string> | null = null;
 let sessionFetch: typeof fetch | null = null;
 const projectIntegrationRequests = new Map<string, Promise<ProjectIntegrationsSnapshot>>();
+let feedbackMetricsRequest: Promise<FeedbackMetrics> | null = null;
 
 async function sessionToken(): Promise<string> {
   if (sessionFetch !== fetch) {
@@ -68,6 +70,24 @@ export async function fetchToday(): Promise<TodayModel> {
   const res = await fetch("/api/today");
   if (!res.ok) throw new Error(`today failed: ${res.status}`);
   return (await res.json()) as TodayModel;
+}
+
+export function getFeedbackMetrics(): Promise<FeedbackMetrics> {
+  if (feedbackMetricsRequest) return feedbackMetricsRequest;
+  const request = fetch("/api/feedback/metrics", { cache: "no-store" })
+    .then(async (res) => {
+      if (!res.ok) {
+        const error = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(error.error ?? `feedback metrics failed: ${res.status}`);
+      }
+      return await res.json() as FeedbackMetrics;
+    });
+  feedbackMetricsRequest = request;
+  void request.then(
+    () => { if (feedbackMetricsRequest === request) feedbackMetricsRequest = null; },
+    () => { if (feedbackMetricsRequest === request) feedbackMetricsRequest = null; },
+  );
+  return request;
 }
 
 export async function getPortfolioProfiles(): Promise<{ profiles: ProjectProfile[] }> {

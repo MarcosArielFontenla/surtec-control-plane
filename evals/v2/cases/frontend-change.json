@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "id": "frontend-change",
+  "description": "Synthetic frontend change bounded to one UI file and verified by a focused test.",
+  "data_classification": "synthetic",
+  "scenario": "Improve the synthetic session warning so its accessible label explains that access is blocked. Change only the allowed UI component.",
+  "role": "frontend-engineer",
+  "task_type": "frontend-implementation",
+  "candidate": {
+    "sandbox": "workspace-write",
+    "result": {
+      "task_id": "frontend-change", "agent": "frontend-engineer", "status": "completed",
+      "summary": "Updated the session warning label without changing the access decision or visual layout.",
+      "files_changed": ["src/ui/SessionWarning.tsx"],
+      "commands_run": ["pnpm test -- SessionWarning"], "tests_run": ["pnpm test -- SessionWarning"],
+      "risks": ["Screen-reader wording should remain consistent with the blocked state."], "blockers": [],
+      "next_steps": ["Review the warning with keyboard and screen-reader navigation."],
+      "artifacts": ["src/ui/SessionWarning.test.tsx: accessible label assertion"],
+      "logs_path": "synthetic/frontend-change.jsonl",
+      "verification": { "status": "passed", "checks": [{ "command": "pnpm test -- SessionWarning", "ok": true, "output_tail": "1 focused test passed" }] }
+    },
+    "allowed_commands": ["pnpm test -- SessionWarning"], "requested_actions": [], "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expectations": {
+    "required_sections": ["summary", "risks", "next_steps", "evidence"],
+    "evidence_references_minimum": 2, "files_changed_minimum": 1, "files_changed_maximum": 1,
+    "allowed_changed_files": ["src/ui/SessionWarning.tsx"], "require_tests": true, "require_passed_verification": true,
+    "require_risks": true, "minimum_next_steps": 1, "prohibit_side_effects": true
+  }
+}

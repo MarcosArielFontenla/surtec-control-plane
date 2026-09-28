@@ -26,5 +26,5 @@
     "human_approvals": [],
     "policy_decisions": [{ "boundary": "execution", "allowed": true }]
   },
-  "expected": { "verdict": "fail", "hard_failure_codes": [] }
+  "expected": { "verdict": "hard-fail", "hard_failure_codes": ["evidence.required-missing"] }
 }

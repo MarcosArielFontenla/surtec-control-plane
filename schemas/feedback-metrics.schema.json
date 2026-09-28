@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/feedback-metrics.schema.json",
+  "title": "FeedbackMetrics",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generated_at", "recommendations", "tasks", "verification", "work_sessions", "signals"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "recommendations": {
+      "type": "object", "additionalProperties": false,
+      "required": ["actions_recorded", "accepted", "snoozed", "dismissed", "pinned", "median_evidence_to_action_ms", "latency_samples"],
+      "properties": {
+        "actions_recorded": { "type": "integer", "minimum": 0 }, "accepted": { "type": "integer", "minimum": 0 },
+        "snoozed": { "type": "integer", "minimum": 0 }, "dismissed": { "type": "integer", "minimum": 0 },
+        "pinned": { "type": "integer", "minimum": 0 }, "median_evidence_to_action_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "latency_samples": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "tasks": {
+      "type": "object", "additionalProperties": false,
+      "required": ["total", "terminal", "completed", "retried", "needs_review", "success_rate", "retry_rate", "needs_review_rate"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 }, "terminal": { "type": "integer", "minimum": 0 },
+        "completed": { "type": "integer", "minimum": 0 }, "retried": { "type": "integer", "minimum": 0 },
+        "needs_review": { "type": "integer", "minimum": 0 }, "success_rate": { "$ref": "#/$defs/rate" },
+        "retry_rate": { "$ref": "#/$defs/rate" }, "needs_review_rate": { "$ref": "#/$defs/rate" }
+      }
+    },
+    "verification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["passed", "failed", "skipped", "missing", "eligible", "pass_rate"],
+      "properties": {
+        "passed": { "type": "integer", "minimum": 0 }, "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 }, "missing": { "type": "integer", "minimum": 0 },
+        "eligible": { "type": "integer", "minimum": 0 }, "pass_rate": { "$ref": "#/$defs/rate" }
+      }
+    },
+    "work_sessions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["total", "completed", "closed", "completed_with_next_action", "next_action_captured", "completion_rate", "next_action_capture_rate"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 }, "completed": { "type": "integer", "minimum": 0 },
+        "closed": { "type": "integer", "minimum": 0 }, "completed_with_next_action": { "type": "integer", "minimum": 0 },
+        "next_action_captured": { "type": "integer", "minimum": 0 }, "completion_rate": { "$ref": "#/$defs/rate" },
+        "next_action_capture_rate": { "$ref": "#/$defs/rate" }
+      }
+    },
+    "signals": {
+      "type": "object", "additionalProperties": false,
+      "required": ["freshness_eligible", "stale", "stale_rate"],
+      "properties": {
+        "freshness_eligible": { "type": "integer", "minimum": 0 }, "stale": { "type": "integer", "minimum": 0 },
+        "stale_rate": { "$ref": "#/$defs/rate" }
+      }
+    }
+  },
+  "$defs": {
+    "rate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+  }
+}

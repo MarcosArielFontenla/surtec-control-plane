@@ -61,6 +61,22 @@ describe("signal human-state store", () => {
     expect(projectSignalHumanState([signal("2")], doc, nextDay).pinned_signal_ids).toEqual([]);
   });
 
+  it("records only the first recommendation action with the evidence time supplied by the signal engine", () => {
+    const evidenceAt = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
+    const id = signal("6").id;
+    applySignalAction(id, { action: "acknowledge" }, { filePath, now, evidenceAt });
+    applySignalAction(id, { action: "resolve" }, { filePath, now: new Date(now.getTime() + 60_000), evidenceAt: now.toISOString() });
+
+    const record = readSignalHumanState(filePath).records[id];
+    expect(record).toMatchObject({
+      state: "resolved",
+      first_action: "acknowledge",
+      first_action_at: now.toISOString(),
+      signal_evidence_at: evidenceAt,
+    });
+    expect(validateSignalHumanStateDocument(readSignalHumanState(filePath))).toBe(true);
+  });
+
   it("validates action bodies and rejects invalid/future snooze times without modifying the file", () => {
     expect(validateSignalAction({ action: "acknowledge" })).toBe(true);
     expect(validateSignalAction({ action: "snooze", until: "2026-09-27T13:00:00.000Z" })).toBe(true);

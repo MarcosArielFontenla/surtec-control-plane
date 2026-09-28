@@ -103,6 +103,16 @@ if (signalBody.schema_version !== 1 || !Array.isArray(signalBody.signals) || !Ar
   throw new Error("signals response is invalid");
 }
 
+const feedbackMetricsResponse = await app.request("/api/feedback/metrics");
+if (!feedbackMetricsResponse.ok || feedbackMetricsResponse.headers.get("cache-control") !== "no-store") {
+  throw new Error(`feedback metrics smoke failed with ${feedbackMetricsResponse.status}`);
+}
+const feedbackMetricsBody = await feedbackMetricsResponse.json() as { schema_version?: number; recommendations?: unknown; tasks?: unknown; verification?: unknown; work_sessions?: unknown; signals?: unknown };
+if (feedbackMetricsBody.schema_version !== 1 || !feedbackMetricsBody.recommendations || !feedbackMetricsBody.tasks
+  || !feedbackMetricsBody.verification || !feedbackMetricsBody.work_sessions || !feedbackMetricsBody.signals) {
+  throw new Error("feedback metrics response is invalid");
+}
+
 console.log(JSON.stringify({
   overview_status: overview.status,
   today_status: today.status,
@@ -121,4 +131,6 @@ console.log(JSON.stringify({
   integration_schema_version: integrationBody.schema_version,
   signals_status: signalResponse.status,
   signal_count: signalBody.signals.length,
+  feedback_metrics_status: feedbackMetricsResponse.status,
+  feedback_metrics_schema_version: feedbackMetricsBody.schema_version,
 }));

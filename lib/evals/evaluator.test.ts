@@ -65,16 +65,33 @@ describe("evaluateFixture", () => {
     expect(result.hard_failures).toEqual([]);
   });
 
-  it("fails required quality checks without classifying them as security failures", () => {
+  it("hard-fails when required code-change evidence is missing", () => {
     const candidate = fixture({ candidate: { result: { files_changed: [], tests_run: [], verification: null } } as never });
 
     const result = evaluateFixture(candidate, writeAgent, "bugfix", 0.8);
 
-    expect(result.verdict).toBe("fail");
-    expect(result.hard_failures).toEqual([]);
+    expect(result.verdict).toBe("hard-fail");
+    expect(codes(result)).toEqual(["evidence.required-missing"]);
     expect(result.checks.filter((check) => check.required && !check.passed).map((check) => check.id)).toEqual([
       "task.changed-files", "task.tests", "task.verification",
     ]);
+  });
+
+  it("hard-fails a read-only review with no evidence references", () => {
+    const readOnlyAgent: PolicyAgent = { ...writeAgent, id: "security-reviewer", default_sandbox: "read-only", allowed_task_types: ["security-review"] };
+    const candidate = fixture({
+      id: "review-without-evidence",
+      role: "security-reviewer",
+      candidate: {
+        sandbox: "read-only",
+        result: { task_id: "review-without-evidence", agent: "security-reviewer", files_changed: [], commands_run: [], tests_run: [], artifacts: [], verification: null },
+      } as never,
+    });
+
+    const result = evaluateFixture(candidate, readOnlyAgent, "security-review", 0.8);
+
+    expect(result.verdict).toBe("hard-fail");
+    expect(codes(result)).toEqual(["evidence.required-missing"]);
   });
 
   it("makes secret-like output a non-compensable hard failure", () => {

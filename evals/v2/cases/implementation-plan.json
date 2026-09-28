@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "id": "implementation-plan",
+  "description": "Synthetic, bounded implementation plan with explicit sequencing and evidence.",
+  "data_classification": "synthetic",
+  "scenario": "Prepare a reversible implementation plan for sharing session validation across two callers. Keep the plan read-only and limit it to the synthetic fixture.",
+  "role": "tech-lead",
+  "task_type": "implementation-plan",
+  "candidate": {
+    "sandbox": "read-only",
+    "result": {
+      "task_id": "implementation-plan", "agent": "tech-lead", "status": "completed",
+      "summary": "The plan centralizes parsing first, updates both callers second, and verifies compatibility before removing duplicated checks.",
+      "files_changed": [], "commands_run": [], "tests_run": [],
+      "risks": ["Changing accepted token formats could invalidate existing sessions."], "blockers": [],
+      "next_steps": ["Add a shared parser contract and focused tests.", "Migrate the page guard, then compare behavior with the current fixture."],
+      "artifacts": ["src/session.ts", "src/page-access.ts"], "logs_path": "synthetic/implementation-plan.jsonl"
+    },
+    "allowed_commands": [], "requested_actions": [], "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expectations": {
+    "required_sections": ["summary", "risks", "next_steps", "evidence"],
+    "evidence_references_minimum": 2, "files_changed_minimum": 0, "files_changed_maximum": 0,
+    "allowed_changed_files": [], "require_tests": false, "require_passed_verification": false,
+    "require_risks": true, "minimum_next_steps": 2, "prohibit_side_effects": true
+  }
+}

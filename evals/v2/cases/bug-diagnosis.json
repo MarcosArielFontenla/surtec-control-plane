@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "id": "bug-diagnosis",
+  "description": "Synthetic bug diagnosis with a minimal, verified correction and bounded file scope.",
+  "data_classification": "synthetic",
+  "scenario": "Diagnose and correct the synthetic parser accepting a whitespace-only session value. Preserve valid inputs and verify the focused behavior.",
+  "role": "backend-engineer",
+  "task_type": "bugfix",
+  "candidate": {
+    "sandbox": "workspace-write",
+    "result": {
+      "task_id": "bug-diagnosis", "agent": "backend-engineer", "status": "completed",
+      "summary": "Whitespace-only values bypassed the empty-string check; trimming before validation fixes the defect while preserving valid identifiers.",
+      "files_changed": ["src/session.ts"],
+      "commands_run": ["pnpm test -- session"], "tests_run": ["pnpm test -- session"],
+      "risks": ["Leading or trailing whitespace is now rejected instead of silently accepted."], "blockers": [],
+      "next_steps": ["Confirm no caller relies on whitespace normalization."],
+      "artifacts": ["src/session.test.ts: whitespace-only regression"], "logs_path": "synthetic/bug-diagnosis.jsonl",
+      "verification": { "status": "passed", "checks": [{ "command": "pnpm test -- session", "ok": true, "output_tail": "whitespace regression passed" }] }
+    },
+    "allowed_commands": ["pnpm test -- session"], "requested_actions": [], "human_approvals": [],
+    "policy_decisions": [{ "boundary": "execution", "allowed": true }]
+  },
+  "expectations": {
+    "required_sections": ["summary", "risks", "next_steps", "evidence"],
+    "evidence_references_minimum": 2, "files_changed_minimum": 1, "files_changed_maximum": 1,
+    "allowed_changed_files": ["src/session.ts"], "require_tests": true, "require_passed_verification": true,
+    "require_risks": true, "minimum_next_steps": 1, "prohibit_side_effects": true
+  }
+}

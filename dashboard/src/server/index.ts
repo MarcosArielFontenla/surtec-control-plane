@@ -2,6 +2,9 @@ import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { dirname } from "node:path";
 import { listTasks, listProjectOverrides, readTask, StateLockConflictError } from "../../../lib/state/store";
+import { listWorkSessions } from "../../../lib/state/work-sessions";
+import { readSignalHumanState } from "../../../lib/state/signals";
+import { buildFeedbackMetrics } from "../../../lib/feedback-metrics";
 import { readTaskEvents } from "../../../lib/state/events";
 import { buildOverview } from "../../../lib/state/derive";
 import { buildTaskDetail, buildToday } from "../../../lib/state/observability";
@@ -583,6 +586,23 @@ export function createApp(
     } catch (err) {
       if (err instanceof UnsupportedSignalStateVersionError) return c.json({ error: err.message }, 409);
       return c.json({ error: "signal feed is unavailable" }, 500);
+    }
+  });
+
+  app.get("/api/feedback/metrics", async (c) => {
+    c.header("Cache-Control", "no-store");
+    try {
+      const feed = await signals.read();
+      const humanState = readSignalHumanState();
+      return c.json(buildFeedbackMetrics({
+        signalActions: Object.values(humanState.records),
+        signals: feed.signals,
+        tasks: listTasks(),
+        workSessions: listWorkSessions(),
+        now: new Date(),
+      }));
+    } catch {
+      return c.json({ error: "local feedback metrics are unavailable" }, 500);
     }
   });
 

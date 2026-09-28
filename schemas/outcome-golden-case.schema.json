@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/outcome-golden-case.schema.json",
+  "title": "OutcomeGoldenCase",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "description", "data_classification", "scenario", "role", "task_type", "candidate", "expectations"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "data_classification": { "const": "synthetic" },
+    "scenario": { "type": "string", "minLength": 1, "maxLength": 1200 },
+    "role": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "task_type": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sandbox", "result", "allowed_commands", "requested_actions", "human_approvals", "policy_decisions"],
+      "properties": {
+        "sandbox": { "type": "string", "enum": ["read-only", "workspace-write"] },
+        "result": { "$ref": "https://surtec.dev/schemas/agent-result.schema.json" },
+        "allowed_commands": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "requested_actions": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "human_approvals": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "policy_decisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["boundary", "allowed"],
+            "properties": { "boundary": { "type": "string", "minLength": 1 }, "allowed": { "type": "boolean" } }
+          }
+        }
+      }
+    },
+    "expectations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_sections", "evidence_references_minimum", "files_changed_minimum", "files_changed_maximum", "allowed_changed_files", "require_tests", "require_passed_verification", "require_risks", "minimum_next_steps", "prohibit_side_effects"],
+      "properties": {
+        "required_sections": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["summary", "risks", "next_steps", "evidence"] }
+        },
+        "evidence_references_minimum": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "files_changed_minimum": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "files_changed_maximum": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "allowed_changed_files": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 500 } },
+        "require_tests": { "type": "boolean" },
+        "require_passed_verification": { "type": "boolean" },
+        "require_risks": { "type": "boolean" },
+        "minimum_next_steps": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "prohibit_side_effects": { "type": "boolean", "const": true }
+      }
+    }
+  }
+}
