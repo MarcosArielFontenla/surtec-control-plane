@@ -64,7 +64,13 @@ Status: accepted when Phase H was authorized. See [Phase G verification](phase-g
 
 Add a local-only delivery client directory and commitment register, connect commitments to deterministic Today signals, and require explicit selection before any client context enters task instructions. Keep personal work first-class and exclude real client data from Git.
 
-Status: implementation ready for local validation on 2026-09-28. See [Phase H verification](phase-h-verification.md). Stop here for Marcos's local validation before starting Phase I.
+Status: implementation delivered on 2026-09-28 and accepted for progression when Marcos authorized Phase I. See [Phase H verification](phase-h-verification.md).
+
+## Phase I — Outcome-oriented EVALs and operating feedback
+
+Extend deterministic EVALs from contract safety into measured task usefulness, add strictly opt-in and bounded read-only live canaries, and surface privacy-preserving local feedback metrics.
+
+Status: implementation and automated verification complete on 2026-09-28; stop for Marcos's consolidated local review of Phases A–I. See [Phase I verification](phase-i-verification.md). No live canary calls were made.
 
 ## Phase 6 — Optional collaborative workspace
 

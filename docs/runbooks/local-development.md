@@ -51,11 +51,13 @@ pnpm start
 
 ## Validation
 
-`pnpm ci:check` runs every offline quality gate, including the versioned role/task-type evaluation suite under `evals/v1/`. `pnpm evals:check` can run that suite independently; it validates fixture schemas, registry coverage, deterministic quality thresholds, and non-compensable security/policy failures. `pnpm audit:check` additionally queries the npm registry and fails on moderate or higher advisories.
+`pnpm ci:check` runs every offline quality gate, including role/task-type coverage in `evals/v1/` and outcome-oriented golden cases in `evals/v2/`. `pnpm evals:check` can run both suites independently; it validates fixture schemas, registry coverage, deterministic quality thresholds, and non-compensable security/policy/evidence failures. `pnpm audit:check` additionally queries the npm registry and fails on moderate or higher advisories.
 
 Use `pnpm smoke:api` for the local API smoke. It reports only endpoint status and record counts for the private client directory; it never prints client fields. The production-style API listens on `127.0.0.1`; browser mutations obtain an in-memory session token automatically. A server restart intentionally invalidates the previous token.
 
 For the client-delivery UI, `pnpm smoke:client-commitments:playwright` runs the real dashboard against in-memory synthetic fixtures. It validates client and commitment editing, temporary name masking, Today presentation, generic client-signal task prefill, and explicit-only context sharing without contacting Codex or real project providers.
+
+The `Feedback` dashboard view loads aggregate-only local metrics on demand; `pnpm smoke:feedback:playwright` validates its read-only request and refresh behavior using synthetic responses. Metric definitions and freshness windows are in [Local feedback metrics](../operations/feedback-metrics.md). Real-model EVAL canaries are disabled by default, fixed to two read-only requests, and unavailable in CI; see [Agent evaluation suites](../../evals/README.md) before explicitly opting in.
 
 Inspect the consolidated, read-only integration snapshot with:
 
