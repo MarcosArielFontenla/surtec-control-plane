@@ -557,9 +557,9 @@ describe("notes routes", () => {
 
 describe("portfolio profile routes", () => {
   const validProfile = {
-    schema_version: 1,
+    schema_version: 2,
     project_id: "stock-control",
-    kind: "client",
+    kind: "client-product",
     lifecycle: "active",
     priority: 2,
     criticality: "high",
@@ -576,7 +576,7 @@ describe("portfolio profile routes", () => {
     const initial = await app.request("/api/portfolio/profiles");
     expect(initial.status).toBe(200);
     expect(initial.headers.get("Cache-Control")).toBe("no-store");
-    expect(await initial.json()).toEqual({ profiles: [] });
+    expect(await initial.json()).toEqual({ profiles: [], migration: null });
 
     const saved = await apiRequest(app, "/api/projects/stock-control/profile", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProfile),
@@ -585,7 +585,7 @@ describe("portfolio profile routes", () => {
     expect(await saved.json()).toEqual({ profile: validProfile });
 
     const listed = await app.request("/api/portfolio/profiles");
-    expect(await listed.json()).toEqual({ profiles: [validProfile] });
+    expect(await listed.json()).toEqual({ profiles: [validProfile], migration: null });
     expect(readFileSync(join(root, "registry", "projects.yml"), "utf8")).toContain("sandbox:");
     expect(existsSync(join(stateDir, "portfolio", "projects.json"))).toBe(true);
   });
@@ -609,13 +609,13 @@ describe("portfolio profile routes", () => {
     });
     expect(unsafeId.status).toBe(400);
     const empty = await app.request("/api/portfolio/profiles");
-    expect(await empty.json()).toEqual({ profiles: [] });
+    expect(await empty.json()).toEqual({ profiles: [], migration: null });
   });
 
   it("fails closed on an unsupported local schema version and preserves the file", async () => {
     const storePath = join(stateDir, "portfolio", "projects.json");
     mkdirSync(join(stateDir, "portfolio"), { recursive: true });
-    const futureDocument = JSON.stringify({ schema_version: 2, projects: {} });
+    const futureDocument = JSON.stringify({ schema_version: 3, projects: {} });
     writeFileSync(storePath, futureDocument, "utf8");
     const app = createApp(root);
     expect((await app.request("/api/portfolio/profiles")).status).toBe(409);
@@ -834,7 +834,7 @@ describe("GET /api/projects/:id/integrations", () => {
     expect((await detailResponse.json()).client.confidential_notes).toBe(input.confidential_notes);
 
     const projectProfile = {
-      schema_version: 1, project_id: "stock-control", kind: "client", lifecycle: "active", priority: 1, criticality: "high",
+      schema_version: 2, project_id: "stock-control", kind: "client-product", lifecycle: "active", priority: 1, criticality: "high",
       current_goal: "Deliver the fictional inventory workflow.", next_action: "Check the release criteria.", deadline: null,
       client_id: client.id, last_reviewed_at: null, tags: [],
     };

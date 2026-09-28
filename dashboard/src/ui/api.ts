@@ -6,6 +6,8 @@ import type { SignalAction, SignalFeed } from "../../../lib/signals/types";
 import type { ProjectIntegrationsSnapshot } from "../../../lib/integrations/types";
 import type { ClientCommitment, ClientContextCategory, ClientContextOptions, ClientRecord, ClientSummary } from "../../../lib/client-portfolio";
 import type { FeedbackMetrics } from "../../../lib/feedback-metrics";
+import type { CompanyProfile, Objective, OrganizationSnapshot, ProjectObjectiveLinks } from "../../../lib/organization";
+import type { PortfolioProfileMigrationReport } from "../../../lib/state/portfolio-profiles";
 
 let sessionTokenPromise: Promise<string> | null = null;
 let sessionFetch: typeof fetch | null = null;
@@ -90,13 +92,60 @@ export function getFeedbackMetrics(): Promise<FeedbackMetrics> {
   return request;
 }
 
-export async function getPortfolioProfiles(): Promise<{ profiles: ProjectProfile[] }> {
+export async function getPortfolioProfiles(): Promise<{ profiles: ProjectProfile[]; migration?: PortfolioProfileMigrationReport | null }> {
   const res = await fetch("/api/portfolio/profiles", { cache: "no-store" });
   if (!res.ok) {
     const e = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(e.error ?? `portfolio profiles failed: ${res.status}`);
   }
   return (await res.json()) as { profiles: ProjectProfile[] };
+}
+
+export async function getOrganization(): Promise<OrganizationSnapshot> {
+  const res = await fetch("/api/organization", { cache: "no-store" });
+  if (!res.ok) throw new Error(`organization failed: ${res.status}`);
+  return await res.json() as OrganizationSnapshot;
+}
+
+export async function saveCompanyProfile(profile: CompanyProfile): Promise<{ company: CompanyProfile }> {
+  const res = await mutate("/api/organization/company", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(profile),
+  });
+  if (!res.ok) throw new Error("company profile save failed: " + res.status);
+  return await res.json() as { company: CompanyProfile };
+}
+
+export async function createObjective(input: Omit<Objective, "schema_version" | "id" | "company_id" | "project_ids" | "owner" | "last_reviewed_at">): Promise<{ objective: Objective }> {
+  const res = await mutate("/api/organization/objectives", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? `objective create failed: ${res.status}`);
+  }
+  return await res.json() as { objective: Objective };
+}
+
+export async function saveObjective(objective: Objective): Promise<{ objective: Objective }> {
+  const res = await mutate(`/api/organization/objectives/${encodeURIComponent(objective.id)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(objective),
+  });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? `objective save failed: ${res.status}`);
+  }
+  return await res.json() as { objective: Objective };
+}
+
+export async function saveProjectObjectiveLinks(projectId: string, links: ProjectObjectiveLinks): Promise<{ links: ProjectObjectiveLinks; organization: OrganizationSnapshot }> {
+  const res = await mutate(`/api/organization/projects/${encodeURIComponent(projectId)}/objectives`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(links),
+  });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? `objective links save failed: ${res.status}`);
+  }
+  return await res.json() as { links: ProjectObjectiveLinks; organization: OrganizationSnapshot };
 }
 
 export async function saveProjectProfile(profile: ProjectProfile): Promise<{ profile: ProjectProfile }> {

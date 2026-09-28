@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getPortfolioProfiles, openProject, useOverview, useToday } from "./api";
 import type { ProjectProfile } from "../../../lib/portfolio-profile";
+import type { PortfolioProfileMigrationReport } from "../../../lib/state/portfolio-profiles";
 import type { Signal } from "../../../lib/signals/types";
 import { Sidebar, type NavItem } from "./components/Sidebar";
 import { ProjectCard } from "./components/ProjectCard";
@@ -16,6 +17,7 @@ import { TaskDetailView } from "./views/TaskDetailView";
 import { ProjectDetailView } from "./views/ProjectDetailView";
 import { ClientCommitmentsView } from "./views/ClientCommitmentsView";
 import { FeedbackMetricsView } from "./views/FeedbackMetricsView";
+import { OrganizationView } from "./views/OrganizationView";
 import { useRuns } from "./useRuns";
 import { deriveKpis, deriveSummary } from "./derive-kpis";
 
@@ -29,14 +31,16 @@ export function App() {
   const [profiles, setProfiles] = useState<Record<string, ProjectProfile>>({});
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [profilesError, setProfilesError] = useState<string | null>(null);
+  const [profileMigration, setProfileMigration] = useState<PortfolioProfileMigrationReport | null>(null);
   const [taskPrefill, setTaskPrefill] = useState<{ project: string; instructions: string } | null>(null);
 
   useEffect(() => {
     let active = true;
     getPortfolioProfiles()
-      .then(({ profiles: loaded }) => {
+      .then(({ profiles: loaded, migration }) => {
         if (!active) return;
         setProfiles(Object.fromEntries(loaded.map((profile) => [profile.project_id, profile])));
+        setProfileMigration(migration ?? null);
         setProfilesError(null);
       })
       .catch((reason) => { if (active) setProfilesError((reason as Error).message); })
@@ -59,7 +63,8 @@ export function App() {
   const gitProjectIds = data ? data.projects.filter((p) => p.git?.ok).map((p) => p.id) : [];
   const selectedProjectView = data?.projects.find((project) => project.id === selectedProject) ?? null;
   const prepareTask = (signal: Signal) => {
-    const instructions = signal.project_kind === "client"
+    if (signal.source === "objective" && signal.project_id === "surtec") { setNav("SURTEC"); return; }
+    const instructions = signal.project_kind === "client-product"
       ? "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form."
       : signal.suggested_action + "\n\nEvidence: " + signal.reason;
     setTaskPrefill({ project: signal.project_id, instructions });
@@ -101,7 +106,7 @@ export function App() {
               onPrepareTask={(project, instructions) => {
                 setTaskPrefill({
                   project,
-                  instructions: profiles[project]?.kind === "client"
+                  instructions: profiles[project]?.kind === "client-product"
                     ? "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form."
                     : instructions,
                 });
@@ -115,7 +120,9 @@ export function App() {
             <div className="project-detail-section panel"><p>El proyecto ya no está en el portfolio actual.</p><button type="button" className="ghost-btn" onClick={() => setSelectedProject(null)}>Volver al portfolio</button></div>
           ) : view === "Hoy" ? (
             <TodayView data={today.data} error={today.error} onOpenTask={setSelectedTask} onRefresh={today.refresh} projects={data?.projects ?? []}
-              onOpenProject={(id) => openProject(id, "vscode")} onPrepareTask={prepareTask} />
+              onOpenProject={(id) => id === "surtec" ? (setNav("SURTEC"), Promise.resolve()) : openProject(id, "vscode")} onPrepareTask={prepareTask} />
+          ) : view === "SURTEC" ? (
+            <OrganizationView projects={data?.projects ?? []} profiles={profiles} />
           ) : view === "Clientes" ? (
             <ClientCommitmentsView projects={data?.projects ?? []} />
           ) : view === "Procesos" ? (
@@ -132,6 +139,7 @@ export function App() {
               <NewTaskForm bulkProjectIds={gitProjectIds} initialProject={taskPrefill?.project}
                 initialInstructions={taskPrefill?.instructions} onPrefillConsumed={consumeTaskPrefill} />
               {error && <div className="banner banner--warn">No pude refrescar ({error}); mostrando el último estado conocido.</div>}
+              {profileMigration && <div className="banner banner--warn">Migración local respaldada: {profileMigration.project_count} perfiles; {profileMigration.client_categories_migrated} categorías cliente y {profileMigration.personal_categories_preserved} personales. SHA-256 origen {profileMigration.source_sha256.slice(0, 12)}… · respaldo {profileMigration.backup_id}</div>}
               {!data ? <p className="empty-mini">Cargando…</p> : (
                 <>
                   <div className="section-head"><h2>Proyectos</h2><span className="meta">{data.projects.length} repos</span></div>

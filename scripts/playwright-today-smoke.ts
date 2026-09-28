@@ -13,7 +13,7 @@ function signal(index: number, overrides: Partial<Signal> = {}): Signal {
     schema_version: 1,
     id: `sig_${index.toString(16).padStart(24, "0")}`,
     project_id: `fictional-project-${index}`,
-    project_kind: index % 2 === 0 ? "client" : "personal",
+    project_kind: index % 2 === 0 ? "client-product" : "personal",
     source: "profile",
     type: index % 2 === 0 ? "deadline-approaching" : "active-project-stale",
     severity: index === 1 ? "critical" : index < 4 ? "warning" : "info",
@@ -64,7 +64,7 @@ function fixtureToday(name: string, signals: Signal[], warning = false): TodayMo
   base.portfolio.recommendations = open.slice(0, 3);
   base.portfolio.critical_attention = open.filter((item) => item.severity === "critical" || ["production-failure", "client-commitment", "blocked-work"].includes(item.ranking.tier));
   base.portfolio.work_to_continue = open.filter((item) => item.ranking.tier === "unfinished-work");
-  base.portfolio.client_commitments = open.filter((item) => item.project_kind === "client" && (item.ranking.tier === "client-commitment" || item.type.startsWith("deadline-")));
+  base.portfolio.client_commitments = open.filter((item) => item.project_kind === "client-product" && (item.ranking.tier === "client-commitment" || item.type.startsWith("deadline-")));
   base.portfolio.personal_opportunities = open.filter((item) => item.project_kind === "personal");
   base.portfolio.stale_profiles = open.filter((item) => item.type === "active-project-stale");
   base.portfolio.snoozed_signals = signals.filter((item) => item.state === "snoozed");
@@ -82,7 +82,10 @@ async function launchBrowser(): Promise<Browser> {
 }
 
 async function serveFixture(vite: ViteDevServer, browser: Browser, name: string, overload = false, warning = false): Promise<void> {
-  const signals = name === "empty" || name === "healthy" ? [] : Array.from({ length: overload ? 9 : 2 }, (_, index) => signal(index + 1));
+  const signals = name === "objective" ? [
+    signal(1, { project_id: "objective-project", project_kind: "surtec-product", evidence: { primary_objective_id: "obj-primary", primary_objective_title: "Objetivo primario" } }),
+    signal(2, { project_id: "surtec", project_kind: null, source: "objective", type: "objective-without-projects", title: "Outcome Surtec", evidence: { objective_id: "obj-global", objective_title: "Outcome Surtec" } }),
+  ] : name === "empty" || name === "healthy" ? [] : Array.from({ length: overload ? 9 : 2 }, (_, index) => signal(index + 1));
   const actions: { id: string; action: string; token: string | null }[] = [];
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.route("**/api/**", async (route) => {
@@ -133,6 +136,11 @@ async function serveFixture(vite: ViteDevServer, browser: Browser, name: string,
     if (name === "healthy") {
       await page.getByText("Tu cartera está tranquila.").waitFor();
       await page.getByText("Maintain fictional service").waitFor();
+    } else if (name === "objective") {
+      await page.getByText("Apoya el objetivo: Objetivo primario").waitFor();
+      const objectiveCard = page.locator(".today-signal").filter({ hasText: "Outcome Surtec" });
+      await objectiveCard.getByRole("button", { name: "Abrir SURTEC" }).waitFor();
+      assert.equal(await objectiveCard.getByRole("button", { name: /Preparar tarea/ }).count(), 0, "company-level objective signal does not prefill a fake project task");
     } else if (name === "degraded") {
       await page.getByText("Inteligencia parcial").waitFor();
       await page.getByText("GitHub issue evidence for fictional-project-2 is unavailable.").waitFor();
@@ -177,6 +185,7 @@ async function main(): Promise<void> {
     });
     await vite.listen();
     await serveFixture(vite, browser, "healthy");
+    await serveFixture(vite, browser, "objective");
     await serveFixture(vite, browser, "degraded", false, true);
     await serveFixture(vite, browser, "overloaded", true);
     await serveFixture(vite, browser, "empty");

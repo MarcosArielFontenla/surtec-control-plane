@@ -6,6 +6,7 @@ import type { ClientCommitment } from "../client-portfolio";
 import type { ProjectIntegrationsSnapshot } from "../integrations/types";
 import { redactText } from "../security/redaction";
 import type { Signal, SignalRankingTier, SignalSource } from "./types";
+import type { Objective, OrganizationSnapshot } from "../organization";
 
 export interface SignalProjectEvidence {
   id: string;
@@ -36,6 +37,7 @@ export interface SignalEvidenceSnapshot {
   issues: InboxItem[];
   sessions?: SignalWorkSessionEvidence[];
   commitments?: SignalCommitmentEvidence[];
+  organization?: OrganizationSnapshot;
   warnings?: string[];
 }
 
@@ -47,6 +49,8 @@ const STALE_NOTE_DAYS = 14;
 const LONG_RUNNING_CI_MS = 60 * 60 * 1000;
 const MAX_TEXT = 240;
 const MAX_SIGNAL_COUNT = 5000;
+const OBJECTIVE_REVIEW_DAYS = 30;
+const OBJECTIVE_TARGET_WINDOW_DAYS = 14;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 interface CandidateInput {
@@ -304,7 +308,7 @@ function projectCandidates(project: SignalProjectEvidence, now: Date, observedAt
     const days = deadlineDays(deadline, now);
     if (days !== null && days <= 7) {
       const overdue = days < 0;
-      const clientCommitment = profile?.kind === "client" && overdue;
+      const clientCommitment = profile?.kind === "client-product" && overdue;
       out.push(candidate({
         projectId,
         source: "profile",
@@ -476,7 +480,7 @@ function commitmentCandidates(commitments: SignalCommitmentEvidence[], projectKi
   const out: Signal[] = [];
   for (const commitment of commitments) {
     if (!safeId(commitment.id) || !safeId(commitment.project_id) || !ACTIVE_COMMITMENT_STATES.has(commitment.state)) continue;
-    const isClient = projectKinds.get(commitment.project_id) === "client";
+    const isClient = projectKinds.get(commitment.project_id) === "client-product";
     const dueDays = commitment.due_date ? deadlineDays(commitment.due_date, now) : null;
     const overdueOrImminent = dueDays !== null && dueDays <= 7;
     const isBlocked = commitment.state === "blocked";
@@ -516,6 +520,112 @@ function commitmentCandidates(commitments: SignalCommitmentEvidence[], projectKi
   return out;
 }
 
+function objectiveSignal(input: {
+  projectId: string;
+  objective: Objective;
+  occurrence?: string;
+  type: string;
+  severity: Signal["severity"];
+  reason: string;
+  evidenceAt: string;
+  suggestedAction: string;
+  tier: SignalRankingTier;
+  extra?: Record<string, unknown>;
+}, observedAt: string): Signal {
+  return candidate({
+    projectId: input.projectId,
+    source: "objective",
+    type: input.type,
+    occurrence: input.occurrence ?? input.objective.id,
+    severity: input.severity,
+    title: input.objective.title,
+    reason: input.reason,
+    evidenceAt: input.evidenceAt,
+    suggestedAction: input.suggestedAction,
+    actionKind: "review-objective",
+    tier: input.tier,
+    evidence: { objective_id: input.objective.id, objective_title: input.objective.title, ...input.extra },
+  }, observedAt);
+}
+
+function objectiveCandidates(evidence: SignalEvidenceSnapshot, now: Date, observedAt: string): Signal[] {
+  const organization = evidence.organization;
+  if (!organization) return [];
+  const out: Signal[] = [];
+  const byId = new Map(organization.objectives.map((objective) => [objective.id, objective]));
+  for (const objective of organization.objectives) {
+    if (objective.status !== "active") continue;
+    const objectiveProjects = objective.project_ids;
+    if (objectiveProjects.length === 0) out.push(objectiveSignal({
+      projectId: "surtec", objective, type: "objective-without-projects", severity: "warning",
+      reason: "This active objective is not connected to any project.", evidenceAt: objective.last_reviewed_at ?? observedAt,
+      suggestedAction: "Link one or more projects that contribute to this outcome.", tier: "hygiene",
+    }, observedAt));
+    if (objective.success_criteria.length === 0) out.push(objectiveSignal({
+      projectId: "surtec", objective, type: "objective-without-success-criteria", severity: "warning",
+      reason: "This active objective has no measurable success criteria.", evidenceAt: objective.last_reviewed_at ?? observedAt,
+      suggestedAction: "Define one or more observable criteria for deciding when this outcome is achieved.", tier: "hygiene",
+    }, observedAt));
+
+    const days = objective.target_date ? deadlineDays(objective.target_date, now) : null;
+    if (days !== null && days <= OBJECTIVE_TARGET_WINDOW_DAYS) out.push(objectiveSignal({
+      projectId: "surtec", objective,
+      occurrence: `${objective.id}:${objective.target_date}`,
+      type: days < 0 ? "objective-target-overdue" : "objective-target-approaching",
+      severity: days < 0 || days <= 3 ? "critical" : "warning",
+      reason: days < 0
+        ? `The objective target date was ${Math.abs(days)} day${days === -1 ? "" : "s"} ago (${objective.target_date}).`
+        : `The objective target date is ${days === 0 ? "today" : `in ${days} day${days === 1 ? "" : "s"}`} (${objective.target_date}).`,
+      evidenceAt: objective.last_reviewed_at ?? observedAt,
+      suggestedAction: "Review the target date, linked project progress, and next decision.", tier: "imminent-deadline",
+      extra: { deadline: objective.target_date, days_remaining: days },
+    }, observedAt));
+
+    const reviewedDays = elapsedDays(objective.last_reviewed_at, now);
+    if (reviewedDays === null || reviewedDays >= OBJECTIVE_REVIEW_DAYS) out.push(objectiveSignal({
+      projectId: "surtec", objective, type: "objective-review-stale", severity: "info",
+      reason: reviewedDays === null ? "This active objective has never been reviewed." : `This active objective was last reviewed ${reviewedDays} days ago.`,
+      evidenceAt: objective.last_reviewed_at ?? observedAt,
+      suggestedAction: "Confirm that the intended outcome, criteria, target date, and linked projects are still current.", tier: "maintenance",
+      extra: { last_reviewed_at: objective.last_reviewed_at, days_since_review: reviewedDays },
+    }, observedAt));
+  }
+
+  for (const project of evidence.projects) {
+    const links = organization.project_objectives[project.id];
+    if (project.profile?.lifecycle === "active" && project.profile.kind !== "personal" && !links?.objective_ids.length) out.push(candidate({
+      projectId: project.id, source: "objective", type: "active-project-without-objective", occurrence: project.id,
+      severity: "info", title: "Active project is not linked to an objective",
+      reason: "This non-personal active project has no strategic objective association.", evidenceAt: observedAt,
+      suggestedAction: "Link the project to a SURTEC objective or classify it as personal if it is intentionally independent.",
+      actionKind: "link-objective", tier: "hygiene", evidence: {},
+    }, observedAt));
+    for (const objectiveId of links?.objective_ids ?? []) {
+      const objective = byId.get(objectiveId);
+      if (!objective || (objective.status !== "paused" && objective.status !== "cancelled")) continue;
+      out.push(objectiveSignal({
+        projectId: project.id, objective, type: "project-linked-to-inactive-objective", severity: "warning",
+        reason: `This active project is linked to an objective that is ${objective.status}.`, evidenceAt: objective.last_reviewed_at ?? observedAt,
+        suggestedAction: "Review the relationship: resume the objective, unlink this project, or choose another objective.", tier: "blocked-work",
+      }, observedAt));
+    }
+  }
+
+  for (const issue of evidence.issues) {
+    for (const objective of organization.objectives) {
+      if (objective.status !== "achieved" || !objective.project_ids.includes(issue.projectId)) continue;
+      out.push(objectiveSignal({
+        projectId: issue.projectId, objective, type: "achieved-objective-has-open-issue", severity: "warning",
+        occurrence: `${objective.id}:${issue.number}:${issue.updatedAt}`,
+        reason: `GitHub issue #${issue.number} remains open in a project linked to this achieved objective.`, evidenceAt: issue.updatedAt,
+        suggestedAction: "Confirm that the issue is unrelated, close it, or reopen the objective if work remains.", tier: "unfinished-work",
+        extra: { issue_number: issue.number },
+      }, observedAt));
+    }
+  }
+  return out;
+}
+
 const ACTIVE_COMMITMENT_STATES = new Set(["planned", "in-progress", "blocked"]);
 
 function compareSignals(left: Signal, right: Signal): number {
@@ -534,13 +644,24 @@ export function generateSignals(evidence: SignalEvidenceSnapshot, clock: Date = 
   const now = new Date(clock);
   const observedAt = now.toISOString();
   const projectKinds = new Map(evidence.projects.map((project) => [project.id, project.profile?.kind ?? null]));
-  return [
+  const generated = [
     ...evidence.projects.filter((project) => safeId(project.id)).flatMap((project) => projectCandidates(project, now, observedAt)),
     ...taskCandidates(evidence.tasks.filter((task) => safeId(task.envelope.project) && safeId(task.envelope.id)), observedAt),
     ...issueCandidates(evidence.issues, now, observedAt),
     ...sessionCandidates(evidence.sessions ?? [], observedAt),
     ...commitmentCandidates(evidence.commitments ?? [], projectKinds, now, observedAt),
-  ].map((signal) => ({ ...signal, project_kind: projectKinds.get(signal.project_id) ?? null }))
+    ...objectiveCandidates(evidence, now, observedAt),
+  ].map((signal) => {
+    const links = evidence.organization?.project_objectives[signal.project_id];
+    const primaryId = links?.primary_objective_id;
+    const primary = primaryId ? evidence.organization?.objectives.find((objective) => objective.id === primaryId) : undefined;
+    return {
+      ...signal,
+      project_kind: projectKinds.get(signal.project_id) ?? null,
+      evidence: primary ? { ...signal.evidence, primary_objective_id: primary.id, primary_objective_title: primary.title } : signal.evidence,
+    };
+  });
+  return generated
     .sort(compareSignals)
     .slice(0, MAX_SIGNAL_COUNT);
 }

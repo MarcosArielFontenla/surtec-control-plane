@@ -12,7 +12,7 @@ let previousStateDirectory: string | undefined;
 const signalId = `sig_${"c".repeat(24)}`;
 const now = new Date();
 const privateSignal: Signal = {
-  schema_version: 1, id: signalId, project_id: "fictional-private-project", project_kind: "client", source: "profile",
+  schema_version: 1, id: signalId, project_id: "fictional-private-project", project_kind: "client-product", source: "profile",
   type: "missing-next-action", severity: "info", title: "Private synthetic title", reason: "Synthetic private detail",
   evidence_at: now.toISOString(), observed_at: now.toISOString(), suggested_action: "Synthetic next action", action_kind: "edit-project-profile",
   ranking: { tier: "hygiene", order: 1 }, state: "open", snoozed_until: null, evidence: {},

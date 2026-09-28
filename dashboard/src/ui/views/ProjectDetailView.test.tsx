@@ -31,7 +31,7 @@ const today: TodayModel = {
     sessions: { available: true, unavailable_reason: null, active: [], paused: [], completed: [] } },
 };
 const profile: ProjectProfile = {
-  schema_version: 1, project_id: "alpha", kind: "client", lifecycle: "active", priority: 1, criticality: "high",
+  schema_version: 2, project_id: "alpha", kind: "client-product", lifecycle: "active", priority: 1, criticality: "high",
   current_goal: "Deliver the fictional release", next_action: "Review synthetic rollout", deadline: null,
   client_id: "private-client-reference", last_reviewed_at: null, tags: [],
 };

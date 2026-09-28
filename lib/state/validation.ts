@@ -6,6 +6,8 @@ import taskRecordSchema from "../../schemas/task-record.schema.json";
 import taskEventSchema from "../../schemas/task-event.schema.json";
 import projectProfileSchema from "../../schemas/project-profile.schema.json";
 import portfolioProfilesSchema from "../../schemas/portfolio-profiles.schema.json";
+import projectProfileV1Schema from "../../schemas/project-profile-v1.schema.json";
+import portfolioProfilesV1Schema from "../../schemas/portfolio-profiles-v1.schema.json";
 import signalSchema from "../../schemas/signal.schema.json";
 import signalFeedSchema from "../../schemas/signal-feed.schema.json";
 import signalHumanStateSchema from "../../schemas/signal-human-state.schema.json";
@@ -19,8 +21,12 @@ import clientCommitmentSchema from "../../schemas/client-commitment.schema.json"
 import clientPortfolioSchema from "../../schemas/client-portfolio.schema.json";
 import clientInputSchema from "../../schemas/client-input.schema.json";
 import commitmentInputSchema from "../../schemas/commitment-input.schema.json";
+import companyProfileSchema from "../../schemas/company-profile.schema.json";
+import objectiveSchema from "../../schemas/objective.schema.json";
+import organizationStateSchema from "../../schemas/organization-state.schema.json";
 import type { PortfolioProfilesDocument, ProjectProfile } from "../portfolio-profile";
 import type { ClientCommitment, ClientPortfolioDocument, ClientRecord } from "../client-portfolio";
+import type { CompanyProfile, Objective, OrganizationDocument } from "../organization";
 import type { Signal, SignalAction, SignalFeed, SignalHumanStateDocument } from "../signals/types";
 import type { ProjectStatusOverride, TaskEvent, TaskRecord, WorkSession } from "./types";
 
@@ -57,15 +63,19 @@ ajv.addFormat("date-time", {
 ajv.addSchema(taskEnvelopeSchema);
 ajv.addSchema(agentResultSchema);
 ajv.addSchema(projectProfileSchema);
+ajv.addSchema(projectProfileV1Schema);
 ajv.addSchema(signalSchema);
 ajv.addSchema(clientRecordSchema);
 ajv.addSchema(clientCommitmentSchema);
+ajv.addSchema(companyProfileSchema);
+ajv.addSchema(objectiveSchema);
 
 export const validateTaskRecord = ajv.compile(taskRecordSchema) as ValidateFunction<TaskRecord>;
 export const validateTaskEvent = ajv.compile(taskEventSchema) as ValidateFunction<TaskEvent>;
 export const validateProjectOverride = ajv.compile(projectOverrideSchema) as ValidateFunction<ProjectStatusOverride>;
 export const validateProjectProfile = ajv.compile(projectProfileSchema) as ValidateFunction<ProjectProfile>;
 export const validatePortfolioProfilesDocument = ajv.compile(portfolioProfilesSchema) as ValidateFunction<PortfolioProfilesDocument>;
+export const validatePortfolioProfilesDocumentV1 = ajv.compile(portfolioProfilesV1Schema);
 export const validateSignal = ajv.compile(signalSchema) as ValidateFunction<Signal>;
 export const validateSignalFeed = ajv.compile(signalFeedSchema) as ValidateFunction<SignalFeed>;
 export const validateSignalHumanStateDocument = ajv.compile(signalHumanStateSchema) as ValidateFunction<SignalHumanStateDocument>;
@@ -79,6 +89,9 @@ export const validateClientCommitment = ajv.compile(clientCommitmentSchema) as V
 export const validateClientPortfolioDocument = ajv.compile(clientPortfolioSchema) as ValidateFunction<ClientPortfolioDocument>;
 export const validateClientInput = ajv.compile(clientInputSchema);
 export const validateCommitmentInput = ajv.compile(commitmentInputSchema);
+export const validateCompanyProfile = ajv.compile(companyProfileSchema) as ValidateFunction<CompanyProfile>;
+export const validateObjective = ajv.compile(objectiveSchema) as ValidateFunction<Objective>;
+export const validateOrganizationDocument = ajv.compile(organizationStateSchema) as ValidateFunction<OrganizationDocument>;
 
 export function describeValidation(errors: ErrorObject[] | null | undefined): string {
   return errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ") ?? "invalid data";

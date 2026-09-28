@@ -14,6 +14,10 @@ const LIFECYCLES: { value: ProjectLifecycle; label: string }[] = [
 
 const LIFECYCLE_LABEL = Object.fromEntries(LIFECYCLES.map((item) => [item.value, item.label]));
 const CRITICALITY_LABEL: Record<ProjectProfile["criticality"], string> = { low: "Baja", medium: "Media", high: "Alta" };
+const CATEGORY_LABEL: Record<ProjectProfile["kind"], string> = {
+  personal: "Personal", "internal-tool": "Herramienta interna", "surtec-product": "Producto SURTEC",
+  "client-product": "Producto de cliente", experiment: "Experimento", template: "Plantilla",
+};
 
 export function ProjectProfileEditor({
   projectId,
@@ -39,7 +43,7 @@ export function ProjectProfileEditor({
   const prefix = `profile-${projectId}`;
 
   useEffect(() => {
-    if (!open || draft.kind !== "client") return;
+    if (!open || draft.kind !== "client-product") return;
     let active = true;
     getClients()
       .then(({ clients: items }) => { if (active) { setClients(items); setClientsError(null); } })
@@ -70,7 +74,7 @@ export function ProjectProfileEditor({
       current_goal: draft.current_goal?.trim() || null,
       next_action: draft.next_action?.trim() || null,
       deadline: draft.deadline || null,
-      client_id: draft.kind === "client" ? draft.client_id?.trim() || null : null,
+      client_id: draft.client_id?.trim() || null,
       last_reviewed_at: draft.last_reviewed_at || null,
       tags: [...new Set(tagText.split(",").map((tag) => tag.trim()).filter(Boolean))],
     };
@@ -96,7 +100,7 @@ export function ProjectProfileEditor({
           {profile ? (
             <>
               <p className="profile-editor__meta">
-                {profile.kind === "client" ? "Cliente" : "Personal"} · {LIFECYCLE_LABEL[profile.lifecycle]} · prioridad {profile.priority}/5 · criticidad {CRITICALITY_LABEL[profile.criticality]}
+                {CATEGORY_LABEL[profile.kind]} · {LIFECYCLE_LABEL[profile.lifecycle]} · prioridad {profile.priority}/5 · criticidad {CRITICALITY_LABEL[profile.criticality]}
                 {profile.deadline ? ` · vence ${profile.deadline}` : ""}
               </p>
               {profile.current_goal && <p className="profile-editor__goal">{profile.current_goal}</p>}
@@ -127,7 +131,11 @@ export function ProjectProfileEditor({
             <label htmlFor={`${prefix}-kind`}>Clasificación
               <select id={`${prefix}-kind`} value={draft.kind} disabled={busy} onChange={(event) => update("kind", event.target.value as ProjectProfile["kind"])}>
                 <option value="personal">Personal</option>
-                <option value="client">Cliente</option>
+                <option value="internal-tool">Herramienta interna</option>
+                <option value="surtec-product">Producto SURTEC</option>
+                <option value="client-product">Producto de cliente</option>
+                <option value="experiment">Experimento</option>
+                <option value="template">Plantilla</option>
               </select>
             </label>
             <label htmlFor={`${prefix}-lifecycle`}>Ciclo de vida
@@ -147,7 +155,7 @@ export function ProjectProfileEditor({
                 <option value="high">Alta</option>
               </select>
             </label>
-            {draft.kind === "client" && (
+            {draft.kind === "client-product" && (
               <label htmlFor={prefix + "-client-id"} className="profile-editor__wide">Cliente asociado
                 <select id={prefix + "-client-id"} value={draft.client_id ?? ""} disabled={busy} onChange={(event) => update("client_id", event.target.value || null)}>
                   <option value="">Sin cliente asociado</option>
@@ -159,6 +167,7 @@ export function ProjectProfileEditor({
                 {clientsError && <small role="status">No se pudo cargar el directorio; se conserva la referencia actual.</small>}
               </label>
             )}
+            {draft.kind !== "client-product" && draft.client_id && <p className="profile-editor__wide">Se conserva la referencia de cliente existente; la categoría actual no la usa para compromisos.</p>}
             <label htmlFor={`${prefix}-goal`} className="profile-editor__wide">Objetivo actual
               <textarea id={`${prefix}-goal`} maxLength={500} rows={2} value={draft.current_goal ?? ""} disabled={busy} onChange={(event) => update("current_goal", event.target.value || null)} />
             </label>

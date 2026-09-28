@@ -13,7 +13,7 @@ const projectId = "fictional-alpha";
 const clients = new Map<string, ClientRecord>();
 const commitments = new Map<string, ClientCommitment>();
 const profiles = new Map<string, ProjectProfile>([[projectId, {
-  schema_version: 1, project_id: projectId, kind: "client", lifecycle: "active", priority: 1, criticality: "high",
+  schema_version: 2, project_id: projectId, kind: "client-product", lifecycle: "active", priority: 1, criticality: "high",
   current_goal: "Synthetic client delivery", next_action: "Review the synthetic handoff", deadline: null,
   client_id: null, last_reviewed_at: null, tags: [],
 }]]);
@@ -39,7 +39,7 @@ function clientSummaries(): ClientSummary[] {
 function today(): TodayModel {
   const nextCommitment = [...commitments.values()].find((item) => ["planned", "in-progress", "blocked"].includes(item.state));
   const commitmentSignal: Signal | null = nextCommitment ? {
-    schema_version: 1, id: "sig_aaaaaaaaaaaaaaaaaaaaaaaa", project_id: nextCommitment.project_id, project_kind: "client",
+    schema_version: 1, id: "sig_aaaaaaaaaaaaaaaaaaaaaaaa", project_id: nextCommitment.project_id, project_kind: "client-product",
     source: "commitment", type: "commitment-due-soon", severity: "warning", title: nextCommitment.title,
     reason: "Synthetic delivery commitment is due soon.", evidence_at: observedAt, observed_at: observedAt,
     suggested_action: "Review the delivery next step.", action_kind: "review-commitment",

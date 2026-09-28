@@ -30,7 +30,7 @@ const evidence: SignalEvidenceSnapshot = {
   projects: [{
     id: "smoke-project", status: "discovered", git: null, integrations: null, last_activity_at: at, notes: [],
     profile: {
-      schema_version: 1, project_id: "smoke-project", kind: "personal", lifecycle: "active", priority: 3,
+      schema_version: 2, project_id: "smoke-project", kind: "personal", lifecycle: "active", priority: 3,
       criticality: "medium", current_goal: null, next_action: null, deadline,
       client_id: null, last_reviewed_at: at.slice(0, 10), tags: [],
     },

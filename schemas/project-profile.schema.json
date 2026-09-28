@@ -19,14 +19,14 @@
     "tags"
   ],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "project_id": {
       "type": "string",
       "minLength": 1,
       "maxLength": 100,
       "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]*$"
     },
-    "kind": { "enum": ["personal", "client"] },
+    "kind": { "enum": ["personal", "internal-tool", "surtec-product", "client-product", "experiment", "template"] },
     "lifecycle": { "enum": ["idea", "discovery", "active", "maintenance", "paused", "archived"] },
     "priority": { "type": "integer", "minimum": 1, "maximum": 5 },
     "criticality": { "enum": ["low", "medium", "high"] },
@@ -51,11 +51,5 @@
         "pattern": "\\S"
       }
     }
-  },
-  "allOf": [
-    {
-      "if": { "properties": { "kind": { "const": "personal" } }, "required": ["kind"] },
-      "then": { "properties": { "client_id": { "const": null } } }
-    }
-  ]
+  }
 }

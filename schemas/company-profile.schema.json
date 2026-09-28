@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.local/schemas/company-profile.schema.json",
+  "title": "Local SURTEC company profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "display_name", "mission", "operating_principles", "active_objective_ids", "last_reviewed_at"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "const": "surtec" },
+    "display_name": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "\\S" },
+    "mission": { "type": ["string", "null"], "minLength": 1, "maxLength": 800, "pattern": "\\S" },
+    "operating_principles": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "\\S" } },
+    "active_objective_ids": { "type": "array", "uniqueItems": true, "maxItems": 100, "items": { "type": "string", "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" } },
+    "last_reviewed_at": { "type": ["string", "null"], "format": "date" }
+  }
+}

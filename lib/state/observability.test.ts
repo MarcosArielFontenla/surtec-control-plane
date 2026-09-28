@@ -67,14 +67,14 @@ describe("daily observability", () => {
 
   it("composes deterministic portfolio sections without replacing task activity", () => {
     const now = new Date("2026-09-27T12:00:00Z");
-    const profile = (projectId: string, kind: "personal" | "client", deadline: string) => ({
-      schema_version: 1 as const, project_id: projectId, kind, lifecycle: "active" as const, priority: 1,
+    const profile = (projectId: string, kind: "personal" | "client-product", deadline: string) => ({
+      schema_version: 2 as const, project_id: projectId, kind, lifecycle: "active" as const, priority: 1,
       criticality: "high" as const, current_goal: null, next_action: null, deadline, client_id: "private-client-key",
       last_reviewed_at: null, tags: [],
     });
     const generated = generateSignals({
       projects: [
-        { id: "client-alpha", status: "active", git: null, profile: profile("client-alpha", "client", "2026-09-28"), integrations: null, last_activity_at: null, notes: [] },
+        { id: "client-alpha", status: "active", git: null, profile: profile("client-alpha", "client-product", "2026-09-28"), integrations: null, last_activity_at: null, notes: [] },
         { id: "personal-beta", status: "active", git: null, profile: profile("personal-beta", "personal", "2026-09-29"), integrations: null, last_activity_at: null, notes: [] },
       ], tasks: [], issues: [],
     }, now);

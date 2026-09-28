@@ -8,9 +8,9 @@ import { ProjectProfileEditor } from "./ProjectProfileEditor";
 vi.mock("../api", () => ({ getClients: vi.fn(), saveProjectProfile: vi.fn() }));
 
 const savedProfile: ProjectProfile = {
-  schema_version: 1,
+  schema_version: 2,
   project_id: "alpha",
-  kind: "client",
+  kind: "client-product",
   lifecycle: "active",
   priority: 2,
   criticality: "high",
@@ -28,7 +28,7 @@ describe("ProjectProfileEditor", () => {
   it("visually separates local profile context and summarizes a saved profile", () => {
     render(<ProjectProfileEditor projectId="alpha" profile={savedProfile} onSaved={vi.fn()} />);
     expect(screen.getByText("PERFIL OPERATIVO · LOCAL")).toBeTruthy();
-    expect(screen.getByText(/Cliente · Activo · prioridad 2\/5 · criticidad Alta/)).toBeTruthy();
+    expect(screen.getByText(/Producto de cliente · Activo · prioridad 2\/5 · criticidad Alta/)).toBeTruthy();
     expect(screen.getByText("Ship release 2.")).toBeTruthy();
     expect(screen.getByText(/Siguiente:/)).toBeTruthy();
   });
@@ -45,7 +45,7 @@ describe("ProjectProfileEditor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /completar perfil/i }));
     expect(screen.getByText(/no modifica `registry\/projects\.yml` ni se incluye en Git/i)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Clasificación"), { target: { value: "client" } });
+    fireEvent.change(screen.getByLabelText("Clasificación"), { target: { value: "client-product" } });
     fireEvent.change(screen.getByLabelText("Ciclo de vida"), { target: { value: "discovery" } });
     fireEvent.change(screen.getByLabelText(/Prioridad/), { target: { value: "1" } });
     fireEvent.change(screen.getByLabelText("Criticidad"), { target: { value: "high" } });

@@ -8,6 +8,8 @@ import type { ProjectProfile } from "../../../lib/portfolio-profile";
 import type { ClientPortfolioDocument } from "../../../lib/client-portfolio";
 import type { ProjectIntegrationsReader } from "../../../lib/integrations/types";
 import type { SignalEvidenceSnapshot } from "../../../lib/signals/engine";
+import type { OrganizationSnapshot } from "../../../lib/organization";
+import { readOrganizationSnapshot } from "../../../lib/state/organization";
 import { discoverProjects, DEFAULT_IGNORE } from "../../../lib/discover";
 import { assemblePortfolio } from "../../../lib/portfolio";
 import { loadProjectConfig } from "./portfolio-config";
@@ -27,6 +29,7 @@ export interface SignalEvidenceDependencies {
   readTasks?: () => TaskRecord[];
   readProfiles?: () => ProjectProfile[];
   readClientPortfolio?: () => ClientPortfolioDocument;
+  readOrganization?: () => OrganizationSnapshot;
   readNotes?: (projectId: string) => Note[];
   readInbox?: () => Promise<Inbox>;
   readRegisteredProjects?: () => { id: string; repo: string | null }[];
@@ -50,6 +53,7 @@ export function createSignalEvidenceReader(repoRoot: string, dependencies: Signa
   const readTasks = dependencies.readTasks ?? listTasks;
   const readProfiles = dependencies.readProfiles ?? listProjectProfiles;
   const readClientPortfolio = dependencies.readClientPortfolio ?? loadClientPortfolio;
+  const readOrganization = dependencies.readOrganization ?? (() => readOrganizationSnapshot());
   const readNotes = dependencies.readNotes ?? listNotes;
   const inboxCache = dependencies.inboxCache ?? createInboxCache();
   const readInboxSnapshot = dependencies.readInbox ?? (() => inboxCache.get("inbox", () => readInbox(repoRoot)));
@@ -62,6 +66,7 @@ export function createSignalEvidenceReader(repoRoot: string, dependencies: Signa
       let tasks: TaskRecord[] = [];
       let profiles: ProjectProfile[] = [];
       let clientPortfolio: ClientPortfolioDocument = { schema_version: 1, clients: {}, commitments: {} };
+      let organization: OrganizationSnapshot | undefined;
       let profilesAvailable = true;
       let discovered: { id: string; path: string }[] = [];
       let inbox: Inbox = { items: [], repos: [] };
@@ -69,6 +74,7 @@ export function createSignalEvidenceReader(repoRoot: string, dependencies: Signa
       try { tasks = readTasks(); } catch { warnings.push("Task evidence could not be read; other signal sources remain available."); }
       try { profiles = readProfiles(); } catch { profilesAvailable = false; warnings.push("Portfolio profiles could not be read; other signal sources remain available."); }
       try { clientPortfolio = readClientPortfolio(); } catch { warnings.push("Client commitment evidence could not be read; other signal sources remain available."); }
+      try { organization = readOrganization(); } catch { warnings.push("Organization objectives could not be read; project signals remain available."); }
       try { discovered = discover(root, ignore); } catch { warnings.push("Project discovery failed; other signal sources remain available."); }
       try { inbox = await readInboxSnapshot(); } catch { warnings.push("GitHub issue evidence could not be read; other signal sources remain available."); }
       try { registered = readRegisteredProjects(); } catch { warnings.push("Integration registry could not be read; local signal sources remain available."); }
@@ -125,7 +131,7 @@ export function createSignalEvidenceReader(repoRoot: string, dependencies: Signa
         if (!commitment.client_id) return true;
         const linkedClient = clientPortfolio.clients[commitment.client_id];
         const profile = profileById.get(commitment.project_id);
-        if (!linkedClient || profile?.kind !== "client" || profile.client_id !== linkedClient.id) {
+        if (!linkedClient || profile?.kind !== "client-product" || profile.client_id !== linkedClient.id) {
           warnings.push("One or more client commitment associations are invalid; those signals were omitted.");
           return false;
         }
@@ -142,7 +148,7 @@ export function createSignalEvidenceReader(repoRoot: string, dependencies: Signa
         next_action: commitment.next_action,
         updated_at: commitment.updated_at,
       }));
-      return { projects, tasks, issues: inbox.items, sessions: [], commitments, warnings: [...new Set(warnings)].slice(0, 50) };
+      return { projects, tasks, issues: inbox.items, sessions: [], commitments, organization, warnings: [...new Set(warnings)].slice(0, 50) };
     },
   };
 }

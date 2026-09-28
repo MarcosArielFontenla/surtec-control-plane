@@ -1,13 +1,14 @@
-import { CalendarDays, LayoutDashboard, Cpu, Inbox, Activity, Users, BarChart3, type LucideIcon } from "lucide-react";
+import { CalendarDays, LayoutDashboard, Cpu, Inbox, Activity, Users, BarChart3, Building2, type LucideIcon } from "lucide-react";
 import { BrandMark } from "./BrandMark";
 import type { Summary } from "../derive-kpis";
 
-export const NAV_ITEMS = ["Hoy", "Overview", "Clientes", "Procesos", "Issues", "Actividad", "Feedback"] as const;
+export const NAV_ITEMS = ["Hoy", "Overview", "SURTEC", "Clientes", "Procesos", "Issues", "Actividad", "Feedback"] as const;
 export type NavItem = (typeof NAV_ITEMS)[number];
 
 const NAV_ICON: Record<NavItem, LucideIcon> = {
   Hoy: CalendarDays,
   Overview: LayoutDashboard,
+  SURTEC: Building2,
   Clientes: Users,
   Procesos: Cpu,
   Issues: Inbox,

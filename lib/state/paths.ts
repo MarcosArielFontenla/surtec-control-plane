@@ -47,3 +47,7 @@ export function signalHumanStatePath(base: string = stateDir()): string {
 export function workSessionsPath(base: string = stateDir()): string {
   return join(base, "sessions", "work-sessions.json");
 }
+
+export function organizationStatePath(base: string = stateDir()): string {
+  return join(base, "organization", "organization.json");
+}

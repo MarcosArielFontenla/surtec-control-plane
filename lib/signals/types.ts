@@ -1,6 +1,6 @@
 export type SignalSeverity = "info" | "warning" | "critical";
 export type SignalState = "open" | "acknowledged" | "snoozed" | "resolved";
-export type SignalSource = "git" | "github" | "ci" | "deployment" | "issue" | "task" | "profile" | "note" | "session" | "commitment";
+export type SignalSource = "git" | "github" | "ci" | "deployment" | "issue" | "task" | "profile" | "note" | "session" | "commitment" | "objective";
 
 export type SignalRankingTier =
   | "production-failure"
@@ -15,7 +15,7 @@ export interface Signal {
   schema_version: 1;
   id: string;
   project_id: string;
-  project_kind: "personal" | "client" | null;
+  project_kind: "personal" | "internal-tool" | "surtec-product" | "client-product" | "experiment" | "template" | null;
   source: SignalSource;
   type: string;
   severity: SignalSeverity;

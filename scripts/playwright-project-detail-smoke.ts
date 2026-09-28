@@ -41,9 +41,9 @@ const overview: OverviewModel = {
 };
 
 const profile = (id: string, kind: ProjectProfile["kind"] = "personal"): ProjectProfile => ({
-  schema_version: 1, project_id: id, kind, lifecycle: "active", priority: 2, criticality: "medium",
+  schema_version: 2, project_id: id, kind, lifecycle: "active", priority: 2, criticality: "medium",
   current_goal: `Synthetic goal for ${id}`, next_action: `Review synthetic next action for ${id}`,
-  deadline: null, client_id: kind === "client" ? "private-fixture-client-id" : null,
+  deadline: null, client_id: kind === "client-product" ? "private-fixture-client-id" : null,
   last_reviewed_at: observedAt.slice(0, 10), tags: ["fictional"],
 });
 
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
       else if (url.pathname === "/api/today") body = today;
       else if (url.pathname === "/api/runs") body = { runs: [] };
       else if (url.pathname === "/api/portfolio/profiles") body = { profiles: [
-        profile("configured-project", "client"), profile("unconfigured-project"), profile("degraded-project"),
+        profile("configured-project", "client-product"), profile("unconfigured-project"), profile("degraded-project"),
       ] };
       else if (url.pathname === "/api/session") body = { token: sessionToken };
       else if (url.pathname === "/api/dispatch-options") body = { projects: projects.map((item) => ({

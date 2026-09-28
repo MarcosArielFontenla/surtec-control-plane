@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.local/schemas/objective.schema.json",
+  "title": "SURTEC objective",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "company_id", "title", "desired_outcome", "success_criteria", "status", "horizon", "priority", "target_date", "parent_objective_id", "project_ids", "owner", "last_reviewed_at"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "company_id": { "const": "surtec" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
+    "desired_outcome": { "type": "string", "minLength": 1, "maxLength": 800, "pattern": "\\S" },
+    "success_criteria": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 240, "pattern": "\\S" } },
+    "status": { "enum": ["draft", "active", "paused", "achieved", "cancelled"] },
+    "horizon": { "enum": ["now", "quarter", "year", "ongoing"] },
+    "priority": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "target_date": { "type": ["string", "null"], "format": "date" },
+    "parent_objective_id": { "type": ["string", "null"], "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "project_ids": { "type": "array", "uniqueItems": true, "maxItems": 100, "items": { "type": "string", "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" } },
+    "owner": { "const": "marcos" },
+    "last_reviewed_at": { "type": ["string", "null"], "format": "date" }
+  }
+}

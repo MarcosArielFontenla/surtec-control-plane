@@ -22,7 +22,7 @@ const project: ProjectView = {
 function signal(number: number, over: Partial<Signal> = {}): Signal {
   return {
     schema_version: 1, id: `sig_${number.toString(16).padStart(24, "0")}`, project_id: `project-${number}`,
-    project_kind: "client", source: "profile", type: "deadline-approaching", severity: "warning",
+    project_kind: "client-product", source: "profile", type: "deadline-approaching", severity: "warning",
     title: `Deadline recommendation ${number}`, reason: `Deadline evidence ${number} is due soon.`,
     evidence_at: "2026-09-21T11:00:00Z", observed_at: "2026-09-21T12:00:00Z",
     suggested_action: "Review the recorded next step.", action_kind: "review-deadline",

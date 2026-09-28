@@ -3,6 +3,8 @@ import type { ProjectProfile } from "../portfolio-profile";
 import type { ProjectIntegrationsSnapshot } from "../integrations/types";
 import type { TaskRecord } from "../state/types";
 import type { Note } from "../state/notes";
+import type { Objective, OrganizationSnapshot } from "../organization";
+import { validateSignal } from "../state/validation";
 import type { SignalProjectEvidence, SignalEvidenceSnapshot } from "./engine";
 import { generateSignals } from "./engine";
 
@@ -11,9 +13,9 @@ const observedAt = "2026-09-27T11:59:00.000Z";
 
 function profile(overrides: Partial<ProjectProfile> = {}): ProjectProfile {
   return {
-    schema_version: 1,
+    schema_version: 2,
     project_id: "alpha",
-    kind: "client",
+    kind: "client-product",
     lifecycle: "active",
     priority: 1,
     criticality: "high",
@@ -71,6 +73,48 @@ function task(overrides: Record<string, unknown> = {}): TaskRecord {
 const note: Note = { id: "note-1", text: "private commercial note", done: false, created_at: "2026-08-01T00:00:00.000Z" };
 
 describe("deterministic signal engine", () => {
+  it("emits deterministic objective signals, preserves personal independence, and explains the primary goal", () => {
+    const makeObjective = (id: string, overrides: Partial<Objective> = {}): Objective => ({
+      schema_version: 1, id, company_id: "surtec", title: `Outcome ${id}`, desired_outcome: "A verifiable result.",
+      success_criteria: ["Evidence exists."], status: "active", horizon: "quarter", priority: 2, target_date: null,
+      parent_objective_id: null, project_ids: [], owner: "marcos", last_reviewed_at: "2026-09-27", ...overrides,
+    });
+    const objectives = [
+      makeObjective("obj-healthy", { project_ids: ["alpha"], target_date: "2026-09-28" }),
+      makeObjective("obj-missing", { project_ids: [], success_criteria: [], last_reviewed_at: null }),
+      makeObjective("obj-stale", { project_ids: ["beta"], last_reviewed_at: "2026-08-01" }),
+      makeObjective("obj-paused", { project_ids: ["gamma"], status: "paused" }),
+      makeObjective("obj-achieved", { project_ids: ["delta"], status: "achieved" }),
+    ];
+    const organization: OrganizationSnapshot = {
+      company: { schema_version: 1, id: "surtec", display_name: "SURTEC", mission: null, operating_principles: [], active_objective_ids: ["obj-healthy", "obj-missing", "obj-stale"], last_reviewed_at: null },
+      objectives,
+      project_objectives: {
+        alpha: { objective_ids: ["obj-healthy"], primary_objective_id: "obj-healthy" },
+        beta: { objective_ids: ["obj-stale"], primary_objective_id: "obj-stale" },
+        gamma: { objective_ids: ["obj-paused"], primary_objective_id: "obj-paused" },
+        delta: { objective_ids: ["obj-achieved"], primary_objective_id: "obj-achieved" },
+      },
+    };
+    const projectFor = (id: string, kind: ProjectProfile["kind"]): SignalProjectEvidence => project({
+      id, profile: profile({ project_id: id, kind, deadline: id === "alpha" ? "2026-09-28" : null }),
+    });
+    const generated = generateSignals({
+      projects: [projectFor("alpha", "surtec-product"), projectFor("beta", "internal-tool"), projectFor("gamma", "experiment"), projectFor("delta", "client-product"), projectFor("personal", "personal"), projectFor("unlinked", "template")],
+      tasks: [], issues: [{ projectId: "delta", slug: "fictional/delta", number: 14, title: "Synthetic open issue", url: "https://example.test/issues/14", updatedAt: observedAt, labels: [], author: null }],
+      organization,
+    }, NOW);
+
+    expect(generated.map((item) => item.type)).toEqual(expect.arrayContaining([
+      "objective-without-projects", "objective-without-success-criteria", "objective-review-stale",
+      "objective-target-approaching", "project-linked-to-inactive-objective", "achieved-objective-has-open-issue",
+      "active-project-without-objective",
+    ]));
+    expect(generated.some((item) => item.type === "active-project-without-objective" && item.project_id === "personal")).toBe(false);
+    expect(generated.find((item) => item.project_id === "alpha" && item.type === "deadline-approaching")?.evidence.primary_objective_title).toBe("Outcome obj-healthy");
+    expect(generated.every((item) => validateSignal(item))).toBe(true);
+  });
+
   it("creates explainable signals from deployments, CI, Git, PRs, tasks, issues, deadlines, stale profiles, and notes", () => {
     const snapshot: SignalEvidenceSnapshot = {
       projects: [project({
@@ -112,7 +156,7 @@ describe("deterministic signal engine", () => {
     expect(signals.find((signal) => signal.type === "deployment-down")).toMatchObject({ evidence_at: observedAt, observed_at: NOW.toISOString() });
     expect(signals.find((signal) => signal.type === "deadline-overdue")?.ranking).toEqual({ tier: "client-commitment", order: 2 });
     expect(signals.find((signal) => signal.type === "deployment-down")?.ranking).toEqual({ tier: "production-failure", order: 1 });
-    expect(signals.find((signal) => signal.type === "deadline-overdue")?.project_kind).toBe("client");
+    expect(signals.find((signal) => signal.type === "deadline-overdue")?.project_kind).toBe("client-product");
     expect(JSON.stringify(signals)).not.toContain("client-local");
   });
 

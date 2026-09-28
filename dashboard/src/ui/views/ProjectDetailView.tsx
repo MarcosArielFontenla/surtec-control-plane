@@ -18,6 +18,10 @@ const HEALTH_LABEL: Record<IntegrationHealth, string> = {
   unknown: "Desconocido",
   unconfigured: "Sin configurar",
 };
+const PROJECT_CATEGORY_LABEL: Record<ProjectProfile["kind"], string> = {
+  personal: "Personal", "internal-tool": "Herramienta interna", "surtec-product": "Producto SURTEC",
+  "client-product": "Producto de cliente", experiment: "Experimento", template: "Plantilla",
+};
 
 function ProviderCard({
   title,
@@ -245,7 +249,7 @@ export function ProjectDetailView({
   const resolvedSignals = projectSignals.filter((signal) => signal.state === "resolved");
   const projectActivity = useMemo(() => (activity?.items ?? []).filter((item) => item.project === id), [activity, id]);
   const sessionState = today?.portfolio.sessions ?? { available: false, unavailable_reason: "Work-session state has not loaded yet.", active: [], paused: [], completed: [] };
-  const instructions = profile?.kind === "client"
+  const instructions = profile?.kind === "client-product"
     ? "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form."
     : profile?.next_action ?? profile?.current_goal ?? `Review the current operating state of ${id} and propose a safe next step.`;
 
@@ -265,7 +269,7 @@ export function ProjectDetailView({
       {openError && <div className="banner banner--warn" role="alert">No pude abrir el proyecto: {openError}</div>}
 
       <section className="project-detail-section panel">
-        <div className="section-head"><h2>Perfil y próximo paso</h2><span className="meta">{profile?.kind === "client" ? "Cliente" : profile ? "Personal" : "Sin perfil"}</span></div>
+        <div className="section-head"><h2>Perfil y próximo paso</h2><span className="meta">{profile ? PROJECT_CATEGORY_LABEL[profile.kind] : "Sin perfil"}</span></div>
         {profileError ? <div className="banner banner--warn">No pude leer el perfil operativo ({profileError}); la edición quedó desactivada para proteger el estado local.</div>
           : !profile && <p className="empty-mini">El proyecto funciona sin perfil local. Podés registrar su objetivo y próxima acción.</p>}
         <ProjectProfileEditor projectId={id} profile={profile} ready={profileReady} loading={profileLoading} onSaved={onProfileSaved} />

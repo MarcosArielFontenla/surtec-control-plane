@@ -1,9 +1,9 @@
-export type ProjectKind = "personal" | "client";
+export type ProjectKind = "personal" | "internal-tool" | "surtec-product" | "client-product" | "experiment" | "template";
 export type ProjectLifecycle = "idea" | "discovery" | "active" | "maintenance" | "paused" | "archived";
 export type Criticality = "low" | "medium" | "high";
 
 export interface ProjectProfile {
-  schema_version: 1;
+  schema_version: 2;
   project_id: string;
   kind: ProjectKind;
   lifecycle: ProjectLifecycle;
@@ -18,13 +18,13 @@ export interface ProjectProfile {
 }
 
 export interface PortfolioProfilesDocument {
-  schema_version: 1;
+  schema_version: 2;
   projects: Record<string, ProjectProfile>;
 }
 
 export function emptyProjectProfile(projectId: string): ProjectProfile {
   return {
-    schema_version: 1,
+    schema_version: 2,
     project_id: projectId,
     kind: "personal",
     lifecycle: "active",

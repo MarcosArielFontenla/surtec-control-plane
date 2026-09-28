@@ -23,6 +23,10 @@ const SEVERITY_LABELS: Record<Signal["severity"], string> = {
   warning: "Atención",
   info: "Oportunidad",
 };
+const PROJECT_CATEGORY_LABEL: Record<NonNullable<Signal["project_kind"]>, string> = {
+  personal: "Personal", "internal-tool": "Herramienta interna", "surtec-product": "Producto SURTEC",
+  "client-product": "Producto de cliente", experiment: "Experimento", template: "Plantilla",
+};
 
 function OutcomeSection({ title, tasks, onOpenTask }: { title: string; tasks: TaskView[]; onOpenTask: (id: string) => void }) {
   return (
@@ -68,7 +72,8 @@ function SignalCard({
   onPrepareTask: (signal: Signal) => void;
 }) {
   const taskId = signal.evidence.task_id;
-  const category = signal.project_kind === "client" ? "Cliente" : signal.project_kind === "personal" ? "Personal" : "Proyecto";
+  const category = signal.project_id === "surtec" && signal.source === "objective" ? "Objetivo SURTEC"
+    : signal.project_kind ? PROJECT_CATEGORY_LABEL[signal.project_kind] : "Proyecto";
   const stateLabel = signal.state === "acknowledged" ? "Reconocida" : signal.state === "snoozed" ? "Pospuesta" : signal.state === "resolved" ? "Resuelta" : null;
   return (
     <article className={`today-signal panel${signal.severity === "critical" ? " today-signal--critical" : ""}`}>
@@ -81,6 +86,7 @@ function SignalCard({
       <p className="today-signal-project">{signal.project_id}</p>
       <h3>{signal.title}</h3>
       <p className="today-signal-reason">{signal.reason}</p>
+      {typeof signal.evidence.primary_objective_title === "string" && <p className="today-signal-objective">Apoya el objetivo: <b>{signal.evidence.primary_objective_title}</b></p>}
       <p className="today-signal-next"><b>Siguiente paso</b> {signal.suggested_action}</p>
       <div className="today-signal-evidence">
         <span title={signal.evidence_at}>Evidencia {relativeTime(signal.evidence_at)}</span>
@@ -105,8 +111,8 @@ function SignalCard({
       </div>
       <div className="today-signal-links">
         {typeof taskId === "string" && <button type="button" className="ghost-btn" onClick={() => onOpenTask(taskId)}>Ver tarea <ArrowUpRight size={13} /></button>}
-        <button type="button" className="ghost-btn" onClick={() => onOpenProject(signal.project_id)}>Abrir proyecto <ArrowUpRight size={13} /></button>
-        <button type="button" className="ghost-btn" onClick={() => onPrepareTask(signal)}><Send size={13} /> Preparar tarea</button>
+        <button type="button" className="ghost-btn" onClick={() => onOpenProject(signal.project_id)}>{signal.project_id === "surtec" && signal.source === "objective" ? "Abrir SURTEC" : "Abrir proyecto"} <ArrowUpRight size={13} /></button>
+        {!(signal.project_id === "surtec" && signal.source === "objective") && <button type="button" className="ghost-btn" onClick={() => onPrepareTask(signal)}><Send size={13} /> Preparar tarea</button>}
       </div>
       {busy && <span className="today-signal-busy" role="status">Guardando acción…</span>}
     </article>

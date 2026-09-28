@@ -25,7 +25,7 @@ import { createActivityCache, buildActivityFeed } from "./activity-read";
 import { createDeployCache, readDeployHealth, resolveDeployUrl, DeployError } from "./deploy-read";
 import { createRailwayCache, readRailwayDeploy, resolveRailway, RailwayError } from "./railway-read";
 import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../lib/state/notes";
-import { listProjectProfiles, upsertProjectProfile, UnsupportedPortfolioSchemaVersionError } from "../../../lib/state/portfolio-profiles";
+import { listProjectProfilesWithMigration, upsertProjectProfile, UnsupportedPortfolioSchemaVersionError } from "../../../lib/state/portfolio-profiles";
 import type { ProjectProfile } from "../../../lib/portfolio-profile";
 import { validateProjectProfile, describeValidation, validateWorkSessionAction, validateWorkSessionStart } from "../../../lib/state/validation";
 import { TaskControlError, type TaskControl } from "../../../runner/task-orchestrator";
@@ -45,12 +45,17 @@ import { UnsupportedWorkSessionSchemaVersionError } from "../../../lib/state/wor
 import { createClientPortfolioService, ClientPortfolioConflictError, ClientPortfolioNotFoundError, ClientPortfolioValidationError, type ClientPortfolioService } from "./client-portfolio-service";
 import { ClientPortfolioStoreError, UnsupportedClientPortfolioVersionError } from "../../../lib/state/client-portfolio";
 import type { ClientTaskContext } from "./client-portfolio-service";
+import { createOrganizationService, OrganizationNotFoundError, OrganizationValidationError, type OrganizationService } from "./organization-service";
+import { UnsupportedOrganizationVersionError } from "../../../lib/state/organization";
+import { validateCompanyProfile, validateObjective } from "../../../lib/state/validation";
+import type { Objective } from "../../../lib/organization";
 
 export interface AppDependencies {
   integrations?: ProjectIntegrationsReader;
   signals?: SignalService;
   workSessions?: WorkSessionService;
   clientPortfolio?: ClientPortfolioService;
+  organization?: OrganizationService;
 }
 
 type JsonBodyResult = { ok: true; value: unknown } | { ok: false; status: 400 | 413; error: string };
@@ -102,6 +107,7 @@ export function createApp(
     readRun: (runId) => pm.get(runId)?.record ?? null,
   });
   const clientPortfolio = dependencies.clientPortfolio ?? createClientPortfolioService(repoRoot);
+  const organization = dependencies.organization ?? createOrganizationService();
 
   const workSessionErrorResponse = (c: Context, error: unknown) => {
     if (error instanceof WorkSessionValidationError) return c.json({ error: error.message }, 400);
@@ -121,6 +127,70 @@ export function createApp(
     if (error instanceof ClientPortfolioStoreError) return c.json({ error: "local client portfolio state is unavailable" }, 500);
     return c.json({ error: "local client portfolio state is unavailable" }, 500);
   };
+
+  const organizationErrorResponse = (c: Context, error: unknown) => {
+    if (error instanceof UnsupportedOrganizationVersionError) return c.json({ error: error.message }, 409);
+    if (error instanceof OrganizationValidationError) return c.json({ error: error.message }, 400);
+    if (error instanceof OrganizationNotFoundError) return c.json({ error: error.message }, 404);
+    if (error instanceof StateLockConflictError) return c.json({ error: "organization state is being updated; retry shortly" }, 409);
+    return c.json({ error: "local organization state is unavailable" }, 500);
+  };
+
+  app.get("/api/organization", (c) => {
+    c.header("Cache-Control", "no-store");
+    try { return c.json(organization.read()); }
+    catch (error) { return organizationErrorResponse(c, error); }
+  });
+
+  app.put("/api/organization/company", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c, 16 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    if (!validateCompanyProfile(parsed.value)) return c.json({ error: "invalid SURTEC company profile" }, 400);
+    try { return c.json({ company: organization.saveCompany(parsed.value as never) }); }
+    catch (error) { return organizationErrorResponse(c, error); }
+  });
+
+  app.post("/api/organization/objectives", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c, 16 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    if (typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) return c.json({ error: "invalid objective" }, 400);
+    const input = parsed.value as Record<string, unknown>;
+    const allowedKeys = new Set(["title", "desired_outcome", "success_criteria", "status", "horizon", "priority", "target_date", "parent_objective_id"]);
+    if (Object.keys(input).some((key) => !allowedKeys.has(key))) return c.json({ error: "invalid objective" }, 400);
+    const candidate = {
+      ...input, schema_version: 1, id: "objective-validation", company_id: "surtec", project_ids: [], owner: "marcos", last_reviewed_at: null,
+    };
+    if (!validateObjective(candidate)) return c.json({ error: "invalid objective" }, 400);
+    try {
+      const objective = organization.createObjective(input as unknown as Parameters<OrganizationService["createObjective"]>[0]);
+      return c.json({ objective }, 201);
+    } catch (error) { return organizationErrorResponse(c, error); }
+  });
+
+  app.put("/api/organization/objectives/:id", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c, 16 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    if (!validateObjective(parsed.value) || (parsed.value as Objective).id !== c.req.param("id")) return c.json({ error: "invalid objective" }, 400);
+    try { return c.json({ objective: organization.saveObjective(parsed.value as Objective) }); }
+    catch (error) { return organizationErrorResponse(c, error); }
+  });
+
+  app.put("/api/organization/projects/:id/objectives", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c, 8 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    if (typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) return c.json({ error: "invalid project objective links" }, 400);
+    const body = parsed.value as { objective_ids?: unknown; primary_objective_id?: unknown };
+    if (!Array.isArray(body.objective_ids) || body.objective_ids.some((id) => typeof id !== "string")
+      || !(body.primary_objective_id === null || typeof body.primary_objective_id === "string")) return c.json({ error: "invalid project objective links" }, 400);
+    try {
+      const links = organization.setProjectObjectives(c.req.param("id"), body.objective_ids as string[], body.primary_objective_id as string | null);
+      return c.json({ links, organization: organization.read() });
+    } catch (error) { return organizationErrorResponse(c, error); }
+  });
 
   app.get("/api/clients", (c) => {
     c.header("Cache-Control", "no-store");
@@ -552,7 +622,7 @@ export function createApp(
   app.get("/api/portfolio/profiles", (c) => {
     c.header("Cache-Control", "no-store");
     try {
-      return c.json({ profiles: listProjectProfiles() });
+      return c.json(listProjectProfilesWithMigration());
     } catch (err) {
       const status = err instanceof UnsupportedPortfolioSchemaVersionError ? 409 : 500;
       return c.json({ error: (err as Error).message }, status);

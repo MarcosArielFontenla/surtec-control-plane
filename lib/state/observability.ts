@@ -87,7 +87,7 @@ export function buildToday(
     recommendations: actionableSignals.slice(0, 3),
     critical_attention: actionableSignals.filter((signal) => signal.severity === "critical" || ["production-failure", "client-commitment", "blocked-work"].includes(signal.ranking.tier)),
     work_to_continue: actionableSignals.filter((signal) => signal.ranking.tier === "unfinished-work"),
-    client_commitments: actionableSignals.filter((signal) => signal.project_kind === "client" && (
+    client_commitments: actionableSignals.filter((signal) => signal.project_kind === "client-product" && (
       signal.ranking.tier === "client-commitment" || signal.type.startsWith("deadline-")
     )),
     personal_opportunities: actionableSignals.filter((signal) => signal.project_kind === "personal" && ["unfinished-work", "maintenance", "hygiene"].includes(signal.ranking.tier)),

@@ -1,10 +1,10 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "projects": {
     "demo-console": {
-      "schema_version": 1,
+      "schema_version": 2,
       "project_id": "demo-console",
-      "kind": "client",
+      "kind": "client-product",
       "lifecycle": "active",
       "priority": 2,
       "criticality": "medium",

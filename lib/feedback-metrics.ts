@@ -14,6 +14,7 @@ export const SIGNAL_FRESHNESS_DAYS: Record<SignalSource, number> = {
   note: 14,
   session: 7,
   commitment: 30,
+  objective: 30,
 };
 
 export interface FeedbackMetrics {

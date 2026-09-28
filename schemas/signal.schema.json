@@ -9,8 +9,8 @@
     "schema_version": { "const": 1 },
     "id": { "type": "string", "pattern": "^sig_[a-f0-9]{24}$" },
     "project_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
-    "project_kind": { "type": ["string", "null"], "enum": ["personal", "client", null] },
-    "source": { "type": "string", "enum": ["git", "github", "ci", "deployment", "issue", "task", "profile", "note", "session", "commitment"] },
+    "project_kind": { "type": ["string", "null"], "enum": ["personal", "internal-tool", "surtec-product", "client-product", "experiment", "template", null] },
+    "source": { "type": "string", "enum": ["git", "github", "ci", "deployment", "issue", "task", "profile", "note", "session", "commitment", "objective"] },
     "type": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,79}$" },
     "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
     "title": { "type": "string", "minLength": 1, "maxLength": 240 },
@@ -54,7 +54,7 @@
         "updated_at": { "type": "string", "maxLength": 100 },
         "deadline": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
         "days_remaining": { "type": "integer" },
-        "kind": { "type": "string", "enum": ["client", "personal"] },
+        "kind": { "type": "string", "enum": ["personal", "internal-tool", "surtec-product", "client-product", "experiment", "template"] },
         "priority": { "type": "integer", "minimum": 1, "maximum": 5 },
         "last_activity_at": { "type": ["string", "null"], "maxLength": 100 },
         "inactive_days": { "type": ["integer", "null"], "minimum": 0 },
@@ -75,7 +75,11 @@
         "session_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
         "commitment_id": { "type": "string", "pattern": "^commitment-[A-Za-z0-9][A-Za-z0-9_-]{0,99}$" },
         "commitment_state": { "enum": ["planned", "in-progress", "blocked", "completed", "cancelled"] },
-        "criticality": { "enum": ["low", "medium", "high"] }
+        "criticality": { "enum": ["low", "medium", "high"] },
+        "objective_id": { "type": "string", "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+        "objective_title": { "type": "string", "maxLength": 160 },
+        "primary_objective_id": { "type": "string", "maxLength": 100 },
+        "primary_objective_title": { "type": "string", "maxLength": 160 }
       }
     }
   }

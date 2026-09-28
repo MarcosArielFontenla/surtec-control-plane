@@ -11,9 +11,9 @@ import { createClientPortfolioService, ClientPortfolioConflictError, ClientPortf
 let root: string | undefined;
 const NOW = new Date("2026-09-28T12:00:00.000Z");
 const profile = (clientId: string | null = "client-test"): ProjectProfile => ({
-  schema_version: 1,
+  schema_version: 2,
   project_id: "alpha",
-  kind: "client",
+  kind: "client-product",
   lifecycle: "active",
   priority: 1,
   criticality: "high",

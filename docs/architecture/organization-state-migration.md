@@ -64,3 +64,9 @@ If restoration itself fails, do not claim rollback success. Preserve the source 
 ## Phase J exclusions
 
 This contract does not add `Company`, `Objective`, or `Issue` records, a schema migrator, backup or quarantine directories, a migration command, or state changes. Each later phase must implement and test only the migration needed by its concrete persisted contract before writing new-format data.
+
+## Phase K implementation addendum
+
+Phase K adds `state/organization/organization.json` as a new `schema_version: 1` aggregate for the single SURTEC company, objective records, and canonical project-objective links. The aggregate is validated as a whole, checked for parent cycles/depth and cross-record consistency, and replaced atomically under its own lock. An absent organization store returns the documented empty SURTEC profile without creating a file; malformed and future versions fail closed.
+
+The existing portfolio profile contract moves from v1 to v2. On its first read, the locked migration validates the complete v1 source and target, reports only counts and SHA-256 fingerprints, saves/verifies a byte-for-byte ignored backup under `state/backups/phase-k-portfolio-profiles/`, validates a unique same-directory staged file, then atomically replaces the source. The deterministic category map is `personal -> personal` and `client -> client-product`; every other profile field is copied unchanged. No v1 portfolio profile file was present in the local workspace when Phase K began, so the migration path was validated with synthetic fixtures and no user profile bytes were migrated during implementation.

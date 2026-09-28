@@ -137,7 +137,7 @@ export function createClientPortfolioService(repoRoot: string, dependencies: Cli
     if (input.client_id === null) return;
     if (!state.clients[input.client_id]) throw new ClientPortfolioNotFoundError("linked client was not found");
     const profile = profileFor(input.project_id);
-    if (profile?.kind !== "client" || profile.client_id !== input.client_id) {
+    if (profile?.kind !== "client-product" || profile.client_id !== input.client_id) {
       throw new ClientPortfolioValidationError("linked client must match the project's local client profile");
     }
   }
@@ -160,7 +160,7 @@ export function createClientPortfolioService(repoRoot: string, dependencies: Cli
     if (!isSafeIdentifier(projectId)) throw new ClientPortfolioValidationError("project ID is invalid");
     if (!resolveProject(projectId)) throw new ClientPortfolioNotFoundError("project is not a discovered local project");
     const profile = profileFor(projectId);
-    if (!profile || profile.kind !== "client" || !profile.client_id) return { available: false, categories: [] };
+    if (!profile || profile.kind !== "client-product" || !profile.client_id) return { available: false, categories: [] };
     const state = document();
     const client = state.clients[profile.client_id];
     if (!client) return { available: false, categories: [] };

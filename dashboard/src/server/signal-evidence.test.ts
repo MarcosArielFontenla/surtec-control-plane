@@ -89,7 +89,7 @@ describe("portfolio signal evidence reader", () => {
 
   it("adds only validated commitment evidence and keeps client notes/names out of the signal read model", async () => {
     const profile: ProjectProfile = {
-      schema_version: 1, project_id: "alpha", kind: "client", lifecycle: "active", priority: 2, criticality: "high",
+      schema_version: 2, project_id: "alpha", kind: "client-product", lifecycle: "active", priority: 2, criticality: "high",
       current_goal: null, next_action: null, deadline: null, client_id: "client-fictional", last_reviewed_at: null, tags: [],
     };
     const clientPortfolio: ClientPortfolioDocument = {
