@@ -42,6 +42,12 @@ Normalize bounded portfolio evidence into explainable signals, rank them using e
 
 Status: complete on 2026-09-27. See [Phase D verification](phase-d-verification.md). The phase stops before the Today cockpit (Phase E); session evidence remains deferred to Phase G.
 
+## Phase E — Today as a decision cockpit
+
+Transform Today into the portfolio's daily operating surface while preserving Codex task activity.
+
+Status: complete on 2026-09-27. See [Phase E verification](phase-e-verification.md). Persisted work sessions remain deferred to Phase G; the cockpit declares that capability unavailable instead of fabricating sessions.
+
 ## Phase 6 — Optional collaborative workspace
 
 Only with explicit authorization, add structured role artifacts, comments, traceability, authentication, and multi-user isolation.

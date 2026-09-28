@@ -1,6 +1,6 @@
 # Deterministic signal feed
 
-The read-only portfolio feed is `GET /api/signals`. It returns a versioned, bounded list of signals with source, severity, evidence timestamp, observed timestamp, a plain-language reason, a suggested action, and an explicit ranking tier/order. It uses the existing loopback API protections; the route is marked `Cache-Control: no-store` because it overlays private local operating context.
+The read-only portfolio feed is `GET /api/signals`. It returns a versioned, bounded list of signals with source, severity, evidence timestamp, observed timestamp, a plain-language reason, a suggested action, an explicit ranking tier/order, and the project's `personal`/`client` category when a local profile exists. It does not return the profile's client identifier or name. It uses the existing loopback API protections; the route is marked `Cache-Control: no-store` because it overlays private local operating context.
 
 Signal evidence is assembled server-side from local Git status, the cached aggregate integrations reader, the cached GitHub issue inbox, task snapshots, local portfolio profiles, and local project notes. The consumer makes one feed request rather than one request per project. Integration reads have bounded concurrency and an individual provider/project failure becomes a short warning while other sources continue. Provider errors and response bodies are not copied into signal evidence.
 
