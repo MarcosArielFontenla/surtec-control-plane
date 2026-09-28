@@ -91,6 +91,10 @@ The production API binds to `127.0.0.1`. API middleware rejects non-loopback `Ho
 - App Server owns model authentication and sandbox enforcement.
 - External project repositories are outside this repository's ownership boundary.
 
+## Phase J organization design boundary
+
+The organization vocabulary and future dependency direction are defined in [ADR-0003](../decisions/ADR-0003-organization-domain-boundary.md). The versioned issue transition reference is in [Issue lifecycle v1](issue-lifecycle-v1.md), and future file-state changes must follow the [migration contract](organization-state-migration.md). These are design contracts only: the current dashboard, task lifecycle, and persistence are not wired to an organization/issue model, and no migration is implemented.
+
 ## Known limitations
 
 - Some long operations still block the API event loop.
