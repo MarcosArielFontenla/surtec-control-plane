@@ -4,6 +4,7 @@ import type { Note } from "../../../lib/state/notes";
 import type { ProjectProfile } from "../../../lib/portfolio-profile";
 import type { SignalAction, SignalFeed } from "../../../lib/signals/types";
 import type { ProjectIntegrationsSnapshot } from "../../../lib/integrations/types";
+import type { ClientCommitment, ClientContextCategory, ClientContextOptions, ClientRecord, ClientSummary } from "../../../lib/client-portfolio";
 
 let sessionTokenPromise: Promise<string> | null = null;
 let sessionFetch: typeof fetch | null = null;
@@ -89,6 +90,73 @@ export async function saveProjectProfile(profile: ProjectProfile): Promise<{ pro
     throw new Error(e.error ?? `project profile save failed: ${res.status}`);
   }
   return (await res.json()) as { profile: ProjectProfile };
+}
+
+export async function getClients(): Promise<{ clients: ClientSummary[] }> {
+  const res = await fetch("/api/clients", { cache: "no-store" });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? "clients failed: " + res.status);
+  }
+  return (await res.json()) as { clients: ClientSummary[] };
+}
+
+export async function getClient(id: string): Promise<{ client: ClientRecord }> {
+  const res = await fetch("/api/clients/" + encodeURIComponent(id), { cache: "no-store" });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? "client failed: " + res.status);
+  }
+  return (await res.json()) as { client: ClientRecord };
+}
+
+export async function saveClient(input: Omit<ClientRecord, "id" | "created_at" | "updated_at">, id?: string): Promise<{ client: ClientRecord }> {
+  const path = id ? "/api/clients/" + encodeURIComponent(id) : "/api/clients";
+  const res = await mutate(path, {
+    method: id ? "PUT" : "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? "client save failed: " + res.status);
+  }
+  return (await res.json()) as { client: ClientRecord };
+}
+
+export async function getCommitments(): Promise<{ commitments: ClientCommitment[] }> {
+  const res = await fetch("/api/commitments", { cache: "no-store" });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? "commitments failed: " + res.status);
+  }
+  return (await res.json()) as { commitments: ClientCommitment[] };
+}
+
+export async function saveCommitment(
+  input: Omit<ClientCommitment, "id" | "created_at" | "updated_at">,
+  id?: string,
+): Promise<{ commitment: ClientCommitment }> {
+  const path = id ? "/api/commitments/" + encodeURIComponent(id) : "/api/commitments";
+  const res = await mutate(path, {
+    method: id ? "PUT" : "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? "commitment save failed: " + res.status);
+  }
+  return (await res.json()) as { commitment: ClientCommitment };
+}
+
+export async function getClientContextOptions(projectId: string): Promise<ClientContextOptions> {
+  const res = await fetch("/api/projects/" + encodeURIComponent(projectId) + "/client-context-options", { cache: "no-store" });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? "client context options failed: " + res.status);
+  }
+  return (await res.json()) as ClientContextOptions;
 }
 
 async function workSessionMutation(path: string, body: unknown): Promise<WorkSession> {
@@ -258,6 +326,7 @@ export async function createTask(body: {
   instructions: string;
   sandbox?: string;
   self_verify?: boolean;
+  client_context_categories?: ClientContextCategory[];
 }): Promise<{ id: string }> {
   const res = await mutate("/api/tasks", {
     method: "POST",

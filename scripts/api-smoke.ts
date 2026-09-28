@@ -48,6 +48,28 @@ if (!portfolioProfiles.ok) throw new Error(`portfolio profiles smoke failed with
 const portfolioProfilesBody = await portfolioProfiles.json() as { profiles?: unknown };
 if (!Array.isArray(portfolioProfilesBody.profiles)) throw new Error("portfolio profiles response is invalid");
 
+const clientsResponse = await app.request("/api/clients");
+if (!clientsResponse.ok) throw new Error(`clients smoke failed with ${clientsResponse.status}`);
+const clientsBody = await clientsResponse.json() as { clients?: unknown };
+if (!Array.isArray(clientsBody.clients)) throw new Error("clients response is invalid");
+
+const commitmentsResponse = await app.request("/api/commitments");
+if (!commitmentsResponse.ok) throw new Error(`commitments smoke failed with ${commitmentsResponse.status}`);
+const commitmentsBody = await commitmentsResponse.json() as { commitments?: unknown };
+if (!Array.isArray(commitmentsBody.commitments)) throw new Error("commitments response is invalid");
+
+const smokeProjectId = (projects[0] as { id?: unknown } | undefined)?.id;
+let clientContextOptionsStatus: number | null = null;
+if (typeof smokeProjectId === "string") {
+  const contextOptions = await app.request(`/api/projects/${encodeURIComponent(smokeProjectId)}/client-context-options`);
+  clientContextOptionsStatus = contextOptions.status;
+  if (!contextOptions.ok) throw new Error(`client-context-options smoke failed with ${contextOptions.status}`);
+  const contextOptionsBody = await contextOptions.json() as { available?: unknown; categories?: unknown };
+  if (typeof contextOptionsBody.available !== "boolean" || !Array.isArray(contextOptionsBody.categories)) {
+    throw new Error("client-context-options response is invalid");
+  }
+}
+
 const today = await app.request("/api/today");
 if (!today.ok) throw new Error(`today smoke failed with ${today.status}`);
 const todayBody = await today.json() as Record<string, unknown>;
@@ -90,6 +112,11 @@ console.log(JSON.stringify({
   configured_projects: optionsBody.projects.length,
   portfolio_profiles_status: portfolioProfiles.status,
   portfolio_profiles: portfolioProfilesBody.profiles.length,
+  clients_status: clientsResponse.status,
+  client_count: clientsBody.clients.length,
+  commitments_status: commitmentsResponse.status,
+  commitment_count: commitmentsBody.commitments.length,
+  client_context_options_status: clientContextOptionsStatus,
   integrations_status: integrationResponse.status,
   integration_schema_version: integrationBody.schema_version,
   signals_status: signalResponse.status,

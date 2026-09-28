@@ -2,10 +2,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ProjectProfile } from "../../../../lib/portfolio-profile";
-import { saveProjectProfile } from "../api";
+import { getClients, saveProjectProfile } from "../api";
 import { ProjectProfileEditor } from "./ProjectProfileEditor";
 
-vi.mock("../api", () => ({ saveProjectProfile: vi.fn() }));
+vi.mock("../api", () => ({ getClients: vi.fn(), saveProjectProfile: vi.fn() }));
 
 const savedProfile: ProjectProfile = {
   schema_version: 1,
@@ -36,6 +36,10 @@ describe("ProjectProfileEditor", () => {
   it("edits all profile fields and saves only through the local profile API", async () => {
     const editedProfile = { ...savedProfile, lifecycle: "discovery" as const, priority: 1 };
     vi.mocked(saveProjectProfile).mockResolvedValue({ profile: editedProfile });
+    vi.mocked(getClients).mockResolvedValue({ clients: [{
+      id: "client-demo", display_name: "Fictional Client", status: "active", criticality: "high",
+      project_ids: ["alpha"], next_review_date: null, active_commitment_count: 0,
+    }] });
     const onSaved = vi.fn();
     render(<ProjectProfileEditor projectId="alpha" onSaved={onSaved} />);
 
@@ -45,7 +49,8 @@ describe("ProjectProfileEditor", () => {
     fireEvent.change(screen.getByLabelText("Ciclo de vida"), { target: { value: "discovery" } });
     fireEvent.change(screen.getByLabelText(/Prioridad/), { target: { value: "1" } });
     fireEvent.change(screen.getByLabelText("Criticidad"), { target: { value: "high" } });
-    fireEvent.change(screen.getByLabelText(/ID de cliente/), { target: { value: "client-demo" } });
+    await screen.findByRole("option", { name: /Fictional Client/ });
+    fireEvent.change(screen.getByLabelText("Cliente asociado"), { target: { value: "client-demo" } });
     fireEvent.change(screen.getByLabelText("Objetivo actual"), { target: { value: "  Ship release 2.  " } });
     fireEvent.change(screen.getByLabelText("Próxima acción"), { target: { value: " Review acceptance criteria. " } });
     fireEvent.change(screen.getByLabelText("Fecha límite"), { target: { value: "2026-12-15" } });

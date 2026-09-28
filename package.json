@@ -19,6 +19,7 @@
     "smoke:today:playwright": "tsx scripts/playwright-today-smoke.ts",
     "smoke:project-detail:playwright": "tsx scripts/playwright-project-detail-smoke.ts",
     "smoke:work-sessions:playwright": "tsx scripts/playwright-work-sessions-smoke.ts",
+    "smoke:client-commitments:playwright": "tsx scripts/playwright-client-commitments-smoke.ts",
     "smoke:codex": "tsx scripts/codex-smoke.ts",
     "smoke:codex:write": "tsx scripts/codex-write-smoke.ts",
     "dev:api": "tsx dashboard/src/server/serve.ts",

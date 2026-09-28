@@ -38,6 +38,12 @@ beforeEach(() => {
     if (String(url).endsWith("/api/dispatch-options")) {
       return { ok: true, status: 200, json: async () => dispatchOptions() } as Response;
     }
+    if (String(url).includes("/client-context-options")) {
+      return { ok: true, status: 200, json: async () => ({
+        available: true,
+        categories: ["client-identity", "project-outcome", "active-commitments", "service-context", "confidential-notes"],
+      }) } as Response;
+    }
     return { ok: true, status: 201, json: async () => ({ id: "T-abc" }) } as Response;
   }) as unknown as typeof fetch);
 });
@@ -64,6 +70,25 @@ describe("NewTaskForm", () => {
     });
 
     await waitFor(() => expect(screen.getByText(/Despachado: T-abc/)).toBeTruthy());
+  });
+
+  it("shares only explicitly selected client categories and leaves every category unchecked by default", async () => {
+    render(<NewTaskForm bulkProjectIds={[]} />);
+    await waitFor(() => expect(screen.getByText("backend-engineer")).toBeTruthy());
+    const notes = await screen.findByRole("checkbox", { name: /Notas confidenciales/ }) as HTMLInputElement;
+    expect(notes.checked).toBe(false);
+    fireEvent.change(screen.getByPlaceholderText(/instrucciones/i), { target: { value: "Review the delivery." } });
+    fireEvent.click(notes);
+    fireEvent.click(screen.getByRole("button", { name: /despachar/i }));
+
+    await waitFor(() => {
+      const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+      const post = calls.find((call) => String(call[0]).endsWith("/api/tasks") && (call[1] as RequestInit)?.method === "POST");
+      expect(post).toBeTruthy();
+      expect(JSON.parse((post![1] as RequestInit).body as string)).toMatchObject({
+        client_context_categories: ["confidential-notes"],
+      });
+    });
   });
 
   it("prefills the selected project and suggested next action from a Today recommendation", async () => {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, CheckCircle2, CircleAlert } from "lucide-react";
 import type { TaskDetailModel, TaskEvent } from "../../../../lib/state/types";
+import type { ClientContextCategory, ClientContextShareAudit } from "../../../../lib/client-portfolio";
 import { fetchTaskDetail } from "../api";
 
 function duration(value: number | null): string {
@@ -29,6 +30,14 @@ function EventRows({ events, empty = "Sin evidencia." }: { events: TaskEvent[]; 
 function StringList({ items, empty = "Sin registros." }: { items: string[]; empty?: string }) {
   return items.length === 0 ? <p className="empty-mini">{empty}</p> : <ul className="detail-list">{items.map((item) => <li key={item}>{item}</li>)}</ul>;
 }
+
+const CLIENT_CONTEXT_LABELS: Record<ClientContextCategory, string> = {
+  "client-identity": "Identidad del cliente",
+  "project-outcome": "Objetivo y próxima acción del proyecto",
+  "active-commitments": "Compromisos de entrega activos",
+  "service-context": "Criticidad, SLA y próxima revisión",
+  "confidential-notes": "Notas confidenciales",
+};
 
 export function TaskDetailView({ taskId, onBack }: { taskId: string; onBack: () => void }) {
   const [detail, setDetail] = useState<TaskDetailModel | null>(null);
@@ -59,6 +68,11 @@ export function TaskDetailView({ taskId, onBack }: { taskId: string; onBack: () 
   const { task, execution } = detail;
   const result = task.result;
   const orchestration = task.orchestration;
+  const clientShare = task.envelope.metadata.client_context_share;
+  const sharedCategories = typeof clientShare === "object" && clientShare !== null
+    && Array.isArray((clientShare as ClientContextShareAudit).categories)
+    ? (clientShare as ClientContextShareAudit).categories
+    : [];
   return (
     <div className="detail-shell">
       <button type="button" className="ghost-btn detail-back" onClick={onBack}><ArrowLeft /> Volver</button>
@@ -78,6 +92,14 @@ export function TaskDetailView({ taskId, onBack }: { taskId: string; onBack: () 
         <div className="panel"><span className="b-label">Tokens</span><b>{orchestration?.cumulative_tokens ?? 0}/{orchestration?.max_total_tokens ?? "—"}</b></div>
         <div className="panel"><span className="b-label">Cleanup</span><b>{detail.cleanup.status}</b></div>
       </section>
+
+      {sharedCategories.length > 0 && (
+        <section className="detail-card panel">
+          <h3>Contexto de cliente compartido</h3>
+          <p className="client-portfolio-note">Registro de categorías seleccionadas explícitamente; no conserva razonamiento interno.</p>
+          <StringList items={sharedCategories.map((category) => CLIENT_CONTEXT_LABELS[category] ?? "Categoría desconocida")} />
+        </section>
+      )}
 
       <div className="detail-grid">
         <section className="detail-card panel"><h3>Resultado</h3><p className="detail-summary">{result?.summary ?? "Todavía no hay resultado estructurado."}</p><span className="b-label">Archivos</span><StringList items={result?.files_changed ?? []} /></section>

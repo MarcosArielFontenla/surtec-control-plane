@@ -106,11 +106,11 @@ describe("ProjectDetailView", () => {
     await waitFor(() => expect(screen.getAllByTitle("2026-09-27T12:01:00.000Z").length).toBeGreaterThan(0));
   });
 
-  it("prepares a task from profile context without dispatching it", async () => {
+  it("omits client profile details from task prefill and does not dispatch", async () => {
     const createTask = vi.spyOn(api, "createTask");
     const { onPrepareTask } = renderDetail();
     fireEvent.click(screen.getByRole("button", { name: /Preparar tarea/ }));
-    expect(onPrepareTask).toHaveBeenCalledWith("alpha", "Review synthetic rollout");
+    expect(onPrepareTask).toHaveBeenCalledWith("alpha", "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form.");
     expect(createTask).not.toHaveBeenCalled();
   });
 });

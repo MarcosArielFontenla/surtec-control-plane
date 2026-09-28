@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { emptyProjectProfile, type ProjectLifecycle, type ProjectProfile } from "../../../../lib/portfolio-profile";
-import { saveProjectProfile } from "../api";
+import type { ClientSummary } from "../../../../lib/client-portfolio";
+import { getClients, saveProjectProfile } from "../api";
 
 const LIFECYCLES: { value: ProjectLifecycle; label: string }[] = [
   { value: "idea", label: "Idea" },
@@ -33,7 +34,18 @@ export function ProjectProfileEditor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [clients, setClients] = useState<ClientSummary[]>([]);
+  const [clientsError, setClientsError] = useState<string | null>(null);
   const prefix = `profile-${projectId}`;
+
+  useEffect(() => {
+    if (!open || draft.kind !== "client") return;
+    let active = true;
+    getClients()
+      .then(({ clients: items }) => { if (active) { setClients(items); setClientsError(null); } })
+      .catch((reason) => { if (active) setClientsError((reason as Error).message); });
+    return () => { active = false; };
+  }, [open, draft.kind]);
 
   const startEditing = () => {
     setDraft(profile ? { ...profile, tags: [...profile.tags] } : emptyProjectProfile(projectId));
@@ -136,8 +148,15 @@ export function ProjectProfileEditor({
               </select>
             </label>
             {draft.kind === "client" && (
-              <label htmlFor={`${prefix}-client-id`} className="profile-editor__wide">ID de cliente (referencia opaca)
-                <input id={`${prefix}-client-id`} className="input" maxLength={100} value={draft.client_id ?? ""} disabled={busy} placeholder="client-example" onChange={(event) => update("client_id", event.target.value || null)} />
+              <label htmlFor={prefix + "-client-id"} className="profile-editor__wide">Cliente asociado
+                <select id={prefix + "-client-id"} value={draft.client_id ?? ""} disabled={busy} onChange={(event) => update("client_id", event.target.value || null)}>
+                  <option value="">Sin cliente asociado</option>
+                  {draft.client_id && !clients.some((client) => client.id === draft.client_id) && (
+                    <option value={draft.client_id}>Referencia anterior sin registro local ({draft.client_id})</option>
+                  )}
+                  {clients.map((client) => <option key={client.id} value={client.id}>{client.display_name} · {client.status === "active" ? "Activo" : "Pausado"}</option>)}
+                </select>
+                {clientsError && <small role="status">No se pudo cargar el directorio; se conserva la referencia actual.</small>}
               </label>
             )}
             <label htmlFor={`${prefix}-goal`} className="profile-editor__wide">Objetivo actual

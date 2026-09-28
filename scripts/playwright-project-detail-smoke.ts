@@ -206,7 +206,9 @@ async function main(): Promise<void> {
     await page.getByRole("button", { name: /Preparar tarea/ }).click();
     await page.getByLabel("Proyecto").waitFor();
     assert.equal(await page.getByLabel("Proyecto").inputValue(), "configured-project", "safe quick action prefills the project");
-    assert.match(await page.getByPlaceholder(/instrucciones/i).inputValue(), /Review synthetic next action/);
+    assert.equal(await page.getByPlaceholder(/instrucciones/i).inputValue(),
+      "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form.",
+      "client project profile text is not copied into task instructions automatically");
     assert.equal(taskPosts, 0, "preparing a task did not dispatch it");
 
     await page.getByRole("button", { name: /Overview/ }).click();

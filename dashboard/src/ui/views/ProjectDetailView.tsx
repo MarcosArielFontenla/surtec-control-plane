@@ -245,7 +245,9 @@ export function ProjectDetailView({
   const resolvedSignals = projectSignals.filter((signal) => signal.state === "resolved");
   const projectActivity = useMemo(() => (activity?.items ?? []).filter((item) => item.project === id), [activity, id]);
   const sessionState = today?.portfolio.sessions ?? { available: false, unavailable_reason: "Work-session state has not loaded yet.", active: [], paused: [], completed: [] };
-  const instructions = profile?.next_action ?? profile?.current_goal ?? `Review the current operating state of ${id} and propose a safe next step.`;
+  const instructions = profile?.kind === "client"
+    ? "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form."
+    : profile?.next_action ?? profile?.current_goal ?? `Review the current operating state of ${id} and propose a safe next step.`;
 
   return (
     <div className="project-detail">

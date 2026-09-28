@@ -14,6 +14,7 @@ import { ActivityView } from "./views/ActivityView";
 import { TodayView } from "./views/TodayView";
 import { TaskDetailView } from "./views/TaskDetailView";
 import { ProjectDetailView } from "./views/ProjectDetailView";
+import { ClientCommitmentsView } from "./views/ClientCommitmentsView";
 import { useRuns } from "./useRuns";
 import { deriveKpis, deriveSummary } from "./derive-kpis";
 
@@ -57,7 +58,10 @@ export function App() {
   const gitProjectIds = data ? data.projects.filter((p) => p.git?.ok).map((p) => p.id) : [];
   const selectedProjectView = data?.projects.find((project) => project.id === selectedProject) ?? null;
   const prepareTask = (signal: Signal) => {
-    setTaskPrefill({ project: signal.project_id, instructions: `${signal.suggested_action}\n\nEvidence: ${signal.reason}` });
+    const instructions = signal.project_kind === "client"
+      ? "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form."
+      : signal.suggested_action + "\n\nEvidence: " + signal.reason;
+    setTaskPrefill({ project: signal.project_id, instructions });
     setSelectedTask(null);
     setSelectedProject(null);
     setNav("Overview");
@@ -94,7 +98,12 @@ export function App() {
               onBack={() => setSelectedProject(null)}
               onOpenTask={(id) => { setSelectedProject(null); setSelectedTask(id); }}
               onPrepareTask={(project, instructions) => {
-                setTaskPrefill({ project, instructions });
+                setTaskPrefill({
+                  project,
+                  instructions: profiles[project]?.kind === "client"
+                    ? "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form."
+                    : instructions,
+                });
                 setSelectedProject(null);
                 setSelectedTask(null);
                 setNav("Overview");
@@ -106,6 +115,8 @@ export function App() {
           ) : view === "Hoy" ? (
             <TodayView data={today.data} error={today.error} onOpenTask={setSelectedTask} onRefresh={today.refresh} projects={data?.projects ?? []}
               onOpenProject={(id) => openProject(id, "vscode")} onPrepareTask={prepareTask} />
+          ) : view === "Clientes" ? (
+            <ClientCommitmentsView projects={data?.projects ?? []} />
           ) : view === "Procesos" ? (
             <ProcesosView projectIds={activeProjectIds} />
           ) : view === "Issues" ? (

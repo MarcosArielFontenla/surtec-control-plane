@@ -1,7 +1,16 @@
 import { useEffect, useState } from "react";
 import { Zap, Send } from "lucide-react";
-import { fetchDispatchOptions, createTask, type DispatchMode, type DispatchOptions } from "../api";
+import type { ClientContextCategory, ClientContextOptions } from "../../../../lib/client-portfolio";
+import { fetchDispatchOptions, createTask, getClientContextOptions, type DispatchMode, type DispatchOptions } from "../api";
 import { BulkSync } from "./BulkSync";
+
+const CLIENT_CONTEXT_LABELS: Record<ClientContextCategory, string> = {
+  "client-identity": "Identidad del cliente",
+  "project-outcome": "Objetivo y próxima acción del proyecto",
+  "active-commitments": "Compromisos de entrega activos",
+  "service-context": "Criticidad, SLA y próxima revisión",
+  "confidential-notes": "Notas confidenciales del cliente",
+};
 
 const MODE_LABELS: Record<DispatchMode, string> = {
   "read-only": "Analizar (read-only)",
@@ -23,6 +32,9 @@ export function NewTaskForm({ bulkProjectIds, initialProject, initialInstruction
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [contextOptions, setContextOptions] = useState<ClientContextOptions | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
+  const [contextCategories, setContextCategories] = useState<ClientContextCategory[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -43,6 +55,18 @@ export function NewTaskForm({ bulkProjectIds, initialProject, initialInstruction
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    setContextOptions(null);
+    setContextCategories([]);
+    setContextError(null);
+    if (!project) return () => { active = false; };
+    getClientContextOptions(project)
+      .then((options) => { if (active) setContextOptions(options); })
+      .catch((reason) => { if (active) setContextError((reason as Error).message); });
+    return () => { active = false; };
+  }, [project]);
+
   const selectedProject = options.find((p) => p.project === project);
   const agents = selectedProject?.agents ?? [];
   const selectedAgent = agents.find((candidate) => candidate.agent === agent);
@@ -51,6 +75,7 @@ export function NewTaskForm({ bulkProjectIds, initialProject, initialInstruction
 
   const onProjectChange = (value: string) => {
     setProject(value);
+    setContextCategories([]);
     const next = options.find((p) => p.project === value)?.agents[0];
     setAgent(next?.agent ?? "");
     setMode(next?.default_mode ?? "");
@@ -69,10 +94,11 @@ export function NewTaskForm({ bulkProjectIds, initialProject, initialInstruction
     try {
       const body =
         mode === "workspace-write-verify"
-          ? { project, agent, instructions, sandbox: "workspace-write", self_verify: true }
-          : { project, agent, instructions, sandbox: mode };
+          ? { project, agent, instructions, sandbox: "workspace-write", self_verify: true, ...(contextCategories.length ? { client_context_categories: contextCategories } : {}) }
+          : { project, agent, instructions, sandbox: mode, ...(contextCategories.length ? { client_context_categories: contextCategories } : {}) };
       const { id } = await createTask(body);
       setInstructions("");
+      setContextCategories([]);
       setOkMsg(`Despachado: ${id}`);
     } catch (err) {
       setError((err as Error).message);
@@ -124,6 +150,24 @@ export function NewTaskForm({ bulkProjectIds, initialProject, initialInstruction
       {selectedProject && agents.length === 0 && (
         <div className="banner" role="status">Este proyecto no tiene agentes autorizados para despachar.</div>
       )}
+      {contextOptions?.available && contextOptions.categories.length > 0 && (
+        <fieldset className="task-client-context">
+          <legend>Contexto del cliente (opcional)</legend>
+          <p>Por defecto no se comparte ningún dato del cliente. Seleccioná solo las categorías necesarias para esta tarea.</p>
+          {contextOptions.categories.map((category) => (
+            <label key={category}>
+              <input type="checkbox" checked={contextCategories.includes(category)} disabled={busy}
+                onChange={(event) => setContextCategories((current) => event.target.checked
+                  ? [...current, category]
+                  : current.filter((item) => item !== category))} />
+              <span>{CLIENT_CONTEXT_LABELS[category]}{category === "confidential-notes" ? " · confidencial" : ""}</span>
+            </label>
+          ))}
+          {contextCategories.length > 0 && <small role="status">Se enviarán solo las categorías seleccionadas y quedará registrada su lista en la tarea.</small>}
+          {contextCategories.includes("confidential-notes") && <small role="note">Confirmaste compartir notas confidenciales con Codex para esta tarea.</small>}
+        </fieldset>
+      )}
+      {contextError && <div className="banner" role="note">No se pudo consultar el contexto del cliente. La tarea puede continuar sin ese contexto; no se agrega ningún dato.</div>}
       <div className="task-foot">
         <textarea name="instructions" placeholder="Instrucciones para el agente…" value={instructions} onChange={(e) => setInstructions(e.target.value)} />
         <button type="submit" className="cta" disabled={busy || !project || !agent || !selectedMode?.allowed || !instructions.trim()}>
