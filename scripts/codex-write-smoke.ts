@@ -164,7 +164,12 @@ async function runSmoke(): Promise<void> {
     if (result.usage !== null && !usageIsValid(result.usage)) throw new Error("write smoke returned invalid usage data");
     const validated = validateAgentReport(result.structuredOutput);
     if (!validated.ok) throw new Error(`invalid structured report: ${validated.reason}`);
-    if (validated.report.status !== "completed") throw new Error(`write-smoke report ended with status ${validated.report.status}`);
+    if (validated.report.status !== "completed") {
+      const details = [validated.report.summary, ...validated.report.blockers.slice(0, 3)]
+        .map((value) => redactText(value).replace(/\s+/g, " ").slice(0, 300))
+        .join(" | ");
+      throw new Error(`write-smoke report ended with status ${validated.report.status}: ${details}`);
+    }
 
     assertOnlyFixtureChanged(worktree.worktreePath);
     const commit = commitAndDiff(worktree.worktreePath, "codex smoke: verify disposable write path");

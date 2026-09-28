@@ -9,7 +9,7 @@ import { redactText } from "../lib/security/redaction";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = resolve(root, "fixtures", "codex-smoke");
-const FIXTURE_README = "This directory is intentionally small and immutable during the opt-in read-only runtime smoke.";
+const FIXTURE_README = "# Runtime smoke fixture\n\nThis directory is intentionally small and immutable during the opt-in read-only runtime smoke.";
 const MAX_TURN_MS = 2 * 60 * 1000;
 
 function assertReadFixture(): void {
