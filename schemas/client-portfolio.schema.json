@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.local/schemas/client-portfolio.schema.json",
+  "title": "Local client and commitment state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "clients", "commitments"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "clients": {
+      "type": "object",
+      "maxProperties": 1000,
+      "propertyNames": { "pattern": "^client-[A-Za-z0-9][A-Za-z0-9_-]{0,99}$" },
+      "additionalProperties": { "$ref": "client-record.schema.json" }
+    },
+    "commitments": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": { "pattern": "^commitment-[A-Za-z0-9][A-Za-z0-9_-]{0,99}$" },
+      "additionalProperties": { "$ref": "client-commitment.schema.json" }
+    }
+  }
+}

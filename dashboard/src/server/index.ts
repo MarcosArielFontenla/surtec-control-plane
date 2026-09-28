@@ -39,11 +39,26 @@ import { InvalidSignalActionError, UnsupportedSignalStateVersionError } from "..
 import type { SignalFeed } from "../../../lib/signals/types";
 import { createWorkSessionService, WorkSessionConflictError, WorkSessionNotFoundError, WorkSessionProjectNotFoundError, WorkSessionTransitionError, WorkSessionValidationError, type WorkSessionActionInput, type WorkSessionService } from "./work-session-service";
 import { UnsupportedWorkSessionSchemaVersionError } from "../../../lib/state/work-sessions";
+import { createClientPortfolioService, ClientPortfolioConflictError, ClientPortfolioNotFoundError, ClientPortfolioValidationError, type ClientPortfolioService } from "./client-portfolio-service";
+import { ClientPortfolioStoreError, UnsupportedClientPortfolioVersionError } from "../../../lib/state/client-portfolio";
+import type { ClientTaskContext } from "./client-portfolio-service";
 
 export interface AppDependencies {
   integrations?: ProjectIntegrationsReader;
   signals?: SignalService;
   workSessions?: WorkSessionService;
+  clientPortfolio?: ClientPortfolioService;
+}
+
+type JsonBodyResult = { ok: true; value: unknown } | { ok: false; status: 400 | 413; error: string };
+
+async function boundedJsonBody(c: Context, maxBytes = 32 * 1024): Promise<JsonBodyResult> {
+  let raw: string;
+  try { raw = await c.req.text(); }
+  catch { return { ok: false, status: 400, error: "invalid JSON body" }; }
+  if (Buffer.byteLength(raw, "utf8") > maxBytes) return { ok: false, status: 413, error: "request body is too large" };
+  try { return { ok: true, value: JSON.parse(raw) as unknown }; }
+  catch { return { ok: false, status: 400, error: "invalid JSON body" }; }
 }
 
 export function createApp(
@@ -83,6 +98,7 @@ export function createApp(
   const workSessions = dependencies.workSessions ?? createWorkSessionService(repoRoot, {
     readRun: (runId) => pm.get(runId)?.record ?? null,
   });
+  const clientPortfolio = dependencies.clientPortfolio ?? createClientPortfolioService(repoRoot);
 
   const workSessionErrorResponse = (c: Context, error: unknown) => {
     if (error instanceof WorkSessionValidationError) return c.json({ error: error.message }, 400);
@@ -92,6 +108,74 @@ export function createApp(
     }
     return c.json({ error: "work session state is unavailable" }, 500);
   };
+
+  const clientPortfolioErrorResponse = (c: Context, error: unknown) => {
+    if (error instanceof ClientPortfolioValidationError) return c.json({ error: error.message }, 400);
+    if (error instanceof ClientPortfolioNotFoundError) return c.json({ error: error.message }, 404);
+    if (error instanceof ClientPortfolioConflictError || error instanceof StateLockConflictError || error instanceof UnsupportedClientPortfolioVersionError) {
+      return c.json({ error: error instanceof StateLockConflictError ? "client portfolio is being updated; retry shortly" : error.message }, 409);
+    }
+    if (error instanceof ClientPortfolioStoreError) return c.json({ error: "local client portfolio state is unavailable" }, 500);
+    return c.json({ error: "local client portfolio state is unavailable" }, 500);
+  };
+
+  app.get("/api/clients", (c) => {
+    c.header("Cache-Control", "no-store");
+    try { return c.json({ clients: clientPortfolio.listClients() }); }
+    catch (error) { return clientPortfolioErrorResponse(c, error); }
+  });
+
+  app.get("/api/clients/:id", (c) => {
+    c.header("Cache-Control", "no-store");
+    try {
+      const client = clientPortfolio.getClient(c.req.param("id"));
+      return client ? c.json({ client }) : c.json({ error: "client was not found" }, 404);
+    } catch (error) { return clientPortfolioErrorResponse(c, error); }
+  });
+
+  app.post("/api/clients", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c, 8 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    try { return c.json({ client: clientPortfolio.createClient(parsed.value) }, 201); }
+    catch (error) { return clientPortfolioErrorResponse(c, error); }
+  });
+
+  app.put("/api/clients/:id", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c, 8 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    try { return c.json({ client: clientPortfolio.updateClient(c.req.param("id"), parsed.value) }); }
+    catch (error) { return clientPortfolioErrorResponse(c, error); }
+  });
+
+  app.get("/api/commitments", (c) => {
+    c.header("Cache-Control", "no-store");
+    try { return c.json({ commitments: clientPortfolio.listCommitments() }); }
+    catch (error) { return clientPortfolioErrorResponse(c, error); }
+  });
+
+  app.post("/api/commitments", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c, 24 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    try { return c.json({ commitment: clientPortfolio.createCommitment(parsed.value) }, 201); }
+    catch (error) { return clientPortfolioErrorResponse(c, error); }
+  });
+
+  app.put("/api/commitments/:id", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c, 24 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    try { return c.json({ commitment: clientPortfolio.updateCommitment(c.req.param("id"), parsed.value) }); }
+    catch (error) { return clientPortfolioErrorResponse(c, error); }
+  });
+
+  app.get("/api/projects/:id/client-context-options", (c) => {
+    c.header("Cache-Control", "no-store");
+    try { return c.json(clientPortfolio.contextOptions(c.req.param("id"))); }
+    catch (error) { return clientPortfolioErrorResponse(c, error); }
+  });
 
   app.get("/api/sessions", (c) => {
     c.header("Cache-Control", "no-store");
@@ -209,21 +293,27 @@ export function createApp(
   });
 
   app.post("/api/tasks", async (c) => {
-    let body: unknown;
+    const parsed = await boundedJsonBody(c, 32 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const body = parsed.value;
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return c.json({ error: "invalid task body" }, 400);
     try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: "invalid JSON body" }, 400);
-    }
-    try {
+      const taskInput = body as { project: string; agent: string; instructions: string; sandbox?: string; self_verify?: boolean; client_context_categories?: unknown };
+      const clientContext: ClientTaskContext | null = Object.hasOwn(body as object, "client_context_categories")
+        ? clientPortfolio.buildTaskContext(String(taskInput.project ?? ""), taskInput.client_context_categories)
+        : null;
       const { id } = createTask(
-        body as { project: string; agent: string; instructions: string; sandbox?: string; self_verify?: boolean },
+        { ...taskInput, client_context: clientContext },
         repoRoot,
       );
       onTaskCreated(id);
       return c.json({ id }, 201);
     } catch (err) {
       if (err instanceof ValidationError) return c.json({ error: err.message }, 400);
+      if (err instanceof ClientPortfolioValidationError || err instanceof ClientPortfolioNotFoundError
+        || err instanceof ClientPortfolioConflictError || err instanceof ClientPortfolioStoreError) {
+        return clientPortfolioErrorResponse(c, err);
+      }
       return c.json({ error: (err as Error).message }, 500);
     }
   });

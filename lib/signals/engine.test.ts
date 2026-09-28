@@ -116,6 +116,69 @@ describe("deterministic signal engine", () => {
     expect(JSON.stringify(signals)).not.toContain("client-local");
   });
 
+  it("ranks dated client commitments deterministically without exposing client references", () => {
+    const commitment = {
+      id: "commitment-release",
+      project_id: "alpha",
+      client_id: "client-private-reference",
+      title: "Fictional release milestone",
+      due_date: "2026-09-26",
+      priority: 1,
+      criticality: "high" as const,
+      state: "in-progress" as const,
+      next_action: "Verify the release checklist.",
+      updated_at: observedAt,
+    };
+    const signals = generateSignals({
+      projects: [project()],
+      tasks: [],
+      issues: [],
+      commitments: [
+        commitment,
+        { ...commitment, id: "commitment-future", due_date: "2026-10-20", priority: 4, criticality: "low" as const },
+        { ...commitment, id: "commitment-complete", due_date: "2026-09-26", state: "completed" as const },
+      ],
+    }, NOW);
+    const commitmentSignals = signals.filter((signal) => signal.source === "commitment");
+    expect(commitmentSignals).toHaveLength(1);
+    expect(commitmentSignals[0]).toMatchObject({
+      source: "commitment",
+      type: "commitment-overdue",
+      title: "Fictional release milestone",
+      severity: "critical",
+      ranking: { tier: "client-commitment", order: 2 },
+      evidence: { commitment_id: "commitment-release", deadline: "2026-09-26", days_remaining: -1, priority: 1, criticality: "high" },
+    });
+    expect(JSON.stringify(signals)).not.toContain("client-private-reference");
+  });
+
+  it("keeps personal work first-class and signals blocked commitments without a client record", () => {
+    const personal = project({ profile: profile({ kind: "personal", client_id: null }) });
+    const signals = generateSignals({
+      projects: [personal],
+      tasks: [],
+      issues: [],
+      commitments: [{
+        id: "commitment-personal",
+        project_id: "alpha",
+        client_id: null,
+        title: "Fictional personal milestone",
+        due_date: "2026-10-20",
+        priority: 3,
+        criticality: "medium",
+        state: "blocked",
+        next_action: "Choose the next implementation step.",
+        updated_at: observedAt,
+      }],
+    }, NOW);
+    expect(signals).toContainEqual(expect.objectContaining({
+      source: "commitment",
+      type: "commitment-blocked",
+      project_kind: "personal",
+      ranking: { tier: "blocked-work", order: 3 },
+    }));
+  });
+
   it("covers blocked, failed, review, and approval task states while suppressing decisions already recorded", () => {
     const approved = task({
       envelope: { ...task().envelope, id: "task-approved", requires_human_approval: true },

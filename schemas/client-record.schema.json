@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.local/schemas/client-record.schema.json",
+  "title": "Local software-delivery client record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "display_name", "status", "criticality", "sla_note", "next_review_date", "confidential_notes", "created_at", "updated_at"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^client-[A-Za-z0-9][A-Za-z0-9_-]{0,99}$" },
+    "display_name": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\S" },
+    "status": { "enum": ["active", "paused"] },
+    "criticality": { "enum": ["low", "medium", "high"] },
+    "sla_note": { "type": ["string", "null"], "maxLength": 500 },
+    "next_review_date": { "type": ["string", "null"], "format": "date" },
+    "confidential_notes": { "type": ["string", "null"], "maxLength": 2000 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  }
+}

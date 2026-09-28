@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.local/schemas/client-input.schema.json",
+  "title": "Client create or update request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["display_name", "status", "criticality", "sla_note", "next_review_date", "confidential_notes"],
+  "properties": {
+    "display_name": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "\\S" },
+    "status": { "enum": ["active", "paused"] },
+    "criticality": { "enum": ["low", "medium", "high"] },
+    "sla_note": { "type": ["string", "null"], "maxLength": 500 },
+    "next_review_date": { "type": ["string", "null"], "format": "date" },
+    "confidential_notes": { "type": ["string", "null"], "maxLength": 2000 }
+  }
+}

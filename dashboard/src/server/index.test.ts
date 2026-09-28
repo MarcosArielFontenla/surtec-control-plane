@@ -808,4 +808,82 @@ describe("GET /api/projects/:id/integrations", () => {
     expect((await app.request("/api/projects/nope/integrations")).status).toBe(404);
     expect((await app.request("/api/projects/bad!/integrations")).status).toBe(400);
   });
+
+  it("protects local client records and only adds explicitly selected context to Codex tasks", async () => {
+    const app = createApp(root, () => {});
+    const input = {
+      display_name: "Fictional API client",
+      status: "active",
+      criticality: "high",
+      sla_note: "Fictional response target.",
+      next_review_date: "2026-10-15",
+      confidential_notes: "Fictional confidential note, selected only in this test.",
+    };
+    expect((await app.request("/api/clients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) })).status).toBe(403);
+    const createdClientResponse = await apiRequest(app, "/api/clients", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+    });
+    expect(createdClientResponse.status).toBe(201);
+    const { client } = await createdClientResponse.json() as { client: { id: string } };
+
+    const summaryResponse = await app.request("/api/clients");
+    expect(summaryResponse.status).toBe(200);
+    expect(summaryResponse.headers.get("Cache-Control")).toBe("no-store");
+    expect(JSON.stringify(await summaryResponse.json())).not.toContain(input.confidential_notes);
+    const detailResponse = await app.request("/api/clients/" + client.id);
+    expect((await detailResponse.json()).client.confidential_notes).toBe(input.confidential_notes);
+
+    const projectProfile = {
+      schema_version: 1, project_id: "stock-control", kind: "client", lifecycle: "active", priority: 1, criticality: "high",
+      current_goal: "Deliver the fictional inventory workflow.", next_action: "Check the release criteria.", deadline: null,
+      client_id: client.id, last_reviewed_at: null, tags: [],
+    };
+    const profileResponse = await apiRequest(app, "/api/projects/stock-control/profile", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(projectProfile),
+    });
+    expect(profileResponse.status).toBe(200);
+
+    const commitmentInput = {
+      project_id: "stock-control", client_id: client.id, title: "Fictional inventory milestone",
+      expected_outcome: "The fictional workflow is ready.", due_date: "2026-09-30", priority: 1, criticality: "high", state: "in-progress",
+      issue_numbers: [12], pull_request_numbers: [34], task_ids: ["STK-1"], session_ids: [], next_action: "Verify the workflow.",
+    };
+    const createdCommitment = await apiRequest(app, "/api/commitments", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(commitmentInput),
+    });
+    expect(createdCommitment.status).toBe(201);
+    const contextOptions = await app.request("/api/projects/stock-control/client-context-options");
+    expect(await contextOptions.json()).toMatchObject({
+      available: true,
+      categories: ["client-identity", "project-outcome", "active-commitments", "service-context", "confidential-notes"],
+    });
+
+    const plainTaskResponse = await apiRequest(app, "/api/tasks", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: "stock-control", agent: "backend-engineer", instructions: "Inspect the project.", sandbox: "read-only" }),
+    });
+    const plainTaskId = (await plainTaskResponse.json() as { id: string }).id;
+    const plainTask = readTask(plainTaskId)!;
+    expect(plainTask.envelope.instructions).toBe("Inspect the project.");
+    expect(plainTask.envelope.metadata.client_context_share).toBeUndefined();
+    expect(JSON.stringify(plainTask)).not.toContain(input.display_name);
+    expect(JSON.stringify(plainTask)).not.toContain(input.confidential_notes);
+
+    const sharedTaskResponse = await apiRequest(app, "/api/tasks", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project: "stock-control", agent: "backend-engineer", instructions: "Inspect the project.", sandbox: "read-only",
+        client_context_categories: ["confidential-notes"],
+      }),
+    });
+    expect(sharedTaskResponse.status).toBe(201);
+    const sharedTaskId = (await sharedTaskResponse.json() as { id: string }).id;
+    const sharedTask = readTask(sharedTaskId)!;
+    expect(sharedTask.envelope.instructions).toContain(input.confidential_notes);
+    expect(sharedTask.envelope.title).toBe("Inspect the project.");
+    expect(sharedTask.envelope.metadata.client_context_share).toMatchObject({
+      client_id: client.id,
+      categories: ["confidential-notes"],
+    });
+  });
 });

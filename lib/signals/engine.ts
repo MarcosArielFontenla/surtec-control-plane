@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { InboxItem, TaskRecord, GitStatus } from "../state/types";
 import type { Note } from "../state/notes";
 import type { ProjectProfile } from "../portfolio-profile";
+import type { ClientCommitment } from "../client-portfolio";
 import type { ProjectIntegrationsSnapshot } from "../integrations/types";
 import { redactText } from "../security/redaction";
 import type { Signal, SignalRankingTier, SignalSource } from "./types";
@@ -25,11 +26,16 @@ export interface SignalWorkSessionEvidence {
   updated_at: string;
 }
 
+export interface SignalCommitmentEvidence extends Pick<ClientCommitment,
+  "id" | "project_id" | "client_id" | "title" | "due_date" | "priority" | "criticality" | "state" | "next_action" | "updated_at"
+> {}
+
 export interface SignalEvidenceSnapshot {
   projects: SignalProjectEvidence[];
   tasks: TaskRecord[];
   issues: InboxItem[];
   sessions?: SignalWorkSessionEvidence[];
+  commitments?: SignalCommitmentEvidence[];
   warnings?: string[];
 }
 
@@ -466,6 +472,52 @@ function sessionCandidates(sessions: SignalWorkSessionEvidence[], observedAt: st
     }, observedAt));
 }
 
+function commitmentCandidates(commitments: SignalCommitmentEvidence[], projectKinds: Map<string, Signal["project_kind"]>, now: Date, observedAt: string): Signal[] {
+  const out: Signal[] = [];
+  for (const commitment of commitments) {
+    if (!safeId(commitment.id) || !safeId(commitment.project_id) || !ACTIVE_COMMITMENT_STATES.has(commitment.state)) continue;
+    const isClient = projectKinds.get(commitment.project_id) === "client";
+    const dueDays = commitment.due_date ? deadlineDays(commitment.due_date, now) : null;
+    const overdueOrImminent = dueDays !== null && dueDays <= 7;
+    const isBlocked = commitment.state === "blocked";
+    if (!overdueOrImminent && !isBlocked) continue;
+    const important = commitment.criticality === "high" || commitment.priority <= 2;
+    const overdue = overdueOrImminent && dueDays! < 0;
+    const type = overdueOrImminent ? (overdue ? "commitment-overdue" : "commitment-due-soon") : "commitment-blocked";
+    const tier: SignalRankingTier = isClient ? "client-commitment" : isBlocked ? "blocked-work" : "imminent-deadline";
+    const severity: Signal["severity"] = overdue && important || (dueDays !== null && dueDays <= 2 && important) ? "critical" : "warning";
+    const reason = overdueOrImminent
+      ? overdue
+        ? "Delivery commitment is overdue by " + Math.abs(dueDays!) + " day" + (dueDays === -1 ? "" : "s") + " (due " + commitment.due_date + ")."
+        : "Delivery commitment is due " + (dueDays === 0 ? "today" : "in " + dueDays + " day" + (dueDays === 1 ? "" : "s")) + " (" + commitment.due_date + ")."
+      : "Delivery commitment is blocked and needs an explicit next step.";
+    out.push(candidate({
+      projectId: commitment.project_id,
+      source: "commitment",
+      type,
+      occurrence: commitment.id + ":" + commitment.state + ":" + (commitment.due_date ?? "undated"),
+      severity,
+      title: commitment.title,
+      reason,
+      evidenceAt: commitment.updated_at,
+      suggestedAction: commitment.next_action,
+      actionKind: "review-commitment",
+      tier,
+      evidence: {
+        commitment_id: commitment.id,
+        deadline: commitment.due_date ?? undefined,
+        days_remaining: dueDays ?? undefined,
+        priority: commitment.priority,
+        criticality: commitment.criticality,
+        commitment_state: commitment.state,
+      },
+    }, observedAt));
+  }
+  return out;
+}
+
+const ACTIVE_COMMITMENT_STATES = new Set(["planned", "in-progress", "blocked"]);
+
 function compareSignals(left: Signal, right: Signal): number {
   return left.ranking.order - right.ranking.order
     || severityWeight(right.severity) - severityWeight(left.severity)
@@ -487,6 +539,7 @@ export function generateSignals(evidence: SignalEvidenceSnapshot, clock: Date = 
     ...taskCandidates(evidence.tasks.filter((task) => safeId(task.envelope.project) && safeId(task.envelope.id)), observedAt),
     ...issueCandidates(evidence.issues, now, observedAt),
     ...sessionCandidates(evidence.sessions ?? [], observedAt),
+    ...commitmentCandidates(evidence.commitments ?? [], projectKinds, now, observedAt),
   ].map((signal) => ({ ...signal, project_kind: projectKinds.get(signal.project_id) ?? null }))
     .sort(compareSignals)
     .slice(0, MAX_SIGNAL_COUNT);

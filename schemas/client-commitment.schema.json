@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.local/schemas/client-commitment.schema.json",
+  "title": "Local software-delivery commitment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "project_id", "client_id", "title", "expected_outcome", "due_date", "priority", "criticality", "state", "issue_numbers", "pull_request_numbers", "task_ids", "session_ids", "next_action", "created_at", "updated_at"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^commitment-[A-Za-z0-9][A-Za-z0-9_-]{0,99}$" },
+    "project_id": { "type": "string", "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "client_id": { "type": ["string", "null"], "pattern": "^client-[A-Za-z0-9][A-Za-z0-9_-]{0,99}$" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "\\S" },
+    "expected_outcome": { "type": "string", "minLength": 1, "maxLength": 800, "pattern": "\\S" },
+    "due_date": { "type": ["string", "null"], "format": "date" },
+    "priority": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "criticality": { "enum": ["low", "medium", "high"] },
+    "state": { "enum": ["planned", "in-progress", "blocked", "completed", "cancelled"] },
+    "issue_numbers": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 1000000000 } },
+    "pull_request_numbers": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 1000000000 } },
+    "task_ids": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" } },
+    "session_ids": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" } },
+    "next_action": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  }
+}

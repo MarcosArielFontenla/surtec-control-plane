@@ -14,7 +14,13 @@ import workSessionSchema from "../../schemas/work-session.schema.json";
 import workSessionsSchema from "../../schemas/work-sessions.schema.json";
 import workSessionStartSchema from "../../schemas/work-session-start.schema.json";
 import workSessionActionSchema from "../../schemas/work-session-action.schema.json";
+import clientRecordSchema from "../../schemas/client-record.schema.json";
+import clientCommitmentSchema from "../../schemas/client-commitment.schema.json";
+import clientPortfolioSchema from "../../schemas/client-portfolio.schema.json";
+import clientInputSchema from "../../schemas/client-input.schema.json";
+import commitmentInputSchema from "../../schemas/commitment-input.schema.json";
 import type { PortfolioProfilesDocument, ProjectProfile } from "../portfolio-profile";
+import type { ClientCommitment, ClientPortfolioDocument, ClientRecord } from "../client-portfolio";
 import type { Signal, SignalAction, SignalFeed, SignalHumanStateDocument } from "../signals/types";
 import type { ProjectStatusOverride, TaskEvent, TaskRecord, WorkSession } from "./types";
 
@@ -52,6 +58,8 @@ ajv.addSchema(taskEnvelopeSchema);
 ajv.addSchema(agentResultSchema);
 ajv.addSchema(projectProfileSchema);
 ajv.addSchema(signalSchema);
+ajv.addSchema(clientRecordSchema);
+ajv.addSchema(clientCommitmentSchema);
 
 export const validateTaskRecord = ajv.compile(taskRecordSchema) as ValidateFunction<TaskRecord>;
 export const validateTaskEvent = ajv.compile(taskEventSchema) as ValidateFunction<TaskEvent>;
@@ -66,6 +74,11 @@ export const validateWorkSession = ajv.compile(workSessionSchema) as ValidateFun
 export const validateWorkSessionsDocument = ajv.compile(workSessionsSchema);
 export const validateWorkSessionStart = ajv.compile(workSessionStartSchema);
 export const validateWorkSessionAction = ajv.compile(workSessionActionSchema);
+export const validateClientRecord = ajv.compile(clientRecordSchema) as ValidateFunction<ClientRecord>;
+export const validateClientCommitment = ajv.compile(clientCommitmentSchema) as ValidateFunction<ClientCommitment>;
+export const validateClientPortfolioDocument = ajv.compile(clientPortfolioSchema) as ValidateFunction<ClientPortfolioDocument>;
+export const validateClientInput = ajv.compile(clientInputSchema);
+export const validateCommitmentInput = ajv.compile(commitmentInputSchema);
 
 export function describeValidation(errors: ErrorObject[] | null | undefined): string {
   return errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ") ?? "invalid data";

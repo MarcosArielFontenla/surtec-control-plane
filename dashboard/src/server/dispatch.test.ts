@@ -116,6 +116,22 @@ describe("createTask", () => {
     expect(t.envelope.self_verify).toBe(true);
   });
 
+  it("keeps task titles free of server-appended client context", () => {
+    const { id } = createTask({
+      project: "stock-control",
+      agent: "backend-engineer",
+      instructions: "Review the release.",
+      client_context: {
+        instructions: "Explicitly selected local client context. Confidential note: synthetic-only.",
+        audit: { client_id: "client-fictional", categories: ["confidential-notes"], shared_at: "2026-09-28T12:00:00.000Z" },
+      },
+    }, root);
+    const task = listTasks().find((item) => item.envelope.id === id)!;
+    expect(task.envelope.title).toBe("Review the release.");
+    expect(task.envelope.instructions).toContain("synthetic-only");
+    expect(task.envelope.metadata.client_context_share).toMatchObject({ categories: ["confidential-notes"] });
+  });
+
   it("defaults self_verify to false when omitted", () => {
     const { id } = createTask({ project: "stock-control", agent: "backend-engineer", instructions: "x", sandbox: "workspace-write" }, root);
     const t = listTasks().find((x) => x.envelope.id === id)!;

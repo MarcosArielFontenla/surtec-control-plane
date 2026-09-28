@@ -10,7 +10,7 @@
     "id": { "type": "string", "pattern": "^sig_[a-f0-9]{24}$" },
     "project_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
     "project_kind": { "type": ["string", "null"], "enum": ["personal", "client", null] },
-    "source": { "type": "string", "enum": ["git", "github", "ci", "deployment", "issue", "task", "profile", "note", "session"] },
+    "source": { "type": "string", "enum": ["git", "github", "ci", "deployment", "issue", "task", "profile", "note", "session", "commitment"] },
     "type": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,79}$" },
     "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
     "title": { "type": "string", "minLength": 1, "maxLength": 240 },
@@ -72,7 +72,10 @@
         "requires_human_approval": { "type": "boolean" },
         "issue_number": { "type": "integer", "minimum": 1 },
         "priority_label": { "type": "string", "maxLength": 100 },
-        "session_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" }
+        "session_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+        "commitment_id": { "type": "string", "pattern": "^commitment-[A-Za-z0-9][A-Za-z0-9_-]{0,99}$" },
+        "commitment_state": { "enum": ["planned", "in-progress", "blocked", "completed", "cancelled"] },
+        "criticality": { "enum": ["low", "medium", "high"] }
       }
     }
   }

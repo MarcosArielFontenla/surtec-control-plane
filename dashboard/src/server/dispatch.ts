@@ -4,6 +4,7 @@ import { writeTask } from "../../../lib/state/store";
 import { PolicyError, PolicyService } from "../../../lib/policy/service";
 import { defaultTaskOrchestration } from "../../../lib/state/orchestration";
 import { appendTaskEvent } from "../../../lib/state/events";
+import type { ClientContextShareAudit } from "../../../lib/client-portfolio";
 
 export class ValidationError extends Error {}
 
@@ -13,15 +14,20 @@ export interface CreateTaskInput {
   instructions: string;
   sandbox?: string;
   self_verify?: boolean;
+  client_context?: { instructions: string; audit: ClientContextShareAudit } | null;
 }
 
 export function createTask(input: CreateTaskInput, repoRoot: string = process.cwd()): { id: string } {
   const project = String(input?.project ?? "");
   const agent = String(input?.agent ?? "");
-  const instructions = String(input?.instructions ?? "").trim();
+  const baseInstructions = String(input?.instructions ?? "").trim();
 
-  if (!instructions) throw new ValidationError("instructions are required");
-  if (instructions.length > 20_000) throw new ValidationError("instructions are too long");
+  if (!baseInstructions) throw new ValidationError("instructions are required");
+  if (baseInstructions.length > 20_000) throw new ValidationError("instructions are too long");
+  const instructions = input?.client_context
+    ? baseInstructions + "\n\n---\n" + input.client_context.instructions
+    : baseInstructions;
+  if (instructions.length > 20_000) throw new ValidationError("instructions and explicitly selected client context are too long");
 
   const sandbox = String(input?.sandbox ?? "read-only");
   if (sandbox !== "read-only" && sandbox !== "workspace-write") {
@@ -49,14 +55,18 @@ export function createTask(input: CreateTaskInput, repoRoot: string = process.cw
     project,
     task_type: sandbox === "workspace-write" ? "implementation" : "analysis",
     agent,
-    title: instructions.slice(0, 80),
+    // Keep task-list labels derived from the user's task request, not appended client context.
+    title: baseInstructions.slice(0, 80),
     instructions,
     repo_path: repoPath,
     branch: `agent/${id}-${agent}`,
     sandbox: sandbox as "read-only" | "workspace-write",
     expected_outputs: ["summary", "risks", "next_steps"],
     requires_human_approval: true,
-    metadata: { created_by: "dashboard" },
+    metadata: {
+      created_by: "dashboard",
+      ...(input?.client_context ? { client_context_share: input.client_context.audit } : {}),
+    },
     self_verify: selfVerify && sandbox === "workspace-write",
   };
 

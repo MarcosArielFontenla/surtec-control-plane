@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProjectIntegrationsSnapshot, ProjectIntegrationsReader } from "../../../lib/integrations/types";
+import type { ClientPortfolioDocument } from "../../../lib/client-portfolio";
+import type { ProjectProfile } from "../../../lib/portfolio-profile";
 import { createSignalEvidenceReader } from "./signal-evidence";
 
 const at = "2026-09-27T12:00:00.000Z";
@@ -83,5 +85,69 @@ describe("portfolio signal evidence reader", () => {
       "Portfolio profiles could not be read; other signal sources remain available.",
       "GitHub issue evidence could not be read; other signal sources remain available.",
     ]));
+  });
+
+  it("adds only validated commitment evidence and keeps client notes/names out of the signal read model", async () => {
+    const profile: ProjectProfile = {
+      schema_version: 1, project_id: "alpha", kind: "client", lifecycle: "active", priority: 2, criticality: "high",
+      current_goal: null, next_action: null, deadline: null, client_id: "client-fictional", last_reviewed_at: null, tags: [],
+    };
+    const clientPortfolio: ClientPortfolioDocument = {
+      schema_version: 1,
+      clients: {
+        "client-fictional": {
+          id: "client-fictional", display_name: "Fictional Client Name", status: "active", criticality: "high",
+          sla_note: "Fictional confidential SLA.", next_review_date: null, confidential_notes: "Fictional private notes.",
+          created_at: at, updated_at: at,
+        },
+      },
+      commitments: {
+        "commitment-fictional": {
+          id: "commitment-fictional", project_id: "alpha", client_id: "client-fictional", title: "Fictional delivery milestone",
+          expected_outcome: "Fictional outcome.", due_date: "2026-09-30", priority: 1, criticality: "high", state: "in-progress",
+          issue_numbers: [], pull_request_numbers: [], task_ids: [], session_ids: [], next_action: "Review the fictional acceptance check.",
+          created_at: at, updated_at: at,
+        },
+      },
+    };
+    const reader = createSignalEvidenceReader("/control-plane", {
+      root: "/portfolio",
+      discover: () => [{ id: "alpha", path: "/private/alpha" }],
+      readGit: () => ({ branch: "main", dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: true }),
+      readTasks: () => [],
+      readProfiles: () => [profile],
+      readClientPortfolio: () => clientPortfolio,
+      readNotes: () => [],
+      readInbox: async () => ({ items: [], repos: [] }),
+      readRegisteredProjects: () => [],
+    });
+    const evidence = await reader.read();
+    expect(evidence.commitments).toMatchObject([{
+      id: "commitment-fictional", project_id: "alpha", client_id: "client-fictional",
+      title: "Fictional delivery milestone", due_date: "2026-09-30",
+    }]);
+    expect(JSON.stringify(evidence)).not.toContain("Fictional Client Name");
+    expect(JSON.stringify(evidence)).not.toContain("Fictional confidential SLA");
+    expect(JSON.stringify(evidence)).not.toContain("Fictional private notes");
+  });
+
+  it("degrades only commitment evidence on client-store failure and redacts its cause", async () => {
+    const reader = createSignalEvidenceReader("/control-plane", {
+      root: "/portfolio",
+      discover: () => [{ id: "alpha", path: "/private/alpha" }],
+      readGit: () => ({ branch: "main", dirty: true, uncommitted: 1, ahead: 0, behind: 0, last_commit: null, ok: true }),
+      readTasks: () => [],
+      readProfiles: () => [],
+      readClientPortfolio: () => { throw new Error("client note must not appear"); },
+      readNotes: () => [],
+      readInbox: async () => ({ items: [], repos: [] }),
+      readRegisteredProjects: () => [],
+    });
+    const evidence = await reader.read();
+    expect(evidence.projects).toHaveLength(1);
+    expect(evidence.projects[0]?.git?.dirty).toBe(true);
+    expect(evidence.commitments).toEqual([]);
+    expect(evidence.warnings).toContain("Client commitment evidence could not be read; other signal sources remain available.");
+    expect(evidence.warnings?.join(" ")).not.toContain("client note must not appear");
   });
 });

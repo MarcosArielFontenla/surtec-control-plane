@@ -36,6 +36,10 @@ export function portfolioProfilesPath(base: string = stateDir()): string {
   return join(portfolioDir(base), "projects.json");
 }
 
+export function clientPortfolioPath(base: string = stateDir()): string {
+  return join(portfolioDir(base), "clients.json");
+}
+
 export function signalHumanStatePath(base: string = stateDir()): string {
   return join(base, "signals", "human-state.json");
 }
