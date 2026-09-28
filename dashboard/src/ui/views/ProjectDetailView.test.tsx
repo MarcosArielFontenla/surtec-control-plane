@@ -28,7 +28,7 @@ const today: TodayModel = {
   counts: { active: 1, attention: 0, completed: 0, failed: 0, cancelled: 0, retries: 0 }, warnings: [],
   portfolio: { signal_status: "available", signals_observed_at: observedAt, recommendations: [], critical_attention: [], work_to_continue: [],
     client_commitments: [], personal_opportunities: [], stale_profiles: [], snoozed_signals: [], pinned_signal_ids: [], warnings: [],
-    sessions: { available: false, unavailable_reason: "Persisted work sessions are planned for Phase G.", active: [], paused: [] } },
+    sessions: { available: true, unavailable_reason: null, active: [], paused: [], completed: [] } },
 };
 const profile: ProjectProfile = {
   schema_version: 1, project_id: "alpha", kind: "client", lifecycle: "active", priority: 1, criticality: "high",
@@ -77,7 +77,7 @@ describe("ProjectDetailView", () => {
     expect(screen.getByText("Recent fictional task")).toBeTruthy();
     expect(screen.getByText("Synthetic commit")).toBeTruthy();
     expect(screen.getByText("Notas locales")).toBeTruthy();
-    expect(screen.getByText("Persisted work sessions are planned for Phase G.")).toBeTruthy();
+    expect(screen.getByText("No hay sesiones activas o pausadas para este proyecto.")).toBeTruthy();
     expect(document.body.textContent).not.toContain("private-client-reference");
     expect(screen.getAllByTitle(observedAt).length).toBeGreaterThan(0);
   });

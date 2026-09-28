@@ -99,11 +99,12 @@ export function App() {
                 setSelectedTask(null);
                 setNav("Overview");
               }}
+              onSessionsChanged={today.refresh}
             />
           ) : selectedProject ? (
             <div className="project-detail-section panel"><p>El proyecto ya no está en el portfolio actual.</p><button type="button" className="ghost-btn" onClick={() => setSelectedProject(null)}>Volver al portfolio</button></div>
           ) : view === "Hoy" ? (
-            <TodayView data={today.data} error={today.error} onOpenTask={setSelectedTask} onRefresh={today.refresh}
+            <TodayView data={today.data} error={today.error} onOpenTask={setSelectedTask} onRefresh={today.refresh} projects={data?.projects ?? []}
               onOpenProject={(id) => openProject(id, "vscode")} onPrepareTask={prepareTask} />
           ) : view === "Procesos" ? (
             <ProcesosView projectIds={activeProjectIds} />

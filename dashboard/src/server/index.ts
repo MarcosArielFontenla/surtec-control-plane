@@ -1,7 +1,7 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { dirname } from "node:path";
-import { listTasks, listProjectOverrides, readTask } from "../../../lib/state/store";
+import { listTasks, listProjectOverrides, readTask, StateLockConflictError } from "../../../lib/state/store";
 import { readTaskEvents } from "../../../lib/state/events";
 import { buildOverview } from "../../../lib/state/derive";
 import { buildTaskDetail, buildToday } from "../../../lib/state/observability";
@@ -24,7 +24,7 @@ import { createRailwayCache, readRailwayDeploy, resolveRailway, RailwayError } f
 import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../lib/state/notes";
 import { listProjectProfiles, upsertProjectProfile, UnsupportedPortfolioSchemaVersionError } from "../../../lib/state/portfolio-profiles";
 import type { ProjectProfile } from "../../../lib/portfolio-profile";
-import { validateProjectProfile, describeValidation } from "../../../lib/state/validation";
+import { validateProjectProfile, describeValidation, validateWorkSessionAction, validateWorkSessionStart } from "../../../lib/state/validation";
 import { TaskControlError, type TaskControl } from "../../../runner/task-orchestrator";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
@@ -37,10 +37,13 @@ import { createSignalService, SignalNotFoundError, type SignalService } from "./
 import { validateSignalAction } from "../../../lib/state/validation";
 import { InvalidSignalActionError, UnsupportedSignalStateVersionError } from "../../../lib/state/signals";
 import type { SignalFeed } from "../../../lib/signals/types";
+import { createWorkSessionService, WorkSessionConflictError, WorkSessionNotFoundError, WorkSessionProjectNotFoundError, WorkSessionTransitionError, WorkSessionValidationError, type WorkSessionActionInput, type WorkSessionService } from "./work-session-service";
+import { UnsupportedWorkSessionSchemaVersionError } from "../../../lib/state/work-sessions";
 
 export interface AppDependencies {
   integrations?: ProjectIntegrationsReader;
   signals?: SignalService;
+  workSessions?: WorkSessionService;
 }
 
 export function createApp(
@@ -76,6 +79,52 @@ export function createApp(
       inboxCache,
       readGit: (path) => gitStatusCache.get(path),
     }),
+  });
+  const workSessions = dependencies.workSessions ?? createWorkSessionService(repoRoot, {
+    readRun: (runId) => pm.get(runId)?.record ?? null,
+  });
+
+  const workSessionErrorResponse = (c: Context, error: unknown) => {
+    if (error instanceof WorkSessionValidationError) return c.json({ error: error.message }, 400);
+    if (error instanceof WorkSessionProjectNotFoundError || error instanceof WorkSessionNotFoundError) return c.json({ error: error.message }, 404);
+    if (error instanceof WorkSessionConflictError || error instanceof WorkSessionTransitionError || error instanceof StateLockConflictError || error instanceof UnsupportedWorkSessionSchemaVersionError) {
+      return c.json({ error: error instanceof StateLockConflictError ? "work sessions are being updated; retry shortly" : error.message }, 409);
+    }
+    return c.json({ error: "work session state is unavailable" }, 500);
+  };
+
+  app.get("/api/sessions", (c) => {
+    c.header("Cache-Control", "no-store");
+    try { return c.json(workSessions.snapshot()); }
+    catch (error) { return workSessionErrorResponse(c, error); }
+  });
+
+  app.post("/api/sessions", async (c) => {
+    c.header("Cache-Control", "no-store");
+    let body: unknown;
+    try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON body" }, 400); }
+    if (!validateWorkSessionStart(body)) return c.json({ error: `invalid work session start: ${describeValidation(validateWorkSessionStart.errors)}` }, 400);
+    try { return c.json({ session: workSessions.start(body as unknown as Parameters<WorkSessionService["start"]>[0]) }, 201); }
+    catch (error) { return workSessionErrorResponse(c, error); }
+  });
+
+  app.post("/api/sessions/:id/action", async (c) => {
+    c.header("Cache-Control", "no-store");
+    let body: unknown;
+    try { body = await c.req.json(); } catch { return c.json({ error: "invalid JSON body" }, 400); }
+    if (!validateWorkSessionAction(body)) return c.json({ error: `invalid work session action: ${describeValidation(validateWorkSessionAction.errors)}` }, 400);
+    try {
+      const input = body as WorkSessionActionInput;
+      let session;
+      switch (input.action) {
+        case "add-note": session = workSessions.addNote(c.req.param("id"), input.note); break;
+        case "associate": session = workSessions.associate(c.req.param("id"), input.task_ids, input.run_ids); break;
+        case "pause": session = workSessions.pause(c.req.param("id"), input.next_action); break;
+        case "resume": session = workSessions.resume(c.req.param("id")); break;
+        case "complete": session = workSessions.complete(c.req.param("id"), input.result_summary, input.next_action); break;
+      }
+      return c.json({ session });
+    } catch (error) { return workSessionErrorResponse(c, error); }
   });
 
   app.get("/api/overview", (c) => {
@@ -115,7 +164,10 @@ export function createApp(
       } catch {
         signalWarnings.push("Portfolio intelligence is temporarily unavailable; Codex task activity remains available.");
       }
-      return c.json(buildToday(tasks, events, { date, warnings, signalFeed, signalWarnings }));
+      let sessionState;
+      try { sessionState = workSessions.snapshot(); }
+      catch { sessionState = { available: false, unavailable_reason: "Work sessions are temporarily unavailable; task activity remains available.", active: [], paused: [], completed: [] }; }
+      return c.json(buildToday(tasks, events, { date, warnings, signalFeed, signalWarnings, sessions: sessionState }));
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }

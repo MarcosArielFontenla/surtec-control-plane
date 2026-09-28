@@ -3,7 +3,7 @@ import { extname, join } from "node:path";
 import { assertPathWithin } from "../security/paths";
 import { buildAttention, toTaskView } from "./derive";
 import type {
-  TaskCleanupEvidence, TaskDetailModel, TaskDiffEvidence, TaskEvent, TaskRecord, TaskView, TodayActivity, TodayModel,
+  TaskCleanupEvidence, TaskDetailModel, TaskDiffEvidence, TaskEvent, TaskRecord, TaskView, TodayActivity, TodayModel, TodayWorkSessionState,
 } from "./types";
 import type { Signal, SignalFeed } from "../signals/types";
 
@@ -57,7 +57,7 @@ function activityFor(
 export function buildToday(
   tasks: TaskRecord[],
   events: TaskEvent[],
-  options: { now?: Date; date?: string; timeZone?: string; warnings?: string[]; signalFeed?: SignalFeed | null; signalWarnings?: string[] } = {},
+  options: { now?: Date; date?: string; timeZone?: string; warnings?: string[]; signalFeed?: SignalFeed | null; signalWarnings?: string[]; sessions?: TodayWorkSessionState } = {},
 ): TodayModel {
   const now = options.now ?? new Date();
   const timeZone = options.timeZone ?? process.env.SURTEC_TIME_ZONE ?? DEFAULT_TIME_ZONE;
@@ -95,12 +95,7 @@ export function buildToday(
     snoozed_signals: visibleSignals.filter((signal) => signal.state === "snoozed"),
     pinned_signal_ids: signalFeed?.pinned_signal_ids ?? [],
     warnings: portfolioWarnings,
-    sessions: {
-      available: false as const,
-      unavailable_reason: "Persisted work sessions are planned for Phase G.",
-      active: [] as never[],
-      paused: [] as never[],
-    },
+    sessions: options.sessions ?? { available: true, unavailable_reason: null, active: [], paused: [], completed: [] },
   };
 
   return {

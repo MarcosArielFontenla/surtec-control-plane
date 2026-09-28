@@ -218,12 +218,61 @@ export interface TodayPortfolioModel {
   snoozed_signals: Signal[];
   pinned_signal_ids: string[];
   warnings: string[];
-  sessions: {
-    available: false;
-    unavailable_reason: string;
-    active: never[];
-    paused: never[];
-  };
+  sessions: TodayWorkSessionState;
+}
+
+export type WorkSessionStatus = "active" | "paused" | "completed";
+
+export interface WorkSession {
+  schema_version: 1;
+  id: string;
+  project_id: string;
+  objective: string;
+  status: WorkSessionStatus;
+  branch: string | null;
+  started_at: string;
+  paused_at: string | null;
+  completed_at: string | null;
+  related_task_ids: string[];
+  related_run_ids: string[];
+  notes: string[];
+  result_summary: string | null;
+  next_action: string | null;
+  focused_ms: number;
+  active_since: string | null;
+}
+
+export interface WorkSessionTaskEvidence {
+  id: string;
+  available: boolean;
+  title: string | null;
+  lifecycle: Lifecycle | null;
+  outcome: AgentOutcome | null;
+  latest_event: TaskEventType | null;
+  verification: VerificationReport["status"] | null;
+  pull_request_url: string | null;
+}
+
+export interface WorkSessionRunEvidence {
+  id: string;
+  kind: RunKind | null;
+  status: RunStatus | "unavailable";
+  started_at: string | null;
+  exit_code: number | null;
+}
+
+export interface WorkSessionView extends WorkSession {
+  elapsed_focused_ms: number;
+  related_tasks: WorkSessionTaskEvidence[];
+  related_runs: WorkSessionRunEvidence[];
+}
+
+export interface TodayWorkSessionState {
+  available: boolean;
+  unavailable_reason: string | null;
+  active: WorkSessionView[];
+  paused: WorkSessionView[];
+  completed: WorkSessionView[];
 }
 
 export interface TodayModel {

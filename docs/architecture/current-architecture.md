@@ -11,7 +11,7 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 - `lib/policy`: the canonical typed policy boundary for project, agent, sandbox, task-type, repository, command, and approval configuration.
 - `lib/security`: shared identifier, canonical path-containment, environment-allowlist, and redaction primitives.
 - `lib/integrations`: versioned project-integration contracts, runtime validation, URL safety, and bounded error normalization.
-- `lib/state`: schema-validated file-first task and project state with per-task locks, atomic replacement writes, and append-only task events.
+- `lib/state`: schema-validated file-first task, project, signal, profile, and work-session state with locks, atomic replacement writes, and append-only task events.
 - Other `lib` modules: discovery, Git status, portfolio derivation, and URL helpers.
 - `runner`: durable task scheduling, agent execution, worktrees, verification, process management, review publication, and startup reconciliation.
 - `registry`: trusted project and agent configuration.
@@ -61,6 +61,12 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 
 Configured `dev`, `build`, `test`, `lint`, and `install` commands run through the in-memory process manager. Output is held in a bounded server buffer and streamed over SSE. Process history does not yet survive a server restart.
 
+### Resumable work sessions
+
+`GET /api/today` composes the active, paused, and five most recent completed work sessions from `state/sessions/work-sessions.json`. Protected `POST /api/sessions` and `POST /api/sessions/:id/action` mutations start, annotate, associate, pause, resume, and complete sessions. The persisted document is schema-validated, globally locked, and atomically replaced; the lock makes the single-active-session rule consistent across cooperating local processes. Project IDs are resolved from discovered sibling repositories, task/process links must belong to the same project, and the current Git branch is captured on start.
+
+Resume evidence is a deterministic read model over stored notes and existing task/process state. It omits event payloads, task instructions/results, raw process commands, absolute paths, and invalid PR URLs. Manual active intervals are accumulated as focused time without collecting user-activity telemetry. Pausing and completing update only session state.
+
 ### Project integrations
 
 1. `GET /api/projects/:id/integrations` resolves the project through `PolicyService`.
@@ -92,6 +98,7 @@ The production API binds to `127.0.0.1`. API middleware rejects non-loopback `Ho
 - Snapshot replacement and event append are two separate durable operations. A revision can therefore reveal a missing event after an I/O failure, but the pair is not one filesystem transaction.
 - File locks coordinate cooperating control-plane processes, not arbitrary same-user filesystem writers or distributed hosts.
 - Project-process history and the HTTP session token do not survive a server restart.
+- Work-session records and accumulated elapsed time survive restart, but a related process's live status cannot be recovered because the process manager is in-memory only.
 - Project-integration caches are process-local; the legacy provider-specific endpoints and aggregate endpoint can briefly expose observations from different cache windows.
 - Only deployment currently has multiple concrete implementations. Source-control, CI, and tracing interfaces must not be generalized without another real implementation.
 - Orphan worktrees require an explicit human cleanup decision after inspecting the reconciliation report.

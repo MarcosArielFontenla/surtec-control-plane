@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.local/schemas/work-sessions.schema.json",
+  "title": "Work Sessions Store",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sessions"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "sessions": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "work-session.schema.json" }
+    }
+  }
+}

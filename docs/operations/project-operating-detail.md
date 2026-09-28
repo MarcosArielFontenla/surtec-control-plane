@@ -16,8 +16,10 @@ Legacy `/github`, `/deps`, `/deploy`, and `/railway` routes remain available for
 - `Preparar tarea` fills the existing task form with the profile's next action or goal. It does not dispatch a task.
 - Profile edits and notes mutate only local control-plane state through the existing session-protected endpoints.
 - Current and recent Codex tasks link to their task detail. Signals are grouped into open, snoozed, and resolved states; recent commits and task activity are scoped to this project.
-- Persisted work sessions are not available until Phase G; the page states this instead of presenting tasks as sessions.
+- The session panel shows this project's active, paused, and recently completed work sessions. It supports objective, notes, same-project task/process links, explicit pause/resume, and a required completion summary plus next action.
 
 Keep `client_id` and client names out of read-only integration evidence, activity summaries, and external links. The existing local profile editor exposes an opaque client ID only when the user explicitly opens that editor. Do not render absolute repository paths, provider payloads, credentials, task instructions, or agent results. External links are limited to validated HTTP(S) deployment URLs and GitHub links derived from the configured repository identity and bounded identifiers.
 
 Run `pnpm smoke:project-detail:playwright` for a real-browser smoke with fictional configured, unconfigured, and degraded project fixtures. It verifies refresh/freshness behavior, continued usefulness when providers fail, the single aggregate provider read, and task prefill without dispatching.
+
+Run `pnpm smoke:work-sessions:playwright` to validate that a paused session and its resume context remain visible in this project detail view after a browser reload.

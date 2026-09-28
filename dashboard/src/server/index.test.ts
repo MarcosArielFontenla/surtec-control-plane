@@ -164,7 +164,7 @@ describe("api", () => {
     expect(await res.json()).toMatchObject({
       date: "2026-05-28", time_zone: "UTC", counts: { active: 1, retries: 1 },
       active: [{ id: "STK-1" }], retries: [{ task: { id: "STK-1" }, event: { type: "retry-scheduled" } }],
-      portfolio: { signal_status: "available", recommendations: [], sessions: { available: false, active: [], paused: [] } },
+      portfolio: { signal_status: "available", recommendations: [], sessions: { available: true, active: [], paused: [], completed: [] } },
     });
     expect(res.headers.get("cache-control")).toBe("no-store");
   });

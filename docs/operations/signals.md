@@ -12,6 +12,6 @@ Snoozes reopen when their date/time passes without a read-side write. Pins expir
 
 Evidence is intentionally limited: no provider payload, issue title/author/URL, note text, deployment URL, task instructions/result text, credential, or absolute repository path is included. Project IDs, bounded branch names, task/issue/note/PR identifiers, status enums, counts, labels, and timestamps may be present when they explain a rule. State is local and not encrypted by this application; protect it using host account and disk protections.
 
-The engine can accept paused-session evidence, but Phase D has no persisted session source. The production feed therefore emits no session signal until the work-session model is delivered in Phase G.
+The deterministic engine still accepts paused-session evidence, but session recommendations are not currently enabled in the production signal feed. Phase G adds a separate persisted resume card in `Hoy` and project detail; it does not fabricate priority signals from session state. Connecting session evidence to signal ranking can be evaluated separately once real usage demonstrates a useful rule.
 
 Run the deterministic browser/API smoke with `pnpm smoke:signals:playwright`. It launches Chromium against an isolated loopback API server, uses synthetic evidence and temporary state, exercises the session-protected action endpoint, restarts the service, then removes only its uniquely named temporary directory. It does not make provider or paid model calls.

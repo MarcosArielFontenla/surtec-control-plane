@@ -10,9 +10,13 @@ import signalSchema from "../../schemas/signal.schema.json";
 import signalFeedSchema from "../../schemas/signal-feed.schema.json";
 import signalHumanStateSchema from "../../schemas/signal-human-state.schema.json";
 import signalActionSchema from "../../schemas/signal-action.schema.json";
+import workSessionSchema from "../../schemas/work-session.schema.json";
+import workSessionsSchema from "../../schemas/work-sessions.schema.json";
+import workSessionStartSchema from "../../schemas/work-session-start.schema.json";
+import workSessionActionSchema from "../../schemas/work-session-action.schema.json";
 import type { PortfolioProfilesDocument, ProjectProfile } from "../portfolio-profile";
 import type { Signal, SignalAction, SignalFeed, SignalHumanStateDocument } from "../signals/types";
-import type { ProjectStatusOverride, TaskEvent, TaskRecord } from "./types";
+import type { ProjectStatusOverride, TaskEvent, TaskRecord, WorkSession } from "./types";
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 ajv.addFormat("date", {
@@ -29,6 +33,21 @@ ajv.addFormat("date", {
     return day >= 1 && day <= daysInMonth;
   },
 });
+ajv.addFormat("date-time", {
+  type: "string",
+  validate: (value: string) => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+    if (!match) return false;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+    return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth
+      && Number(match[4]) <= 23 && Number(match[5]) <= 59 && Number(match[6]) <= 59
+      && Number.isFinite(Date.parse(value));
+  },
+});
 ajv.addSchema(taskEnvelopeSchema);
 ajv.addSchema(agentResultSchema);
 ajv.addSchema(projectProfileSchema);
@@ -43,6 +62,10 @@ export const validateSignal = ajv.compile(signalSchema) as ValidateFunction<Sign
 export const validateSignalFeed = ajv.compile(signalFeedSchema) as ValidateFunction<SignalFeed>;
 export const validateSignalHumanStateDocument = ajv.compile(signalHumanStateSchema) as ValidateFunction<SignalHumanStateDocument>;
 export const validateSignalAction = ajv.compile(signalActionSchema) as ValidateFunction<SignalAction>;
+export const validateWorkSession = ajv.compile(workSessionSchema) as ValidateFunction<WorkSession>;
+export const validateWorkSessionsDocument = ajv.compile(workSessionsSchema);
+export const validateWorkSessionStart = ajv.compile(workSessionStartSchema);
+export const validateWorkSessionAction = ajv.compile(workSessionActionSchema);
 
 export function describeValidation(errors: ErrorObject[] | null | undefined): string {
   return errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ") ?? "invalid data";

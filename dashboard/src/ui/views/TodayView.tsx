@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { ArrowUpRight, Check, Clock3, Pin, RotateCw, Send, ShieldCheck, X } from "lucide-react";
 import type { Signal, SignalAction } from "../../../../lib/signals/types";
-import type { TaskView, TodayActivity, TodayModel } from "../../../../lib/state/types";
+import type { TaskView, TodayActivity, TodayModel, ProjectView } from "../../../../lib/state/types";
 import { postSignalAction } from "../api";
 import { AttentionPanel } from "../components/AttentionPanel";
 import { InProgressColumn } from "../components/InProgressColumn";
+import { WorkSessionsPanel } from "../components/WorkSessionsPanel";
 import { relativeTime } from "../relative-time";
 
 const TIER_LABELS: Record<Signal["ranking"]["tier"], string> = {
@@ -155,6 +156,7 @@ export function TodayView({
   onOpenProject,
   onPrepareTask,
   onRefresh,
+  projects = [],
 }: {
   data: TodayModel | null;
   error: string | null;
@@ -162,6 +164,7 @@ export function TodayView({
   onOpenProject: (id: string) => Promise<void>;
   onPrepareTask: (signal: Signal) => void;
   onRefresh: () => Promise<TodayModel>;
+  projects?: ProjectView[];
 }) {
   const [busySignal, setBusySignal] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -232,6 +235,8 @@ export function TodayView({
         </div>
       </section>
 
+      <WorkSessionsPanel sessions={data.portfolio.sessions} projects={projects} onChanged={onRefresh} onOpenTask={onOpenTask} />
+
       <SignalSection title="Ahora · recomendaciones principales" signals={data.portfolio.recommendations} {...signalProps}
         empty={recommendationEmpty} />
 
@@ -246,7 +251,6 @@ export function TodayView({
           <div className="section-head"><h2>Continuar</h2><span className="meta">{data.active.length + data.portfolio.work_to_continue.length}</span></div>
           <InProgressColumn inProgress={data.active} history={[]} onOpenTask={onOpenTask} />
           {additionalContinue.length > 0 && <SignalSection title="Trabajo listo para retomar" signals={additionalContinue} {...signalProps} />}
-          {!data.portfolio.sessions.available && <p className="today-deferred">Sesiones pausadas y reanudables: disponibles cuando se incorpore el registro de sesiones en Fase G.</p>}
         </section>
       </div>
 

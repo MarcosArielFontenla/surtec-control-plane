@@ -61,7 +61,8 @@ describe("daily observability", () => {
     expect(today.retries).toHaveLength(1);
     expect(today.recoveries).toHaveLength(1);
     expect(today.portfolio.signal_status).toBe("unavailable");
-    expect(today.portfolio.sessions.available).toBe(false);
+    expect(today.portfolio.sessions.available).toBe(true);
+    expect(today.portfolio.sessions.active).toEqual([]);
   });
 
   it("composes deterministic portfolio sections without replacing task activity", () => {

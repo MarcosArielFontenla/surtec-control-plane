@@ -42,7 +42,7 @@ function emptyToday(): TodayModel {
       signal_status: "available", signals_observed_at: observedAt, recommendations: [], critical_attention: [],
       work_to_continue: [], client_commitments: [], personal_opportunities: [], stale_profiles: [], snoozed_signals: [],
       pinned_signal_ids: [], warnings: [],
-      sessions: { available: false, unavailable_reason: "Persisted work sessions are planned for Phase G.", active: [], paused: [] },
+      sessions: { available: true, unavailable_reason: null, active: [], paused: [], completed: [] },
     },
     warnings: [],
   };

@@ -8,6 +8,7 @@ import { githubWebUrl } from "../../../../lib/github-url";
 import { getActivity, getProjectIntegrations, getSignals, openProject } from "../api";
 import { ProjectNotes } from "../components/ProjectNotes";
 import { ProjectProfileEditor } from "../components/ProjectProfileEditor";
+import { WorkSessionsPanel } from "../components/WorkSessionsPanel";
 import { relativeTime } from "../relative-time";
 
 const HEALTH_LABEL: Record<IntegrationHealth, string> = {
@@ -180,6 +181,7 @@ export function ProjectDetailView({
   onBack,
   onOpenTask,
   onPrepareTask,
+  onSessionsChanged,
 }: {
   project: ProjectView;
   overview: OverviewModel;
@@ -192,6 +194,7 @@ export function ProjectDetailView({
   onBack: () => void;
   onOpenTask: (id: string) => void;
   onPrepareTask: (projectId: string, instructions: string) => void;
+  onSessionsChanged?: () => Promise<unknown>;
 }) {
   const [integrations, setIntegrations] = useState<ProjectIntegrationsSnapshot | null>(null);
   const [integrationsError, setIntegrationsError] = useState<string | null>(null);
@@ -241,7 +244,7 @@ export function ProjectDetailView({
   const snoozedSignals = projectSignals.filter((signal) => signal.state === "snoozed");
   const resolvedSignals = projectSignals.filter((signal) => signal.state === "resolved");
   const projectActivity = useMemo(() => (activity?.items ?? []).filter((item) => item.project === id), [activity, id]);
-  const sessionState = today?.portfolio.sessions;
+  const sessionState = today?.portfolio.sessions ?? { available: false, unavailable_reason: "Work-session state has not loaded yet.", active: [], paused: [], completed: [] };
   const instructions = profile?.next_action ?? profile?.current_goal ?? `Review the current operating state of ${id} and propose a safe next step.`;
 
   return (
@@ -276,10 +279,7 @@ export function ProjectDetailView({
         {integrations && <IntegrationGrid snapshot={integrations} project={project} />}
       </section>
 
-      <section className="project-detail-section panel">
-        <div className="section-head"><h2>Sesiones de trabajo</h2><span className="meta">{sessionState?.available ? "Disponible" : "Pendiente"}</span></div>
-        <p className="empty-mini">{sessionState?.unavailable_reason ?? "Las sesiones persistidas se incorporarán en la Fase G."}</p>
-      </section>
+      <WorkSessionsPanel sessions={sessionState} projects={overview.projects} projectId={id} onChanged={onSessionsChanged ?? (async () => {})} onOpenTask={onOpenTask} />
 
       <div className="project-detail-grid">
         <TaskList title="Tareas activas" tasks={activeTasks} onOpenTask={onOpenTask} />

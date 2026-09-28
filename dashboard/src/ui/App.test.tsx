@@ -29,7 +29,7 @@ const today: TodayModel = {
   portfolio: {
     signal_status: "unavailable", signals_observed_at: null, recommendations: [], critical_attention: [], work_to_continue: [],
     client_commitments: [], personal_opportunities: [], stale_profiles: [], snoozed_signals: [], pinned_signal_ids: [],
-    warnings: [], sessions: { available: false, unavailable_reason: "Persisted work sessions are planned for Phase G.", active: [], paused: [] },
+    warnings: [], sessions: { available: true, unavailable_reason: null, active: [], paused: [], completed: [] },
   },
 };
 
@@ -74,7 +74,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Detalle operativo de stock-control" }));
     await waitFor(() => expect(screen.getByRole("heading", { name: "Integraciones" })).toBeTruthy());
     expect(screen.getByText("Perfil y próximo paso")).toBeTruthy();
-    expect(screen.getByText(/Persisted work sessions are planned for Phase G/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sesiones de trabajo" })).toBeTruthy();
     expect(screen.getByText("Notas locales")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Tareas activas" })).toBeTruthy();
   });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth, RailwayStatus, TaskDetailModel, TodayModel } from "../../../lib/state/types";
+import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth, RailwayStatus, TaskDetailModel, TodayModel, WorkSession } from "../../../lib/state/types";
 import type { Note } from "../../../lib/state/notes";
 import type { ProjectProfile } from "../../../lib/portfolio-profile";
 import type { SignalAction, SignalFeed } from "../../../lib/signals/types";
@@ -89,6 +89,34 @@ export async function saveProjectProfile(profile: ProjectProfile): Promise<{ pro
     throw new Error(e.error ?? `project profile save failed: ${res.status}`);
   }
   return (await res.json()) as { profile: ProjectProfile };
+}
+
+async function workSessionMutation(path: string, body: unknown): Promise<WorkSession> {
+  const res = await mutate(path, { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? `work session action failed: ${res.status}`);
+  }
+  const result = (await res.json()) as { session: WorkSession };
+  return result.session;
+}
+
+export function startWorkSession(input: {
+  project_id: string;
+  objective: string;
+  related_task_ids?: string[];
+  related_run_ids?: string[];
+}): Promise<WorkSession> {
+  return workSessionMutation("/api/sessions", input);
+}
+
+export function actOnWorkSession(id: string, action:
+  | { action: "add-note"; note: string }
+  | { action: "associate"; task_ids?: string[]; run_ids?: string[] }
+  | { action: "pause"; next_action: string }
+  | { action: "resume" }
+  | { action: "complete"; result_summary: string; next_action: string }): Promise<WorkSession> {
+  return workSessionMutation(`/api/sessions/${encodeURIComponent(id)}/action`, action);
 }
 
 export function useToday(intervalMs = 3000): { data: TodayModel | null; error: string | null; refresh: () => Promise<TodayModel> } {

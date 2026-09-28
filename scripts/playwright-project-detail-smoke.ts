@@ -70,7 +70,7 @@ const today: TodayModel = {
   counts: { active: 1, attention: 0, completed: 0, failed: 0, cancelled: 0, retries: 0 }, warnings: [],
   portfolio: { signal_status: "available", signals_observed_at: observedAt, recommendations: [], critical_attention: [], work_to_continue: [],
     client_commitments: [], personal_opportunities: [], stale_profiles: [], snoozed_signals: [], pinned_signal_ids: [], warnings: [],
-    sessions: { available: false, unavailable_reason: "Persisted work sessions are planned for Phase G.", active: [], paused: [] } },
+    sessions: { available: true, unavailable_reason: null, active: [], paused: [], completed: [] } },
 };
 
 function integrations(id: string, refreshed: boolean): ProjectIntegrationsSnapshot {
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
     await page.getByText("Synthetic resolved signal for configured-project").waitFor();
     await page.getByText("Synthetic recent commit").waitFor();
     await page.getByText("Synthetic local note").waitFor();
-    await page.getByText("Persisted work sessions are planned for Phase G.").waitFor();
+    await page.getByText("No hay sesiones activas o pausadas para este proyecto.").waitFor();
     await page.getByText("2 PR abiertas · 4 issues abiertas").waitFor();
     await page.getByRole("link", { name: /PR #12/ }).waitFor();
     assert.equal(await page.locator("body").innerText().then((text) => text.includes("private-fixture-client-id")), false,

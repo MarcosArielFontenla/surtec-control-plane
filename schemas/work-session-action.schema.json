@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.local/schemas/work-session-action.schema.json",
+  "title": "Work Session Action Request",
+  "oneOf": [
+    {
+      "type": "object", "additionalProperties": false, "required": ["action", "note"],
+      "properties": { "action": { "const": "add-note" }, "note": { "type": "string", "minLength": 1, "maxLength": 2000 } }
+    },
+    {
+      "type": "object", "additionalProperties": false, "required": ["action"],
+      "properties": {
+        "action": { "const": "associate" },
+        "task_ids": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" } },
+        "run_ids": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" } }
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false, "required": ["action", "next_action"],
+      "properties": { "action": { "const": "pause" }, "next_action": { "type": "string", "minLength": 1, "maxLength": 1000 } }
+    },
+    {
+      "type": "object", "additionalProperties": false, "required": ["action"],
+      "properties": { "action": { "const": "resume" } }
+    },
+    {
+      "type": "object", "additionalProperties": false, "required": ["action", "result_summary", "next_action"],
+      "properties": {
+        "action": { "const": "complete" },
+        "result_summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "next_action": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    }
+  ]
+}

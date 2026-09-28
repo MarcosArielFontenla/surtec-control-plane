@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Signal } from "../../../../lib/signals/types";
-import type { TodayModel } from "../../../../lib/state/types";
+import type { ProjectView, TodayModel } from "../../../../lib/state/types";
 import { postSignalAction } from "../api";
 import { TodayView } from "./TodayView";
 
@@ -12,6 +12,11 @@ const task = {
   id: "T-1", project: "alpha", agent: "engineer", title: "Ship evidence", lifecycle: "running" as const,
   outcome: null, updated_at: "2026-09-21T12:00:00Z", finished_at: null, requires_human_approval: true,
   attempts: 1, max_attempts: 3, retry_at: null, cancel_requested_at: null,
+};
+
+const project: ProjectView = {
+  id: "alpha", status: "active", health: null, note: null, repo: null, path: null, configured: false,
+  git: null, last_activity: null, task_counts: { inProgress: 0, finished: 0 },
 };
 
 function signal(number: number, over: Partial<Signal> = {}): Signal {
@@ -36,7 +41,7 @@ function model(signals: Signal[] = [], over: Partial<TodayModel> = {}): TodayMod
       signal_status: "available", signals_observed_at: "2026-09-21T12:00:00Z", recommendations: visible,
       critical_attention: [], work_to_continue: [], client_commitments: visible, personal_opportunities: [], stale_profiles: [],
       snoozed_signals: [], pinned_signal_ids: [], warnings: [],
-      sessions: { available: false, unavailable_reason: "Persisted work sessions are planned for Phase G.", active: [], paused: [] },
+      sessions: { available: true, unavailable_reason: null, active: [], paused: [], completed: [] },
     },
     ...over,
   };
@@ -46,7 +51,7 @@ describe("TodayView", () => {
   it("renders portfolio recommendations and keeps the existing task activity accessible", () => {
     const onOpenTask = vi.fn();
     render(<TodayView data={model([signal(1)])} error={null} onOpenTask={onOpenTask} onOpenProject={async () => {}}
-      onPrepareTask={vi.fn()} onRefresh={async () => model()} />);
+      onPrepareTask={vi.fn()} onRefresh={async () => model()} projects={[project]} />);
 
     expect(screen.getByText("2026-09-21")).toBeInTheDocument();
     expect(screen.getByText("Ahora · recomendaciones principales")).toBeInTheDocument();
@@ -54,7 +59,8 @@ describe("TodayView", () => {
     expect(screen.getByText("Completadas hoy")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /T-1/ }));
     expect(onOpenTask).toHaveBeenCalledWith("T-1");
-    expect(screen.getByText(/Sesiones pausadas y reanudables/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Sesiones de trabajo" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Iniciar sesión" })).toBeInTheDocument();
   });
 
   it("keeps the primary recommendation count at three for an overloaded signal feed", () => {

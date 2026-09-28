@@ -52,13 +52,13 @@ Status: complete on 2026-09-27. See [Phase E verification](phase-e-verification.
 
 Add an on-demand project page built on the versioned aggregate integration snapshot, with provider-level evidence/freshness, local operating context, tasks, signals, activity, and safe quick actions. Keep expensive dependency checks scoped to the explicit project-detail read so portfolio aggregation remains responsive.
 
-Status: implementation ready for local validation on 2026-09-27. See [Phase F verification](phase-f-verification.md). Persisted work sessions remain deferred to Phase G.
+Status: complete after local validation on 2026-09-27. See [Phase F verification](phase-f-verification.md).
 
 ## Phase G — Work sessions and resumable human context
 
 Add validated local work sessions so a project can be paused and resumed with explicit human context.
 
-Status: pending Phase F local validation.
+Status: implementation ready for local validation on 2026-09-27. See [Phase G verification](phase-g-verification.md). Stop here for Marcos's local validation before starting Phase H.
 
 ## Phase 6 — Optional collaborative workspace
 
