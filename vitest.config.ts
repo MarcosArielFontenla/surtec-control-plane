@@ -6,5 +6,7 @@ export default defineConfig({
     include: ["**/*.test.ts", "**/*.test.tsx"],
     globals: true,
     setupFiles: ["@testing-library/jest-dom/vitest"],
+    // Keep suite contention bounded so short async tests remain reliable on Windows hosts.
+    maxWorkers: 2,
   },
 });
