@@ -125,6 +125,7 @@ function candidate(input: CandidateInput, observedAt: string): Signal {
     schema_version: 1,
     id: stableId(input),
     project_id: input.projectId,
+    project_kind: null,
     source: input.source,
     type: input.type,
     severity: input.severity,
@@ -480,10 +481,13 @@ function severityWeight(value: Signal["severity"]): number {
 export function generateSignals(evidence: SignalEvidenceSnapshot, clock: Date = new Date()): Signal[] {
   const now = new Date(clock);
   const observedAt = now.toISOString();
+  const projectKinds = new Map(evidence.projects.map((project) => [project.id, project.profile?.kind ?? null]));
   return [
     ...evidence.projects.filter((project) => safeId(project.id)).flatMap((project) => projectCandidates(project, now, observedAt)),
     ...taskCandidates(evidence.tasks.filter((task) => safeId(task.envelope.project) && safeId(task.envelope.id)), observedAt),
     ...issueCandidates(evidence.issues, now, observedAt),
     ...sessionCandidates(evidence.sessions ?? [], observedAt),
-  ].sort(compareSignals).slice(0, MAX_SIGNAL_COUNT);
+  ].map((signal) => ({ ...signal, project_kind: projectKinds.get(signal.project_id) ?? null }))
+    .sort(compareSignals)
+    .slice(0, MAX_SIGNAL_COUNT);
 }

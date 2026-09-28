@@ -36,6 +36,7 @@ import { createSignalEvidenceReader } from "./signal-evidence";
 import { createSignalService, SignalNotFoundError, type SignalService } from "./signal-service";
 import { validateSignalAction } from "../../../lib/state/validation";
 import { InvalidSignalActionError, UnsupportedSignalStateVersionError } from "../../../lib/state/signals";
+import type { SignalFeed } from "../../../lib/signals/types";
 
 export interface AppDependencies {
   integrations?: ProjectIntegrationsReader;
@@ -90,9 +91,10 @@ export function createApp(
     }
   });
 
-  app.get("/api/today", (c) => {
+  app.get("/api/today", async (c) => {
     const date = c.req.query("date");
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: "date must use YYYY-MM-DD" }, 400);
+    c.header("Cache-Control", "no-store");
     try {
       const tasks = listTasks();
       const warnings: string[] = [];
@@ -104,7 +106,14 @@ export function createApp(
           return [];
         }
       });
-      return c.json(buildToday(tasks, events, { date, warnings }));
+      let signalFeed: SignalFeed | null = null;
+      const signalWarnings: string[] = [];
+      try {
+        signalFeed = await signals.read();
+      } catch {
+        signalWarnings.push("Portfolio intelligence is temporarily unavailable; Codex task activity remains available.");
+      }
+      return c.json(buildToday(tasks, events, { date, warnings, signalFeed, signalWarnings }));
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }

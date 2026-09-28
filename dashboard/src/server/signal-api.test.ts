@@ -41,6 +41,7 @@ describe("signal API", () => {
     const body = await response.json() as { schema_version: number; signals: { type: string }[]; warnings: string[] };
     expect(body.schema_version).toBe(1);
     expect(body.signals.map((signal) => signal.type)).toEqual(expect.arrayContaining(["missing-current-goal", "missing-next-action"]));
+    expect(body.signals[0]).toHaveProperty("project_kind", null);
     expect(body.warnings).toEqual([]);
   });
 

@@ -5,6 +5,7 @@ import { buildAttention, toTaskView } from "./derive";
 import type {
   TaskCleanupEvidence, TaskDetailModel, TaskDiffEvidence, TaskEvent, TaskRecord, TaskView, TodayActivity, TodayModel,
 } from "./types";
+import type { Signal, SignalFeed } from "../signals/types";
 
 const DEFAULT_TIME_ZONE = "America/Buenos_Aires";
 const MAX_DIFF_BYTES = 200_000;
@@ -56,7 +57,7 @@ function activityFor(
 export function buildToday(
   tasks: TaskRecord[],
   events: TaskEvent[],
-  options: { now?: Date; date?: string; timeZone?: string; warnings?: string[] } = {},
+  options: { now?: Date; date?: string; timeZone?: string; warnings?: string[]; signalFeed?: SignalFeed | null; signalWarnings?: string[] } = {},
 ): TodayModel {
   const now = options.now ?? new Date();
   const timeZone = options.timeZone ?? process.env.SURTEC_TIME_ZONE ?? DEFAULT_TIME_ZONE;
@@ -75,6 +76,32 @@ export function buildToday(
   const retries = activityFor(tasksById, events, ["retry-scheduled"], date, timeZone);
   const cancellations = activityFor(tasksById, events, ["cancel-requested", "cancelled"], date, timeZone);
   const recoveries = activityFor(tasksById, events, ["lease-recovered"], date, timeZone);
+  const signalFeed = options.signalFeed ?? null;
+  const portfolioWarnings = [...new Set([...(signalFeed?.warnings ?? []), ...(options.signalWarnings ?? [])])].slice(0, 50);
+  const visibleSignals = signalFeed?.signals ?? [];
+  const actionableSignals = visibleSignals.filter((signal) => signal.state === "open" || signal.state === "acknowledged");
+  const isProfileHygiene = (signal: Signal) => ["missing-current-goal", "missing-next-action", "project-review-stale", "active-project-stale"].includes(signal.type);
+  const portfolio = {
+    signal_status: !signalFeed ? "unavailable" as const : portfolioWarnings.length > 0 ? "degraded" as const : "available" as const,
+    signals_observed_at: signalFeed?.observed_at ?? null,
+    recommendations: actionableSignals.slice(0, 3),
+    critical_attention: actionableSignals.filter((signal) => signal.severity === "critical" || ["production-failure", "client-commitment", "blocked-work"].includes(signal.ranking.tier)),
+    work_to_continue: actionableSignals.filter((signal) => signal.ranking.tier === "unfinished-work"),
+    client_commitments: actionableSignals.filter((signal) => signal.project_kind === "client" && (
+      signal.ranking.tier === "client-commitment" || signal.type.startsWith("deadline-")
+    )),
+    personal_opportunities: actionableSignals.filter((signal) => signal.project_kind === "personal" && ["unfinished-work", "maintenance", "hygiene"].includes(signal.ranking.tier)),
+    stale_profiles: actionableSignals.filter(isProfileHygiene),
+    snoozed_signals: visibleSignals.filter((signal) => signal.state === "snoozed"),
+    pinned_signal_ids: signalFeed?.pinned_signal_ids ?? [],
+    warnings: portfolioWarnings,
+    sessions: {
+      available: false as const,
+      unavailable_reason: "Persisted work sessions are planned for Phase G.",
+      active: [] as never[],
+      paused: [] as never[],
+    },
+  };
 
   return {
     date,
@@ -96,7 +123,8 @@ export function buildToday(
       cancelled: cancelled.length,
       retries: retries.length,
     },
-    warnings: options.warnings ?? [],
+    portfolio,
+    warnings: [...new Set([...(options.warnings ?? []), ...portfolioWarnings])].slice(0, 50),
   };
 }
 

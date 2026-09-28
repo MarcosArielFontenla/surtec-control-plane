@@ -111,6 +111,8 @@ describe("deterministic signal engine", () => {
     expect(signals.find((signal) => signal.type === "deployment-down")).toMatchObject({ evidence_at: observedAt, observed_at: NOW.toISOString() });
     expect(signals.find((signal) => signal.type === "deadline-overdue")?.ranking).toEqual({ tier: "client-commitment", order: 2 });
     expect(signals.find((signal) => signal.type === "deployment-down")?.ranking).toEqual({ tier: "production-failure", order: 1 });
+    expect(signals.find((signal) => signal.type === "deadline-overdue")?.project_kind).toBe("client");
+    expect(JSON.stringify(signals)).not.toContain("client-local");
   });
 
   it("covers blocked, failed, review, and approval task states while suppressing decisions already recorded", () => {

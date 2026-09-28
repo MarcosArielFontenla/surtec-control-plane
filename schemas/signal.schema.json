@@ -4,11 +4,12 @@
   "title": "Signal",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "id", "project_id", "source", "type", "severity", "title", "reason", "evidence_at", "observed_at", "suggested_action", "action_kind", "ranking", "state", "snoozed_until", "evidence"],
+    "required": ["schema_version", "id", "project_id", "project_kind", "source", "type", "severity", "title", "reason", "evidence_at", "observed_at", "suggested_action", "action_kind", "ranking", "state", "snoozed_until", "evidence"],
   "properties": {
     "schema_version": { "const": 1 },
     "id": { "type": "string", "pattern": "^sig_[a-f0-9]{24}$" },
     "project_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "project_kind": { "type": ["string", "null"], "enum": ["personal", "client", null] },
     "source": { "type": "string", "enum": ["git", "github", "ci", "deployment", "issue", "task", "profile", "note", "session"] },
     "type": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,79}$" },
     "severity": { "type": "string", "enum": ["info", "warning", "critical"] },

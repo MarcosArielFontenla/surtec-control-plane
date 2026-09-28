@@ -10,7 +10,7 @@ let root: string;
 let filePath: string;
 const now = new Date("2026-09-27T12:00:00.000Z");
 const signal = (id: string): Signal => ({
-  schema_version: 1, id: `sig_${id.padStart(24, "0")}`, project_id: "alpha", source: "profile", type: "missing-next-action",
+  schema_version: 1, id: `sig_${id.padStart(24, "0")}`, project_id: "alpha", project_kind: "personal", source: "profile", type: "missing-next-action",
   severity: "info", title: "No next action", reason: "The project profile has no next action.", evidence_at: now.toISOString(),
   observed_at: now.toISOString(), suggested_action: "Set a next action.", action_kind: "edit-project-profile",
   ranking: { tier: "hygiene", order: 7 }, state: "open", snoozed_until: null, evidence: { field: "next_action", profile_exists: false },

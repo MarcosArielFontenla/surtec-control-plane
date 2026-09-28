@@ -53,6 +53,13 @@ const todayBody = await today.json() as Record<string, unknown>;
 for (const field of ["active", "attention", "completed", "failed", "cancelled", "retries", "cancellations", "recoveries"]) {
   if (!Array.isArray(todayBody[field])) throw new Error(`today response is missing ${field}`);
 }
+const todayPortfolio = todayBody.portfolio as Record<string, unknown> | undefined;
+if (!todayPortfolio || !Array.isArray(todayPortfolio.recommendations) || todayPortfolio.recommendations.length > 3
+  || !Array.isArray(todayPortfolio.critical_attention) || !Array.isArray(todayPortfolio.client_commitments)
+  || !Array.isArray(todayPortfolio.personal_opportunities) || !Array.isArray(todayPortfolio.stale_profiles)
+  || !Array.isArray(todayPortfolio.warnings)) {
+  throw new Error("today portfolio model is invalid");
+}
 
 const options = await app.request("/api/dispatch-options");
 if (!options.ok) throw new Error(`dispatch-options smoke failed with ${options.status}`);

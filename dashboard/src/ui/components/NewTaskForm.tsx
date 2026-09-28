@@ -9,7 +9,12 @@ const MODE_LABELS: Record<DispatchMode, string> = {
   "workspace-write-verify": "Implementar + auto-fix (verify)",
 };
 
-export function NewTaskForm({ bulkProjectIds }: { bulkProjectIds: string[] }) {
+export function NewTaskForm({ bulkProjectIds, initialProject, initialInstructions, onPrefillConsumed }: {
+  bulkProjectIds: string[];
+  initialProject?: string;
+  initialInstructions?: string;
+  onPrefillConsumed?: () => void;
+}) {
   const [options, setOptions] = useState<DispatchOptions["projects"]>([]);
   const [project, setProject] = useState("");
   const [agent, setAgent] = useState("");
@@ -25,11 +30,14 @@ export function NewTaskForm({ bulkProjectIds }: { bulkProjectIds: string[] }) {
       .then((o) => {
         if (!active) return;
         setOptions(o.projects);
-        if (o.projects[0]) {
-          setProject(o.projects[0].project);
-          setAgent(o.projects[0].agents[0]?.agent ?? "");
-          setMode(o.projects[0].agents[0]?.default_mode ?? "");
+        const preferredProject = o.projects.find((candidate) => candidate.project === initialProject) ?? o.projects[0];
+        if (preferredProject) {
+          setProject(preferredProject.project);
+          setAgent(preferredProject.agents[0]?.agent ?? "");
+          setMode(preferredProject.agents[0]?.default_mode ?? "");
         }
+        if (initialInstructions) setInstructions(initialInstructions);
+        if (initialProject || initialInstructions) onPrefillConsumed?.();
       })
       .catch((e) => active && setError((e as Error).message));
     return () => { active = false; };

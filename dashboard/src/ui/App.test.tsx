@@ -26,6 +26,11 @@ const today: TodayModel = {
   active: overview.inProgress, attention: overview.attention, completed: [], failed: [], cancelled: [],
   retries: [], cancellations: [], recoveries: [], warnings: [],
   counts: { active: 1, attention: 1, completed: 0, failed: 0, cancelled: 0, retries: 0 },
+  portfolio: {
+    signal_status: "unavailable", signals_observed_at: null, recommendations: [], critical_attention: [], work_to_continue: [],
+    client_commitments: [], personal_opportunities: [], stale_profiles: [], snoozed_signals: [], pinned_signal_ids: [],
+    warnings: [], sessions: { available: false, unavailable_reason: "Persisted work sessions are planned for Phase G.", active: [], paused: [] },
+  },
 };
 
 beforeEach(() => {
@@ -47,7 +52,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("App", () => {
   it("opens on Today and can navigate to the portfolio overview", async () => {
     render(<App />);
-    await waitFor(() => expect(screen.getByText("Jornada operativa")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Cockpit diario")).toBeTruthy());
     expect(screen.getAllByText(/STK-002/).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /Overview/ }));
     await waitFor(() => expect(screen.getByText("stock-control")).toBeTruthy());

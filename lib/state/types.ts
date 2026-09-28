@@ -1,4 +1,6 @@
 // Canonical TS mirror of schemas/task-envelope.schema.json
+import type { Signal } from "../signals/types";
+
 export type SandboxMode = "read-only" | "workspace-write";
 
 export interface TaskEnvelope {
@@ -204,6 +206,26 @@ export interface TodayActivity {
   event: TaskEvent;
 }
 
+export interface TodayPortfolioModel {
+  signal_status: "available" | "degraded" | "unavailable";
+  signals_observed_at: string | null;
+  recommendations: Signal[];
+  critical_attention: Signal[];
+  work_to_continue: Signal[];
+  client_commitments: Signal[];
+  personal_opportunities: Signal[];
+  stale_profiles: Signal[];
+  snoozed_signals: Signal[];
+  pinned_signal_ids: string[];
+  warnings: string[];
+  sessions: {
+    available: false;
+    unavailable_reason: string;
+    active: never[];
+    paused: never[];
+  };
+}
+
 export interface TodayModel {
   date: string;
   time_zone: string;
@@ -224,6 +246,7 @@ export interface TodayModel {
     cancelled: number;
     retries: number;
   };
+  portfolio: TodayPortfolioModel;
   warnings: string[];
 }
 

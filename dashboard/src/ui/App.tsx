@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { getPortfolioProfiles, useOverview, useToday } from "./api";
+import { getPortfolioProfiles, openProject, useOverview, useToday } from "./api";
 import type { ProjectProfile } from "../../../lib/portfolio-profile";
+import type { Signal } from "../../../lib/signals/types";
 import { Sidebar, type NavItem } from "./components/Sidebar";
 import { ProjectCard } from "./components/ProjectCard";
 import { AttentionPanel } from "./components/AttentionPanel";
@@ -24,6 +25,7 @@ export function App() {
   const [profiles, setProfiles] = useState<Record<string, ProjectProfile>>({});
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [profilesError, setProfilesError] = useState<string | null>(null);
+  const [taskPrefill, setTaskPrefill] = useState<{ project: string; instructions: string } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -51,6 +53,12 @@ export function App() {
 
   const activeProjectIds = data ? data.projects.filter((p) => p.configured).map((p) => p.id) : [];
   const gitProjectIds = data ? data.projects.filter((p) => p.git?.ok).map((p) => p.id) : [];
+  const prepareTask = (signal: Signal) => {
+    setTaskPrefill({ project: signal.project_id, instructions: `${signal.suggested_action}\n\nEvidence: ${signal.reason}` });
+    setSelectedTask(null);
+    setNav("Overview");
+  };
+  const consumeTaskPrefill = () => setTaskPrefill(null);
 
   return (
     <div className="app">
@@ -70,7 +78,8 @@ export function App() {
           {selectedTask ? (
             <TaskDetailView taskId={selectedTask} onBack={() => setSelectedTask(null)} />
           ) : view === "Hoy" ? (
-            <TodayView data={today.data} error={today.error} onOpenTask={setSelectedTask} />
+            <TodayView data={today.data} error={today.error} onOpenTask={setSelectedTask} onRefresh={today.refresh}
+              onOpenProject={(id) => openProject(id, "vscode")} onPrepareTask={prepareTask} />
           ) : view === "Procesos" ? (
             <ProcesosView projectIds={activeProjectIds} />
           ) : view === "Issues" ? (
@@ -80,7 +89,8 @@ export function App() {
           ) : (
             <>
               {kpis && <KpiStrip kpis={kpis} />}
-              <NewTaskForm bulkProjectIds={gitProjectIds} />
+              <NewTaskForm bulkProjectIds={gitProjectIds} initialProject={taskPrefill?.project}
+                initialInstructions={taskPrefill?.instructions} onPrefillConsumed={consumeTaskPrefill} />
               {error && <div className="banner banner--warn">No pude refrescar ({error}); mostrando el último estado conocido.</div>}
               {!data ? <p className="empty-mini">Cargando…</p> : (
                 <>

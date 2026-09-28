@@ -15,6 +15,7 @@ export interface Signal {
   schema_version: 1;
   id: string;
   project_id: string;
+  project_kind: "personal" | "client" | null;
   source: SignalSource;
   type: string;
   severity: SignalSeverity;

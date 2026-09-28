@@ -66,6 +66,17 @@ describe("NewTaskForm", () => {
     await waitFor(() => expect(screen.getByText(/Despachado: T-abc/)).toBeTruthy());
   });
 
+  it("prefills the selected project and suggested next action from a Today recommendation", async () => {
+    const consumed = vi.fn();
+    render(<NewTaskForm bulkProjectIds={[]} initialProject="stock-control"
+      initialInstructions="Inspect the failing deployment. Evidence: health is degraded." onPrefillConsumed={consumed} />);
+    await waitFor(() => expect(screen.getByText("backend-engineer")).toBeTruthy());
+    expect((screen.getByLabelText("Proyecto") as HTMLSelectElement).value).toBe("stock-control");
+    expect((screen.getByPlaceholderText(/instrucciones/i) as HTMLTextAreaElement).value)
+      .toBe("Inspect the failing deployment. Evidence: health is degraded.");
+    expect(consumed).toHaveBeenCalledOnce();
+  });
+
   it("dispatches workspace-write when the Implementar mode is selected", async () => {
     render(<NewTaskForm bulkProjectIds={[]} />);
     await waitFor(() => expect(screen.getByText("backend-engineer")).toBeTruthy());

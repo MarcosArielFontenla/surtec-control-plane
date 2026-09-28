@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildTaskDetail, buildToday, localDateKey } from "./observability";
 import type { TaskEvent, TaskRecord } from "./types";
+import { generateSignals } from "../signals/engine";
 
 function task(id: string, over: Partial<TaskRecord> = {}): TaskRecord {
   return {
@@ -59,6 +60,49 @@ describe("daily observability", () => {
     expect(today.cancelled.map((item) => item.id)).toEqual(["CANCELLED"]);
     expect(today.retries).toHaveLength(1);
     expect(today.recoveries).toHaveLength(1);
+    expect(today.portfolio.signal_status).toBe("unavailable");
+    expect(today.portfolio.sessions.available).toBe(false);
+  });
+
+  it("composes deterministic portfolio sections without replacing task activity", () => {
+    const now = new Date("2026-09-27T12:00:00Z");
+    const profile = (projectId: string, kind: "personal" | "client", deadline: string) => ({
+      schema_version: 1 as const, project_id: projectId, kind, lifecycle: "active" as const, priority: 1,
+      criticality: "high" as const, current_goal: null, next_action: null, deadline, client_id: "private-client-key",
+      last_reviewed_at: null, tags: [],
+    });
+    const generated = generateSignals({
+      projects: [
+        { id: "client-alpha", status: "active", git: null, profile: profile("client-alpha", "client", "2026-09-28"), integrations: null, last_activity_at: null, notes: [] },
+        { id: "personal-beta", status: "active", git: null, profile: profile("personal-beta", "personal", "2026-09-29"), integrations: null, last_activity_at: null, notes: [] },
+      ], tasks: [], issues: [],
+    }, now);
+    const feed = {
+      schema_version: 1 as const, observed_at: now.toISOString(), signals: generated,
+      pinned_signal_ids: [generated[0]!.id], warnings: ["GitHub issue evidence for one project is unavailable."],
+    };
+    const today = buildToday([task("ACTIVE", { lifecycle: "running" })], [], { now, timeZone: "UTC", signalFeed: feed });
+
+    expect(today.portfolio.recommendations).toHaveLength(3);
+    expect(today.portfolio.client_commitments.map((signal) => signal.project_id)).toContain("client-alpha");
+    expect(today.portfolio.personal_opportunities.map((signal) => signal.project_id)).toContain("personal-beta");
+    expect(today.portfolio.stale_profiles.length).toBeGreaterThan(0);
+    expect(today.portfolio.pinned_signal_ids).toEqual([generated[0]!.id]);
+    expect(today.portfolio.signal_status).toBe("degraded");
+    expect(today.warnings).toContain("GitHub issue evidence for one project is unavailable.");
+    expect(today.active.map((item) => item.id)).toEqual(["ACTIVE"]);
+    expect(JSON.stringify(today.portfolio)).not.toContain("private-client-key");
+  });
+
+  it("keeps task operations available with an isolated intelligence warning", () => {
+    const today = buildToday([task("ACTIVE", { lifecycle: "running" })], [], {
+      now: new Date("2026-09-27T12:00:00Z"),
+      signalWarnings: ["Portfolio intelligence is temporarily unavailable; Codex task activity remains available."],
+    });
+    expect(today.active).toHaveLength(1);
+    expect(today.portfolio.signal_status).toBe("unavailable");
+    expect(today.portfolio.warnings).toHaveLength(1);
+    expect(today.warnings).toEqual(today.portfolio.warnings);
   });
 });
 

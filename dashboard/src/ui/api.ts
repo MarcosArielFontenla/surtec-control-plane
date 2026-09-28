@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth, RailwayStatus, TaskDetailModel, TodayModel } from "../../../lib/state/types";
 import type { Note } from "../../../lib/state/notes";
 import type { ProjectProfile } from "../../../lib/portfolio-profile";
+import type { SignalAction, SignalFeed } from "../../../lib/signals/types";
 
 let sessionTokenPromise: Promise<string> | null = null;
 let sessionFetch: typeof fetch | null = null;
@@ -88,9 +89,20 @@ export async function saveProjectProfile(profile: ProjectProfile): Promise<{ pro
   return (await res.json()) as { profile: ProjectProfile };
 }
 
-export function useToday(intervalMs = 3000): { data: TodayModel | null; error: string | null } {
+export function useToday(intervalMs = 3000): { data: TodayModel | null; error: string | null; refresh: () => Promise<TodayModel> } {
   const [data, setData] = useState<TodayModel | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const refresh = useCallback(async () => {
+    try {
+      const next = await fetchToday();
+      setData(next);
+      setError(null);
+      return next;
+    } catch (reason) {
+      setError((reason as Error).message);
+      throw reason;
+    }
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -98,16 +110,27 @@ export function useToday(intervalMs = 3000): { data: TodayModel | null; error: s
       try {
         const next = await fetchToday();
         if (active) { setData(next); setError(null); }
-      } catch (reason) {
-        if (active) setError((reason as Error).message);
-      }
+      } catch (reason) { if (active) setError((reason as Error).message); }
     };
     void tick();
     const handle = setInterval(tick, intervalMs);
     return () => { active = false; clearInterval(handle); };
   }, [intervalMs]);
 
-  return { data, error };
+  return { data, error, refresh };
+}
+
+export async function postSignalAction(signalId: string, action: SignalAction): Promise<SignalFeed> {
+  const res = await mutate(`/api/signals/${encodeURIComponent(signalId)}/action`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(action),
+  });
+  if (!res.ok) {
+    const e = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(e.error ?? `signal action failed: ${res.status}`);
+  }
+  return (await res.json()) as SignalFeed;
 }
 
 export async function fetchTaskDetail(id: string): Promise<TaskDetailModel> {

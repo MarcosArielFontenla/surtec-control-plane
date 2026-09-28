@@ -151,7 +151,12 @@ describe("api", () => {
 
   it("GET /api/today returns evidence-backed daily operations", async () => {
     appendTaskEvent({ task_id: "STK-1", type: "retry-scheduled", revision: 1, payload: { reason: "transient" }, at: "2026-05-28T11:00:00Z" });
-    const app = createApp(root);
+    const app = createApp(root, () => {}, undefined, undefined, {
+      signals: {
+        read: vi.fn().mockResolvedValue({ schema_version: 1, observed_at: "2026-05-28T12:00:00.000Z", signals: [], pinned_signal_ids: [], warnings: [] }),
+        act: vi.fn(),
+      },
+    });
 
     const res = await app.request("/api/today?date=2026-05-28");
 
@@ -159,7 +164,25 @@ describe("api", () => {
     expect(await res.json()).toMatchObject({
       date: "2026-05-28", time_zone: "UTC", counts: { active: 1, retries: 1 },
       active: [{ id: "STK-1" }], retries: [{ task: { id: "STK-1" }, event: { type: "retry-scheduled" } }],
+      portfolio: { signal_status: "available", recommendations: [], sessions: { available: false, active: [], paused: [] } },
     });
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("degrades optional portfolio intelligence without hiding task activity", async () => {
+    const app = createApp(root, () => {}, undefined, undefined, {
+      signals: {
+        read: vi.fn().mockRejectedValue(new Error("private local state path")),
+        act: vi.fn(),
+      },
+    });
+    const response = await app.request("/api/today");
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.active).toMatchObject([{ id: "STK-1" }]);
+    expect(body.portfolio.signal_status).toBe("unavailable");
+    expect(body.warnings).toContain("Portfolio intelligence is temporarily unavailable; Codex task activity remains available.");
+    expect(JSON.stringify(body)).not.toContain("private local state path");
   });
 
   it("GET /api/today rejects an invalid date", async () => {
