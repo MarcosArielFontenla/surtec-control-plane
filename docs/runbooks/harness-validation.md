@@ -45,3 +45,19 @@ This is **not an OS sandbox**: trusted repository scripts, installed tools and t
 ## Failure evidence
 
 Share the validator command, exit code, check id and sanitized error. For snapshot drift include the changed public skill/version and intended reviewed summary. For budget overflow share selected routes and additional public paths. Do not share normal state, credentials, auth files or raw child output. Fixtures use unique temporary roots and harmless version checks; no paid calls, sibling mutation or normal `state/` reads are needed.
+
+## Git checkout portability - 2026-10-04
+
+The owner explicitly approved this publication adjustment after the pre-push gate caught a stale snapshot on switching to master. Git stored the validation skill with LF, but its snapshot/manifest still referred to the previous CRLF bytes. Windows also converted six pinned PowerShell scripts to CRLF during checkout. The instructions, script content, versions, capabilities and execution permissions were unchanged; raw-byte trust correctly rejected the mismatches.
+
+`.gitattributes` now keeps `.agents/scripts/*.ps1` in LF, preserving those six existing canonical script hashes. The validation skill's snapshot source hash and its two manifest entries were reviewed against the exact LF bytes; the registry pins the resulting manifest. The snapshot summary and skill version remain unchanged. This is an explicitly approved metadata repin, not automatic drift repair or a relaxation of full-file SHA-256 checks.
+
+Two regression cases in `scripts/harness-foundations.test.ts` stage the real public canonical artifacts into a unique temporary Git repository and export them with `core.autocrlf=false` and `true`. Both require a trusted exported source, the same source fingerprint and exact bytes for every pinned artifact/registry/manifest. Hooks and local Git effects remain contained in the fixture, which is removed after a verified ownership/containment check. The initial two cases failed on the unavailable canonical source before the repair; the subsequent seven-suite repeat passed all 93 tests. Native `pnpm harness:check` and `pnpm typecheck` also exited 0, with unchanged three snapshot versions and all ten route ceilings.
+
+`skill-creator` guided the metadata-only correction and behavioral regression. Its Python `quick_validate.py` was attempted with both system and bundled Python, but neither had PyYAML; those attempts failed and are not passes. No dependency was installed. Native PowerShell/YAML Harness checks validated the unchanged skill identities/descriptions/version/snapshot metadata and the current full-byte hashes. Product state, sibling repositories, runtime permissions and private local prompts remain untouched.
+
+Fresh publication checks after the adjustment:
+
+- `pnpm ci:check`: exit 0, 1701 tests / 122 files, 55 schemas, typecheck/build (1920 modules), repository/Harness/security/evaluation checks. All three snapshots and ten route ceilings remained valid; guarded whole-feature acceptance was not executed. The two checkout regressions are included in the full count.
+- `pnpm smoke:local:playwright`: exit 0/PASS, real isolated API/dashboard, four fake turns, reload/API restart/session rotation and prior privacy/role/context/Harness/candidate/scope flows. Fixture `surtec-local-dashboard-6ZWoMr` reported browser_closed, vite_closed, api_stopped and workspace_removed all true, failures empty. No paid runtime or provider write occurred.
+- Before pushing, verify the committed artifacts in a fresh local clone under both autocrlf settings and run the native Harness gate there. This checks checkout bytes, not only the original working directory. Keep this validation temporary and do not repin or auto-refresh normal project state to hide drift.

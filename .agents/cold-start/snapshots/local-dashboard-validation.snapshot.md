@@ -2,7 +2,7 @@
 sourceSkill: local-dashboard-validation
 sourcePath: .agents/skills/local-dashboard-validation/SKILL.md
 sourceVersion: "1.1.0"
-sourceHash: "48ee9381d34e7baeea4c9d6ec7875b837c97fbd7000852376f1057571514bdef"
+sourceHash: "b25c28906624b8d3f07bdb16a912f12096303560e579b016ede3f6266cb0f8f6"
 authoredAt: "2026-09-29"
 ---
 

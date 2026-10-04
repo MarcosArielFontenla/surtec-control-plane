@@ -50,7 +50,7 @@
     },
     {
       "path": ".agents/cold-start/snapshots/local-dashboard-validation.snapshot.md",
-      "sha256": "baf7fe9c93252ddf8f5a4dd146378bc094d55b4c3d8e5f860c2fdf7c16a34dec",
+      "sha256": "560c59c7194a07ad918b32c18446ca42a904597aebf4af39f7b5679b75fb8bf1",
       "capability": "skills",
       "required": true
     },
@@ -122,7 +122,7 @@
     },
     {
       "path": ".agents/skills/local-dashboard-validation/SKILL.md",
-      "sha256": "48ee9381d34e7baeea4c9d6ec7875b837c97fbd7000852376f1057571514bdef",
+      "sha256": "b25c28906624b8d3f07bdb16a912f12096303560e579b016ede3f6266cb0f8f6",
       "capability": "skills",
       "required": true
     },

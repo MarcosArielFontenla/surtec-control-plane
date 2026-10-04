@@ -1,8 +1,13 @@
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { loadHarnessSource } from "../lib/harness/source";
+import { managedGitArgs } from "../lib/security/managed-git.mjs";
+import { localGitEnvironment } from "../lib/security/process-environments.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
@@ -81,4 +86,38 @@ describe("Harness foundations", () => {
     expect(routing).toContain("Multi-agent orchestration, skill drift evaluation, and telemetry are inactive");
     expect(read("docs/architecture/harness-v5.2-adaptation.md")).toContain("not retrospective approval");
   });
+
+  it.each([false, true])("preserves exact canonical hashes after Git checkout with core.autocrlf=%s", (autocrlf) => {
+    const canonical = loadHarnessSource(root);
+    expect(canonical.status, canonical.reason ?? "").toBe("trusted");
+    const fixture = mkdtempSync(join(tmpdir(), "surtec-harness-checkout-"));
+    try {
+      const source = join(fixture, "source"), checkout = join(fixture, "checkout");
+      mkdirSync(source); mkdirSync(checkout);
+      const paths = [".gitattributes", "registry/harness-sources.yml", canonical.registry!.source.manifest,
+        ...canonical.manifest!.expected_entries.map((entry) => entry.path)];
+      for (const path of paths) {
+        const target = resolve(source, path);
+        mkdirSync(dirname(target), { recursive: true });
+        copyFileSync(resolve(root, path), target);
+      }
+      const git = (args: string[]) => execFileSync("git", managedGitArgs([
+        "-c", `core.autocrlf=${autocrlf}`, "-C", source, ...args,
+      ], fixture), { windowsHide: true, encoding: "utf8", timeout: 10000,
+        env: { ...localGitEnvironment(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" } });
+      git(["init", "--quiet"]);
+      git(["add", "--all"]);
+      git(["checkout-index", "--all", `--prefix=${checkout.replaceAll("\\", "/")}/`]);
+      const exported = loadHarnessSource(checkout);
+      expect(exported.status, exported.reason ?? "").toBe("trusted");
+      expect(exported.fingerprint).toBe(canonical.fingerprint);
+      for (const path of paths.filter((entry) => entry !== ".gitattributes"))
+        expect(readFileSync(resolve(checkout, path)), path).toEqual(readFileSync(resolve(root, path)));
+    } finally {
+      const owned = resolve(fixture);
+      if (dirname(owned) !== resolve(tmpdir()) || !basename(owned).startsWith("surtec-harness-checkout-") || lstatSync(owned).isSymbolicLink())
+        throw new Error("Refusing cleanup outside the owned checkout fixture");
+      rmSync(owned, { recursive: true, force: true });
+    }
+  }, 15000);
 });

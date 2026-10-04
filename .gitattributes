@@ -5,4 +5,5 @@
 *.json text eol=lf
 *.toml text eol=lf
 *.ts text eol=lf
+/.agents/scripts/*.ps1 text eol=lf
 
