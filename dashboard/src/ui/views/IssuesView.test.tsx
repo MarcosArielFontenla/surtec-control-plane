@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { IssuesView } from "./IssuesView";
 import * as api from "../api";
 import type { Inbox } from "../../../../lib/state/types";
@@ -14,6 +14,7 @@ beforeEach(() => {
   vi.spyOn(api, "getOrganization").mockResolvedValue({ company: {} as never, objectives: [], project_objectives: {} });
   vi.spyOn(api, "getContextRoles").mockResolvedValue({ roles: [] });
   vi.spyOn(api, "getClientContextOptions").mockResolvedValue({ available: false, categories: [] });
+  vi.spyOn(api, "getWorkflows").mockResolvedValue({ workflows: [] });
 });
 
 const inbox: Inbox = {
@@ -63,6 +64,33 @@ function authorizedFixture() {
 }
 
 describe("IssuesView", () => {
+  it("ignores an older ownership refresh that finishes after the latest snapshot", async () => {
+    const fixture = authorizedFixture(); let finish!: (value: { workflows: never[] }) => void;
+    vi.mocked(api.getWorkflows).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    render(<IssuesView />); await waitFor(() => expect(api.getWorkflows).toHaveBeenCalledTimes(1));
+    vi.mocked(api.getWorkflows).mockResolvedValue({ workflows: [{ id: "W-1", issue_id: fixture.issue.id, project_id: "alpha", status: "waiting-human" } as never] });
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar" })); await screen.findByText(/Workflow activo W-1/);
+    await act(async () => finish({ workflows: [] }));
+    expect(screen.getByText(/Workflow activo W-1/)).toBeInTheDocument(); expect(screen.queryByRole("button", { name: "Despachar tarea aprobada" })).toBeNull(); expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+  it("hides generic dispatch and acceptance while a workflow owns the issue", async () => {
+    const fixture = authorizedFixture();
+    vi.mocked(api.getWorkflows).mockResolvedValue({ workflows: [{ id: "W-1", issue_id: fixture.issue.id, project_id: "alpha", status: "waiting-human" } as never] });
+    render(<IssuesView />);
+    await screen.findByText(/Workflow activo W-1/);
+    expect(screen.queryByRole("button", { name: "Despachar tarea aprobada" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Aceptar este candidato local" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Ver workflow" })).toBeInTheDocument();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for manual actions when workflow ownership cannot be read", async () => {
+    const fixture = authorizedFixture(); vi.mocked(api.getWorkflows).mockRejectedValue(new Error("Synthetic unavailable ownership"));
+    render(<IssuesView />);
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("button", { name: "Despachar tarea aprobada" })).toBeNull();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+  });
   it("requires explicit preview, retains the assigned agent and dispatches its exact role/revision/fingerprint", async () => {
     const fixture = authorizedFixture();
     render(<IssuesView />);
@@ -91,8 +119,9 @@ describe("IssuesView", () => {
     await screen.findByText("Contexto habilitado para este pedido.");
     vi.mocked(api.getWorkIssues).mockResolvedValue({ issues: [{ ...fixture.issue, revision: 4, scope_revision: 2 }] });
     fireEvent.click(screen.getByRole("button", { name: "Actualizar" }));
-    expect(screen.getByRole("button", { name: "Despachar tarea aprobada" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Despachar tarea aprobada" })).toBeNull();
     await screen.findByText(/Preview sobre revisión 4/);
+    expect(screen.getByRole("button", { name: "Despachar tarea aprobada" })).toBeDisabled();
     expect(await screen.findByRole("checkbox", { name: /Notas confidenciales/ })).not.toBeChecked();
     expect(screen.queryByRole("region", { name: "Preview de contexto" })).toBeNull();
   });

@@ -10,7 +10,7 @@ import { NewTaskForm } from "./components/NewTaskForm";
 import { KpiStrip } from "./components/KpiStrip";
 import { InProgressColumn } from "./components/InProgressColumn";
 import { ProcesosView } from "./views/ProcesosView";
-import { IssuesView } from "./views/IssuesView";
+import { IssuesView, type WorkflowFocus } from "./views/IssuesView";
 import { ActivityView } from "./views/ActivityView";
 import { TodayView } from "./views/TodayView";
 import { TaskDetailView } from "./views/TaskDetailView";
@@ -28,6 +28,7 @@ export function App() {
   const [nav, setNav] = useState<NavItem>("Hoy");
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [workflowFocus, setWorkflowFocus] = useState<WorkflowFocus | null>(null);
   const [profiles, setProfiles] = useState<Record<string, ProjectProfile>>({});
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [profilesError, setProfilesError] = useState<string | null>(null);
@@ -76,7 +77,7 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar active={nav} onSelect={(item) => { setNav(item); setSelectedTask(null); setSelectedProject(null); }} summary={summary} connected={!error && !today.error} />
+      <Sidebar active={nav} onSelect={(item) => { setNav(item); setSelectedTask(null); setSelectedProject(null); setWorkflowFocus(null); }} summary={summary} connected={!error && !today.error} />
       <main className="main">
         <header className="topbar">
           <div className="topbar-left">
@@ -90,7 +91,7 @@ export function App() {
 
         <div className="wrap">
           {selectedTask ? (
-            <TaskDetailView taskId={selectedTask} onBack={() => setSelectedTask(null)} />
+            <TaskDetailView taskId={selectedTask} onBack={() => setSelectedTask(null)} onOpenWorkflow={(target) => { setWorkflowFocus(target); setSelectedTask(null); setSelectedProject(null); setNav("Issues"); }} />
           ) : selectedProject && data && selectedProjectView ? (
             <ProjectDetailView
               project={selectedProjectView}
@@ -129,7 +130,7 @@ export function App() {
           ) : view === "Procesos" ? (
             <ProcesosView projectIds={activeProjectIds} />
           ) : view === "Issues" ? (
-            <IssuesView />
+            <IssuesView workflowFocus={workflowFocus} onOpenTask={setSelectedTask} />
           ) : view === "Actividad" ? (
             <ActivityView />
           ) : view === "Feedback" ? (

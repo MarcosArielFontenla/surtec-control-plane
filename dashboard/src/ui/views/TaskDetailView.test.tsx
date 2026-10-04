@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { TaskDetailModel } from "../../../../lib/state/types";
 import { TaskDetailView } from "./TaskDetailView";
 
@@ -28,6 +28,22 @@ const detail: TaskDetailModel = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("TaskDetailView", () => {
+  it("opens the exact owning issue/workflow through its scoped callback, not a URL or publication action", async () => {
+    const owned = structuredClone(detail);
+    owned.task.envelope.context_admission = { schema_version: 2, kind: "workflow-stage", workflow_id: "W-1", stage_id: "S-1", stage_generation: 1, stage_kind: "implementation", task_id: "T-1", template_id: "trivial-change", template_version: 1, grant_id: "G-1", authority_revision: 1, role_id: "software-engineer", issue_id: "I-1", issue_revision: 3, scope_revision: 1, scope_fingerprint: "a".repeat(64), approved_plan: null, predecessor_stage_id: null, handoff_id: null, candidate: null, manifest_fingerprint: "a".repeat(64), instructions_length: 5, instructions_hash: "a".repeat(64) };
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => owned })) as unknown as typeof fetch);
+    const open = vi.fn(); render(<TaskDetailView taskId="T-1" onBack={() => {}} onOpenWorkflow={open} />);
+    const button = await screen.findByRole("button", { name: "Abrir workflow del issue" }); expect(open).not.toHaveBeenCalled(); fireEvent.click(button);
+    expect(open).toHaveBeenCalledWith({ issueId: "I-1", workflowId: "W-1", projectId: "alpha" });
+    expect(screen.getByRole("region", { name: "Workflow propietario" }).querySelector("a")).toBeNull();
+  });
+
+  it("does not infer workflow ownership from historical metadata", async () => {
+    const old = structuredClone(detail); old.task.envelope.metadata.workflow_id = "W-unproven";
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => old })) as unknown as typeof fetch);
+    render(<TaskDetailView taskId="T-1" onBack={() => {}} onOpenWorkflow={vi.fn()} />); await screen.findByText("Evidence shipped");
+    expect(screen.queryByRole("region", { name: "Workflow propietario" })).toBeNull();
+  });
   it("renders result, diff, commands, verification, budgets, and cleanup", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => detail })) as unknown as typeof fetch);
     render(<TaskDetailView taskId="T-1" onBack={() => {}} />);

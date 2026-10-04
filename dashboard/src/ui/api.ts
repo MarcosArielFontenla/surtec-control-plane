@@ -12,8 +12,14 @@ import type { IssueCreateInput, IssueLineage, ReviewCandidate, WorkIssue } from 
 import type { ProjectHarnessProfile } from "../../../lib/harness/types";
 import type { AgentRole } from "../../../lib/context/types";
 import type { ContextPreview, ContextPreviewRequest } from "../server/context-service";
+import type { WorkflowContextService, WorkflowPreviewRequest } from "../server/workflow-context-service";
+import type { WorkflowService } from "../server/workflow-service";
+import { WORKFLOW_TEMPLATES, type GovernedWorkflow } from "../../../lib/workflows/types";
 
 export type { ContextPreview, ContextPreviewRequest };
+export type { WorkflowPreviewRequest };
+export type WorkflowPreview = ReturnType<WorkflowContextService["preview"]>;
+export type WorkflowDetail = ReturnType<WorkflowService["detail"]>;
 export type ContextRole = Pick<AgentRole, "id" | "display_name" | "responsibility" | "sandbox_ceiling"> & { agents: string[] };
 
 export async function getContextRoles(project: string): Promise<{ roles: ContextRole[] }> {
@@ -421,6 +427,69 @@ async function issueMutation<T>(path: string, body: unknown): Promise<T> {
     throw new Error(error.error ?? `local issue operation failed: ${res.status}`);
   }
   return await res.json() as T;
+}
+
+async function workflowResponse<T>(path: string, body?: unknown): Promise<T> {
+  const response = body === undefined ? await fetch(path, { cache: "no-store" })
+    : await mutate(path, { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  // Rotate only for a later explicit action, never replay a confirmation.
+  if (response.status === 403) sessionTokenPromise = null;
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(error.error ?? `Workflow unavailable (${response.status})`);
+  }
+  return response.json() as Promise<T>;
+}
+
+function supportedWorkflow(value: GovernedWorkflow | null | undefined): boolean {
+  return Boolean(value && value.schema_version === 1 && value.template_version === 1 && WORKFLOW_TEMPLATES.includes(value.template_id)
+    && ["running", "waiting-human", "needs-decision", "completed", "cancelled"].includes(value.status)
+    && [value.id, value.issue_id, value.project_id, value.current_grant_id].every((id) => typeof id === "string" && id.length > 0)
+    && [value.revision, value.scope_revision, value.authority_revision].every((revision) => Number.isSafeInteger(revision) && revision > 0));
+}
+
+export async function getWorkflows(issueId?: string): Promise<{ workflows: GovernedWorkflow[] }> {
+  const value = await workflowResponse<{ workflows: GovernedWorkflow[] }>(`/api/workflows${issueId ? `?issue_id=${encodeURIComponent(issueId)}` : ""}`);
+  if (!Array.isArray(value?.workflows) || value.workflows.some((entry) => !supportedWorkflow(entry))
+    || new Set(value.workflows.map((entry) => entry.id)).size !== value.workflows.length) {
+    throw new Error("Unsupported workflow list; no empty ownership is inferred");
+  }
+  return value;
+}
+
+export async function getWorkflow(id: string): Promise<WorkflowDetail> {
+  const value = await workflowResponse<WorkflowDetail>(`/api/workflows/${encodeURIComponent(id)}`);
+  if (value?.schema_version !== 1 || !supportedWorkflow(value.workflow) || value.workflow.id !== id || value.grant?.schema_version !== 1
+    || value.workflow.current_grant_id !== value.grant.id || value.grant.workflow_id !== id
+    || value.grant.issue_id !== value.workflow.issue_id || value.grant.project_id !== value.workflow.project_id
+    || value.grant.authority_revision !== value.workflow.authority_revision || typeof value.execution_enabled !== "boolean"
+    || !Array.isArray(value.grant.role_assignments)
+    || [value.stages, value.decisions, value.handoffs, value.review_receipts, value.admission_intents, value.accounting, value.events]
+      .some((records) => !Array.isArray(records) || records.some((entry) => !entry || entry.schema_version !== 1 || typeof entry.id !== "string"))
+    || value.lineage !== null && value.lineage?.schema_version !== 1) {
+    throw new Error("Unsupported workflow detail; refresh its current authority");
+  }
+  return value;
+}
+
+export function previewWorkflow(request: WorkflowPreviewRequest): Promise<WorkflowPreview> {
+  return workflowResponse("/api/workflows/preview", request);
+}
+
+export function startWorkflow(request: WorkflowPreviewRequest, fingerprint: string): Promise<WorkflowDetail> {
+  return workflowResponse("/api/workflows/start", { request, preview_fingerprint: fingerprint, confirm: true, approval_id: `local-${crypto.randomUUID()}` });
+}
+
+export interface WorkflowDecisionInput {
+  expected_revision: number; expected_issue_revision: number; decision_id: string; resource_fingerprint: string;
+  decision: "approve" | "reject"; rationale: string; confirmed_criteria?: string[];
+}
+export function decideWorkflow(id: string, input: WorkflowDecisionInput): Promise<WorkflowDetail> {
+  return workflowResponse(`/api/workflows/${encodeURIComponent(id)}/decision`, { ...input, confirm: true, approval_id: `local-${crypto.randomUUID()}` });
+}
+
+export function controlWorkflow(id: string, action: "cancel" | "recover", workflowRevision: number, issueRevision: number): Promise<WorkflowDetail> {
+  return workflowResponse(`/api/workflows/${encodeURIComponent(id)}/${action}`, { expected_revision: workflowRevision, expected_issue_revision: issueRevision });
 }
 
 export async function getWorkIssues(): Promise<{ issues: WorkIssue[] }> {

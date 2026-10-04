@@ -40,7 +40,7 @@ const CLIENT_CONTEXT_LABELS: Record<ClientContextCategory, string> = {
   "confidential-notes": "Notas confidenciales",
 };
 
-export function TaskDetailView({ taskId, onBack }: { taskId: string; onBack: () => void }) {
+export function TaskDetailView({ taskId, onBack, onOpenWorkflow }: { taskId: string; onBack: () => void; onOpenWorkflow?: (target: { issueId: string; workflowId: string; projectId: string }) => void }) {
   const [detail, setDetail] = useState<TaskDetailModel | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,6 +70,7 @@ export function TaskDetailView({ taskId, onBack }: { taskId: string; onBack: () 
   const { task, execution } = detail;
   const result = task.result;
   const orchestration = task.orchestration;
+  const admission = task.envelope.context_admission;
   const clientShare = task.envelope.metadata.client_context_share;
   const sharedCategories = typeof clientShare === "object" && clientShare !== null
     && Array.isArray((clientShare as ClientContextShareAudit).categories)
@@ -86,6 +87,12 @@ export function TaskDetailView({ taskId, onBack }: { taskId: string; onBack: () 
           {task.outcome === "completed" || task.outcome === "partial" ? <CheckCircle2 /> : <CircleAlert />}{task.outcome ?? task.lifecycle}
         </span>
       </section>
+
+      {admission?.schema_version === 2 && admission.task_id === task.envelope.id && <section className="detail-card panel" aria-label="Workflow propietario">
+        <h3>Workflow propietario</h3><dl className="detail-dl"><dt>Workflow / issue</dt><dd>{admission.workflow_id} · {admission.issue_id}</dd><dt>Etapa / rol</dt><dd>{admission.stage_id} · {admission.stage_kind} · {admission.role_id} · generación {admission.stage_generation}</dd><dt>Autoridad admitida</dt><dd>{admission.grant_id} · r{admission.authority_revision} · scope r{admission.scope_revision}</dd></dl>
+        <p className="work-issue-note">Este binding registra la admisión, no demuestra autoridad actual. Reintentos, decisiones y stop se gestionan en el workflow; no publica ni limpia su candidato.</p>
+        {onOpenWorkflow && <button type="button" className="ibtn" onClick={() => onOpenWorkflow({ issueId: admission.issue_id, workflowId: admission.workflow_id, projectId: task.envelope.project })}>Abrir workflow del issue</button>}
+      </section>}
 
       <section className="detail-stats">
         <div className="panel"><span className="b-label">Lifecycle</span><b>{task.lifecycle}</b></div>

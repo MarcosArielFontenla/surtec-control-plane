@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import type { Inbox } from "../../../../lib/state/types";
 import type { IssueLineage, WorkIssue } from "../../../../lib/issues/types";
 import type { OrganizationSnapshot } from "../../../../lib/organization";
 import type { ClientContextCategory, ClientContextOptions } from "../../../../lib/client-portfolio";
+import type { GovernedWorkflow } from "../../../../lib/workflows/types";
 import {
   acceptWorkIssueCandidate, approveWorkIssueScope, authorizeWorkIssue, createWorkIssue,
   dispatchWorkIssue, fetchDispatchOptions, getInbox, getOrganization, getWorkIssue, getWorkIssues, rejectWorkIssueScope, resumeWorkIssue,
-  resolveWorkIssueDecision, getContextRoles, getClientContextOptions, type ContextRole, type DispatchOptions,
+  resolveWorkIssueDecision, getContextRoles, getClientContextOptions, getWorkflows, type ContextRole, type DispatchOptions,
 } from "../api";
 import { relativeTime } from "../relative-time";
 import { ClientContextConsent, ContextPreview, contextDisplayText, useContextPreview } from "../components/ContextPreview";
+import { WorkflowPanel } from "../components/WorkflowPanel";
 
 function lines(value: string): string[] { return value.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean); }
 function words(value: string): string[] { return value.split(/[,\n]/).map((entry) => entry.trim()).filter(Boolean); }
@@ -92,7 +94,8 @@ function IssueDispatch({ issue, options, busy, perform }: {
   </div>;
 }
 
-export function IssuesView() {
+export interface WorkflowFocus { issueId: string; workflowId: string; projectId: string }
+export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: WorkflowFocus | null; onOpenTask?: (id: string) => void } = {}) {
   const [inbox, setInbox] = useState<Inbox | null>(null);
   const [externalError, setExternalError] = useState<string | null>(null);
   const [repo, setRepo] = useState("");
@@ -102,6 +105,10 @@ export function IssuesView() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [dispatchEpoch, setDispatchEpoch] = useState(0);
+  const [workflows, setWorkflows] = useState<GovernedWorkflow[] | null>(null);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [workflowExpanded, setWorkflowExpanded] = useState<Record<string, boolean>>({});
+  const refreshSequence = useRef(0);
   const [lineage, setLineage] = useState<Record<string, IssueLineage>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [confirmed, setConfirmed] = useState<Record<string, string[]>>({});
@@ -125,18 +132,28 @@ export function IssuesView() {
   const [commitments, setCommitments] = useState("");
 
   const refresh = useCallback(async () => {
-    const [localResult, externalResult, optionsResult, organizationResult] = await Promise.allSettled([
-      getWorkIssues(), getInbox(), fetchDispatchOptions(), getOrganization(),
+    const generation = ++refreshSequence.current;
+    setWorkflows(null); setWorkflowError(null);
+    const [localResult, externalResult, optionsResult, organizationResult, workflowResult] = await Promise.allSettled([
+      getWorkIssues(), getInbox(), fetchDispatchOptions(), getOrganization(), getWorkflows(),
     ]);
+    if (generation !== refreshSequence.current) return;
     if (localResult.status === "fulfilled") { setIssues(localResult.value.issues); setLocalError(null); }
     else setLocalError((localResult.reason as Error).message);
     if (externalResult.status === "fulfilled") { setInbox(externalResult.value); setExternalError(null); }
     else setExternalError((externalResult.reason as Error).message);
     if (optionsResult.status === "fulfilled") setDispatchOptions(optionsResult.value);
     if (organizationResult.status === "fulfilled") setOrganization(organizationResult.value);
+    if (workflowResult.status === "fulfilled") { setWorkflows(workflowResult.value.workflows); setWorkflowError(null); }
+    else setWorkflowError(contextDisplayText((workflowResult.reason as Error).message));
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(); return () => { refreshSequence.current++; }; }, [refresh]);
+  useEffect(() => {
+    if (!workflowFocus || !issues.some((issue) => issue.id === workflowFocus.issueId && issue.project_id === workflowFocus.projectId)) return;
+    setWorkflowExpanded((current) => ({ ...current, [workflowFocus.issueId]: true }));
+    document.getElementById(`work-issue-${workflowFocus.issueId}`)?.scrollIntoView?.({ block: "start" });
+  }, [workflowFocus, issues]);
 
   const projectOptions = useMemo(() => (dispatchOptions?.projects ?? []).filter((project) => project.has_local_checkout), [dispatchOptions]);
   const selectedProject = projectOptions.find((project) => project.project === projectId) ?? projectOptions[0];
@@ -209,6 +226,8 @@ export function IssuesView() {
       <div className="section-head"><h2>Issues</h2><span className="meta">{issues.length} locales · {inbox ? `${externalItems.length} externos` : "cargando…"}</span></div>
 
       {localError && <div className="banner banner--warn view-note" role="alert">No pude completar la operación local ({localError}).</div>}
+      {workflowError && <div className="banner banner--warn view-note" role="alert">No pude consultar la autoridad de workflows ({workflowError}); las acciones manuales quedan desactivadas.</div>}
+      {workflowFocus && issues.length > 0 && !issues.some((issue) => issue.id === workflowFocus.issueId && issue.project_id === workflowFocus.projectId) && <p role="alert">El issue del workflow no está disponible en este proyecto; no se abre otra autoridad.</p>}
 
       <section className="panel work-issues-panel">
         <div className="work-issues-heading"><div><span className="organization-kicker">FUENTE LOCAL DE VERDAD</span><h3>Trabajo aprobado</h3><p>El alcance, la autorización y la evidencia permanecen en este Control Plane.</p></div><button type="button" className="ghost-btn" disabled={busy !== null} onClick={() => { setDispatchEpoch((value) => value + 1); void refresh(); }}>Actualizar</button></div>
@@ -280,26 +299,31 @@ export function IssuesView() {
         {issues.length === 0 ? <div className="empty"><p>{localError ? "Issues locales no disponibles" : "Todavía no hay propuestas locales"}</p></div> : (
           <div className="work-issue-list">
             {issues.map((issue) => {
+              const owner = workflows?.find((workflow) => workflow.issue_id === issue.id && !["completed", "cancelled"].includes(workflow.status));
+              const manualAllowed = workflows !== null && !workflowError && !owner;
               const detail = lineage[issue.id];
               const currentCandidate = detail?.candidates.find((candidate) => candidate.invalidated_at === null && candidate.scope_revision === issue.scope_revision);
               const checks = confirmed[issue.id] ?? [];
               const candidateGaps = detail?.evidence_gaps ?? [];
               const canAccept = Boolean(currentCandidate && issue.acceptance_criteria.every((criterion) => checks.includes(criterion))
                 && (candidateGaps.every((gap) => !gap.startsWith("Passing verification")) || acknowledgeGap[issue.id]));
-              return <article className="work-issue-card" key={issue.id}>
+              return <article className="work-issue-card" key={issue.id} id={`work-issue-${issue.id}`}>
                 <div className="work-issue-card__top"><span className={`work-issue-status work-issue-status--${issue.status.replace(/[^a-z-]/g, "")}`}>{issue.status}</span><span className="badge-mini">{issue.work_scale}</span><span className="badge-mini">scope r{issue.scope_revision}</span><span className="work-issue-project">{issue.project_id}</span></div>
                 <h3>{issue.title}</h3><p>{issue.expected_outcome}</p>
                 <div className="work-issue-meta"><span>{issue.acceptance_criteria.length} criterios</span><span>{issue.task_ids.length} tareas</span><span>{issue.classification_rationale.join(" · ")}</span></div>
                 <div className="work-issue-scope"><b>Permitido:</b> {issue.authorized_scope.allowed_path_patterns.join(", ")} <span>· {issue.authorized_scope.allowed_change_categories.join(", ")}</span></div>
-                {issue.status === "needs-decision" && issue.scope_change_proposal && <div className="banner banner--warn work-issue-proposal"><b>Scope ampliado requiere tu decisión.</b><div>{issue.scope_change_proposal.discovered_paths.join(", ")}</div><div className="actions"><button className="ibtn primary" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => approveWorkIssueScope(issue))}>Autorizar nueva revisión de scope</button><button className="ibtn" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => rejectWorkIssueScope(issue))}>Rechazar y cancelar issue</button></div></div>}
-                {issue.status === "needs-decision" && !issue.scope_change_proposal && <div className="banner banner--warn work-issue-proposal"><b>La evidencia no habilita revisión todavía.</b><div>{issue.next_action ?? "Revisá la brecha antes de autorizar otro intento."}</div><button className="ibtn primary" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => resolveWorkIssueDecision(issue))}>Autorizar reintento con scope sin cambios</button></div>}
+                {owner && <p className="work-issue-note">Workflow activo {owner.id}. Usá su decisión o stop; despacho, reintento y aceptación manual no reemplazan su autoridad.</p>}
+                {manualAllowed && issue.status === "needs-decision" && issue.scope_change_proposal && <div className="banner banner--warn work-issue-proposal"><b>Scope ampliado requiere tu decisión.</b><div>{issue.scope_change_proposal.discovered_paths.join(", ")}</div><div className="actions"><button className="ibtn primary" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => approveWorkIssueScope(issue))}>Autorizar nueva revisión de scope</button><button className="ibtn" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => rejectWorkIssueScope(issue))}>Rechazar y cancelar issue</button></div></div>}
+                {manualAllowed && issue.status === "needs-decision" && !issue.scope_change_proposal && <div className="banner banner--warn work-issue-proposal"><b>La evidencia no habilita revisión todavía.</b><div>{issue.next_action ?? "Revisá la brecha antes de autorizar otro intento."}</div><button className="ibtn primary" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => resolveWorkIssueDecision(issue))}>Autorizar reintento con scope sin cambios</button></div>}
                 <div className="actions work-issue-actions">
-                  {issue.status === "proposed" && <button className="ibtn primary" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => authorizeWorkIssue(issue.id, issue.revision))}>Autorizar scope exacto</button>}
-                  {issue.status === "blocked" && <button className="ibtn primary" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => resumeWorkIssue(issue))}>Revisé el bloqueo · autorizar reanudación</button>}
+                  {manualAllowed && issue.status === "proposed" && <button className="ibtn primary" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => authorizeWorkIssue(issue.id, issue.revision))}>Autorizar scope exacto</button>}
+                  {manualAllowed && issue.status === "blocked" && <button className="ibtn primary" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => resumeWorkIssue(issue))}>Revisé el bloqueo · autorizar reanudación</button>}
                   {issue.status === "ready-for-review" && <button className="ibtn primary" disabled={busy === issue.id} onClick={() => void showLineage(issue)}>{expanded[issue.id] ? "Ocultar revisión" : "Revisar candidato"}</button>}
                   <button className="ibtn" disabled={busy === issue.id} onClick={() => void showLineage(issue)}>{expanded[issue.id] ? "Ocultar linaje" : "Ver linaje y evidencia"}</button>
+                  <button type="button" className="ibtn" aria-expanded={workflowExpanded[issue.id] ?? false} disabled={busy === issue.id} onClick={() => setWorkflowExpanded((current) => ({ ...current, [issue.id]: !current[issue.id] }))}>{workflowExpanded[issue.id] ? "Ocultar workflow" : "Ver workflow"}</button>
                 </div>
-                {issue.status === "authorized" && <IssueDispatch key={`${issue.id}:${issue.project_id}:${issue.revision}:${dispatchEpoch}`} issue={issue} options={dispatchOptions}
+                {workflowExpanded[issue.id] && <WorkflowPanel issue={issue} refreshKey={dispatchEpoch} initialWorkflowId={workflowFocus?.issueId === issue.id ? workflowFocus.workflowId : undefined} onChanged={refresh} onOpenTask={onOpenTask} />}
+                {manualAllowed && issue.status === "authorized" && <IssueDispatch key={`${issue.id}:${issue.project_id}:${issue.revision}:${dispatchEpoch}`} issue={issue} options={dispatchOptions}
                   busy={busy !== null} perform={(operation) => perform(issue.id, operation)} />}
                 {expanded[issue.id] && <div className="work-issue-lineage">
                   {!detail ? <p className="empty-mini">Cargando ejecución y evidencia…</p> : <>
@@ -310,7 +334,7 @@ export function IssuesView() {
                       <b>{candidate.invalidated_at ? "Candidato invalidado" : "Candidato actual"} · {candidate.candidate_revision.slice(0, 12)}</b>
                       <span>fingerprint {candidate.diff_fingerprint.slice(0, 16)}… · scope r{candidate.scope_revision} · {candidate.changed_paths.join(", ")}</span>
                     </div>)}
-                    {issue.status === "ready-for-review" && currentCandidate && <div className="work-issue-review">
+                    {manualAllowed && issue.status === "ready-for-review" && currentCandidate && <div className="work-issue-review">
                       <b>Confirmá cada criterio sobre este commit</b>
                       <div className="organization-checkboxes">{issue.acceptance_criteria.map((criterion) => <label key={criterion}><input type="checkbox" checked={checks.includes(criterion)} onChange={(event) => setConfirmed((value) => ({ ...value, [issue.id]: event.target.checked ? [...checks, criterion] : checks.filter((item) => item !== criterion) }))} />{criterion}</label>)}</div>
                       {candidateGaps.some((gap) => gap.startsWith("Passing verification")) && <label className="work-issue-toggle"><input type="checkbox" checked={acknowledgeGap[issue.id] ?? false} onChange={(event) => setAcknowledgeGap((value) => ({ ...value, [issue.id]: event.target.checked }))} />Entiendo y acepto explícitamente la brecha de verificación automatizada</label>}

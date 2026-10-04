@@ -772,6 +772,30 @@ button.project-detail-row:hover b { color:var(--glacier-300); }
 .work-provider-issues { display:grid; gap:8px; }
 .work-provider-issues .section-head { margin-bottom:0; }
 
+.workflow-panel { display:grid; gap:14px; min-width:0; margin-top:14px; padding:16px; border:1px solid var(--border-soft); border-radius:10px; background:var(--bg-raised); color:var(--fg2); font-size:12px; overflow-wrap:anywhere; }
+.workflow-panel h4 { margin:0 0 6px; color:var(--fg1); font-size:13px; }
+.workflow-panel p { margin:5px 0; line-height:1.55; }
+.workflow-panel .ibtn, .workflow-panel .ghost-btn { width:auto; max-width:100%; justify-self:start; white-space:normal; }
+.workflow-field { display:grid; gap:6px; min-width:0; color:var(--fg2); font-size:11px; }
+.workflow-field input, .workflow-field select, .workflow-field textarea { width:100%; min-width:0; min-height:38px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--bg-overlay); color:var(--fg1); font:inherit; font-size:12px; }
+.workflow-field select { color-scheme:dark; }
+.workflow-field option { background:var(--bg-raised); color:var(--fg1); }
+.workflow-field textarea { resize:vertical; min-height:65px; }
+.workflow-field input:focus, .workflow-field select:focus, .workflow-field textarea:focus { outline:2px solid var(--glacier-400); outline-offset:2px; }
+.workflow-create, .workflow-preview, .workflow-decision { display:grid; gap:12px; min-width:0; padding:12px; border:1px solid var(--border-soft); border-radius:8px; }
+.workflow-create > summary, .workflow-evidence > summary { cursor:pointer; font-weight:700; color:var(--fg1); line-height:1.5; }
+.workflow-create:not([open]) > :not(summary) { display:none; }
+.workflow-role-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.workflow-role, .workflow-criteria { min-width:0; margin:0; padding:12px; border:1px solid var(--border-soft); border-radius:8px; }
+.workflow-role legend, .workflow-criteria legend { color:var(--fg1); font-weight:650; padding:0 4px; }
+.workflow-criteria label { display:flex; align-items:flex-start; gap:8px; margin:8px 0; }
+.workflow-criteria input { flex:none; margin-top:3px; accent-color:var(--glacier-400); }
+.workflow-evidence { min-width:0; padding:10px 12px; border:1px solid var(--border-soft); border-radius:8px; }
+.workflow-evidence > div { padding:10px 0; border-top:1px solid var(--border-soft); }
+.workflow-evidence[open] > summary { margin-bottom:10px; }
+.workflow-evidence small { color:var(--fg3); }
+.workflow-facts dd { min-width:0; overflow-wrap:anywhere; }
+
 @media (max-width: 1050px) {
   .today-outcomes, .detail-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .today-signal-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -805,4 +829,7 @@ button.project-detail-row:hover b { color:var(--glacier-300); }
   .work-issue-create .organization-form-wide { grid-column:1; }
   .work-issues-heading { align-items:flex-start; flex-direction:column; }
   .work-issue-project { margin-left:0; }
+  .workflow-role-grid { grid-template-columns:1fr; }
+  .workflow-panel { padding:12px; }
+  .workflow-facts { grid-template-columns:1fr; }
 }
