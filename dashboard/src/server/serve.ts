@@ -8,6 +8,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { createApp } from "./index";
 import { reconcileStartup } from "../../../runner/reconcile";
 import { TaskOrchestrator } from "../../../runner/task-orchestrator";
+import { WorkflowOrchestrator } from "../../../runner/workflow-orchestrator";
 
 const reconciliation = reconcileStartup();
 if (reconciliation.worktrees.orphans.length > 0) {
@@ -15,9 +16,11 @@ if (reconciliation.worktrees.orphans.length > 0) {
 }
 for (const error of reconciliation.worktrees.errors) console.warn(`Worktree reconciliation warning: ${error}`);
 
-const orchestrator = new TaskOrchestrator();
+const workflows = new WorkflowOrchestrator();
+const orchestrator = new TaskOrchestrator({ workflows });
 orchestrator.start();
-const app = createApp(process.cwd(), orchestrator);
+const app = createApp(process.cwd(), orchestrator, undefined, undefined,
+  { workflows: workflows.service, ...(process.env.SURTEC_SMOKE_DISABLE_EXTERNAL_READS === "1" ? { inbox: async () => ({ items: [], repos: [] }) } : {}) });
 app.use("/*", serveStatic({ root: "./dashboard/dist" }));
 const port = Number(process.env.PORT ?? 4317);
 const server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" });

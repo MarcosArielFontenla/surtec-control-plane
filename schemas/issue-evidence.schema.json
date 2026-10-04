@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/issue-evidence.schema.json",
+  "title": "IssueEvidenceReference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "issue_id", "task_id", "execution_id", "candidate_id", "candidate_revision", "diff_fingerprint", "scope_revision", "kind", "label", "reference", "status", "created_at"],
+  "properties": {
+    "testing_evidence_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "schema_version": { "const": 1 }, "id": { "type": "string", "pattern": "^E-[A-Fa-f0-9-]{36}$" },
+    "issue_id": { "type": "string", "pattern": "^I-[A-Fa-f0-9-]{36}$" },
+    "task_id": { "type": ["string", "null"], "maxLength": 100 }, "execution_id": { "type": ["string", "null"], "maxLength": 100 },
+    "candidate_id": { "type": ["string", "null"], "pattern": "^C-[A-Fa-f0-9-]{36}$" },
+    "candidate_revision": { "type": ["string", "null"], "maxLength": 100 }, "diff_fingerprint": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "scope_revision": { "type": ["integer", "null"], "minimum": 1 },
+    "kind": { "enum": ["task", "execution", "commit", "diff", "verification", "review", "work-session", "provider", "usage", "screenshot", "work-product"] },
+    "label": { "type": "string", "minLength": 1, "maxLength": 300 }, "reference": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "status": { "enum": ["passed", "failed", "informational", "gap"] }, "created_at": { "type": "string", "format": "date-time" }
+  }
+}

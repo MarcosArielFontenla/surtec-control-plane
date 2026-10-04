@@ -9,12 +9,13 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 - `dashboard/src/ui`: React views and project controls.
 - `dashboard/src/server`: Hono API and infrastructure adapters for Git, GitHub, deployment health, Railway, dependencies, and local open actions.
 - `lib/policy`: the canonical typed policy boundary for project, agent, sandbox, task-type, repository, command, and approval configuration.
+- `lib/context`: bounded attributed assembly, routing/testing requirements and validation of infrastructure-owned testing receipts; context text never grants capabilities.
 - `lib/security`: shared identifier, canonical path-containment, environment-allowlist, and redaction primitives.
 - `lib/integrations`: versioned project-integration contracts, runtime validation, URL safety, and bounded error normalization.
 - `lib/state`: schema-validated file-first task, project, signal, profile, and work-session state with locks, atomic replacement writes, and append-only task events.
 - Other `lib` modules: discovery, Git status, portfolio derivation, and URL helpers.
 - `runner`: durable task scheduling, agent execution, worktrees, verification, process management, review publication, and startup reconciliation.
-- `registry`: trusted project and agent configuration.
+- `registry`: trusted project, agent, logical-role, context-policy and Harness-source configuration.
 - `schemas`: persisted and structured-output contracts.
 
 ## Data flows
@@ -29,14 +30,14 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 
 ### Agent task
 
-1. Validate a dashboard request through `PolicyService`, write a schema-valid queued task snapshot, and append a `queued` event.
+1. Explicitly preview an analysis or authorized issue through the shared context service, then reassemble its issued request/source/consent/policy binding before writing a schema-valid queued task and `queued` event. API and CLI cannot supply their own manifest.
 2. The API notifies `TaskOrchestrator` and returns. It never executes the task in the request handler.
 3. Under the scheduler lock, the worker enforces global capacity and per-project write exclusion, then atomically claims the task with a unique run id and expiring lease.
-4. Re-resolve current project and agent policy at execution time; reject stale paths or broadened capabilities.
+4. Re-resolve current policy and reconstruct admitted context before each attempt; reject changed sources, scope, consent or capabilities before model/worktree effects. Unsupported legacy retries require a new governed dispatch.
 5. For a write task, create or safely reuse its isolated Git worktree and managed `agent/` branch.
-6. Invoke `AgentExecutor`; the production implementation uses Codex App Server over local `stdio` and resumes a persisted thread when available.
+6. Invoke `AgentExecutor` through local Codex App Server `stdio`; a persisted thread requires the same context, prompt version, execution mode, repository, verification commands and output contract. Strict TDD observes trusted RED before the implementation turn.
 7. Persist concise lifecycle events, thread/turn identifiers, cumulative usage, lease heartbeats, and the current task snapshot. Cancellation reaches App Server through `turn/interrupt`.
-8. Commit agent edits and run registry verification commands only while the attempt still owns the current lease.
+8. Commit edits and capture exact configured verification while the lease remains owned. Governed issue acceptance requires a validated functional or ordered strict-TDD receipt bound to the immutable candidate, scope and policy, not model-authored success claims.
 9. Validate the structured result and finish the task. Transient failures retry with bounded backoff while attempt and token budgets remain.
 10. A human may approve publication or reject and clean up. The review state machine persists intent and each completed effect so a retry resumes rather than duplicates work.
 
@@ -93,7 +94,17 @@ The production API binds to `127.0.0.1`. API middleware rejects non-loopback `Ho
 
 ## Phase J organization design boundary
 
-The organization vocabulary and future dependency direction are defined in [ADR-0003](../decisions/ADR-0003-organization-domain-boundary.md). The versioned issue transition reference is in [Issue lifecycle v1](issue-lifecycle-v1.md), and future file-state changes must follow the [migration contract](organization-state-migration.md). These are design contracts only: the current dashboard, task lifecycle, and persistence are not wired to an organization/issue model, and no migration is implemented.
+The Phase J design baseline is defined in [ADR-0003](../decisions/ADR-0003-organization-domain-boundary.md), [Issue lifecycle v1](issue-lifecycle-v1.md) and the [migration contract](organization-state-migration.md). Phase K subsequently implemented organization/objective links and the portfolio-profile migration; Phase L adds local issues, authorized scope, task/attempt/session lineage, immutable candidates and evidence-bound local acceptance. The durable task runtime retains its owner and publication gates; local issue acceptance never publishes. See [Local work issues](../runbooks/local-work-issues.md) and [Phase L acceptance](../runbooks/phase-l-acceptance.md) for the current implementation and evidence, rather than interpreting the historical Phase J exclusions as current readiness.
+
+## Phase M Harness observations
+
+`lib/harness` inspects registered local checkouts without executing their instructions or writing their files. The trusted `registry/harness-sources.yml` pins a curated 25-entry H1-H4 manifest; a changed baseline becomes unknown, not automatically adopted. Version detection requires an exact reviewed baseline match; primer/skill versions are not Harness release versions. Protected explicit refresh persists bounded profiles under `state/harness/profiles.json`; GET inventory and Doctor never write observations. Signals consume saved observations, retain their evidence timestamps, and do not authorize repair. Ownership and validation require explicit trusted metadata; script presence and matching hashes are not proof. See [Phase M acceptance](../runbooks/phase-m-acceptance.md) for limits and verification.
+
+## Phase N governed context
+
+Six logical Codex profiles intersect existing project/agent permissions; an issue's stored agent assignment remains unchanged. Explicit protected preview exposes attributed source metadata, exclusions and effective requirements, never a rendered private prompt. Application-selected project files are contained and bounded; defaults are 500 physical lines / 60000 UTF-8 bytes, separate from runtime token limits. Client categories start empty. Trusted Harness routes select complete applicable instructions/skills without recursive Markdown inclusion or canonical repinning.
+
+New tasks store strict version-1 manifest/admission subdocuments; verification adds version-1 testing receipts. Legacy task/event bytes are not rewritten or backfilled. Preview issuance is bounded, process-local and expires after five minutes; restart requires a new preview, while stored task evidence survives and is revalidated without that issuance ledger. Delegation and independent review execution are not implemented in Phase N. See [approved design](phase-n-context-design.md), [compatibility](organization-state-migration.md#phase-n-additive-task-compatibility) and [acceptance](../runbooks/phase-n-acceptance.md#t012-final-closure---2026-10-01).
 
 ## Known limitations
 
@@ -107,3 +118,5 @@ The organization vocabulary and future dependency direction are defined in [ADR-
 - Only deployment currently has multiple concrete implementations. Source-control, CI, and tracing interfaces must not be generalized without another real implementation.
 - Orphan worktrees require an explicit human cleanup decision after inspecting the reconciliation report.
 - Pattern-based redaction and secret scanning reduce accidental exposure but are not general data-loss-prevention systems.
+- Subsequent runtime filesystem reads are not guaranteed project-only; selected-source containment does not strengthen the existing sandbox's read isolation.
+- Context is reassembled before attempts, not continuously watched; verification rechecks command/role/config authority. Fingerprints and sealed receipts are hashes, not signatures against arbitrary same-user writers.

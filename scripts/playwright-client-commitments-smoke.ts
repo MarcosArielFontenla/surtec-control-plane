@@ -187,7 +187,7 @@ async function main(): Promise<void> {
     await page.getByRole("button", { name: "Actualizar Hoy" }).click();
     await page.getByText("Fictional client delivery", { exact: true }).waitFor();
     await page.getByRole("button", { name: /Preparar tarea/ }).first().click();
-    await page.getByLabel("Proyecto").waitFor();
+    await page.getByLabel("Proyecto", { exact: true }).waitFor();
     assert.equal(await page.getByPlaceholder(/instrucciones/i).inputValue(),
       "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form.",
       "client commitment task prefills omit profile and confidential text");

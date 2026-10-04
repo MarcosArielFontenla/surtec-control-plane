@@ -1,0 +1,36 @@
+# Reviewed finite controls only; JSON syntax is valid YAML.
+{
+  "schema_version": 1,
+  "default_budget": {
+    "max_tasks": 7,
+    "max_attempts": 10,
+    "max_runtime_ms": 900000,
+    "max_total_tokens": 100000
+  },
+  "correction_budget": {
+    "max_tasks": 3,
+    "max_attempts": 4,
+    "max_runtime_ms": 300000,
+    "max_total_tokens": 40000
+  },
+  "automated_correction_default": false,
+  "minimum_review_depth": "focused",
+  "qa_on_full": true,
+  "protected_path_patterns": [
+    "AGENTS.md",
+    ".agents/**",
+    ".codex/**",
+    "registry/**",
+    "schemas/**",
+    "lib/policy/**",
+    "lib/security/**",
+    "lib/context/**",
+    "lib/workflows/**",
+    "runner/**",
+    "dashboard/src/server/dispatch.ts",
+    "dashboard/src/server/issue-service.ts",
+    "dashboard/src/server/workflow*.ts",
+    "dashboard/src/server/index.ts",
+    "dashboard/src/server/serve.ts"
+  ]
+}

@@ -1,0 +1,214 @@
+# Versioned trusted configuration; JSON syntax is valid YAML.
+{
+  "schema_version": 1,
+  "roles": [
+    {
+      "schema_version": 1,
+      "id": "portfolio-analyst",
+      "display_name": "Portfolio Analyst (Codex profile)",
+      "responsibility": "Diagnose portfolio priorities from attributed evidence.",
+      "agent_ids": [
+        "product-manager"
+      ],
+      "allowed_task_kinds": [
+        "analysis",
+        "discovery",
+        "product-scope",
+        "user-story",
+        "prioritization"
+      ],
+      "sandbox_ceiling": "read-only",
+      "required_skill_ids": [],
+      "required_evaluation_ids": [
+        "evals/v1/cases/product-manager-pass.json"
+      ],
+      "allowed_tool_capabilities": [
+        "inspect"
+      ],
+      "approval_rules": [
+        "scope-change",
+        "external-side-effect",
+        "publication"
+      ],
+      "default_budget_policy_id": "analysis",
+      "handoff_contract_ids": ["role-handoff-v1"],
+      "minimum_review_depth": "focused"
+    },
+    {
+      "schema_version": 1,
+      "id": "planner",
+      "display_name": "Planner (Codex profile)",
+      "responsibility": "Propose bounded plans without admitting implementation or delegation.",
+      "agent_ids": [
+        "tech-lead",
+        "product-manager"
+      ],
+      "allowed_task_kinds": [
+        "analysis",
+        "implementation-plan",
+        "architecture-review",
+        "discovery"
+      ],
+      "sandbox_ceiling": "read-only",
+      "required_skill_ids": [],
+      "required_evaluation_ids": [
+        "evals/v2/cases/implementation-plan.json"
+      ],
+      "allowed_tool_capabilities": [
+        "inspect"
+      ],
+      "approval_rules": [
+        "scope-change",
+        "external-side-effect",
+        "publication"
+      ],
+      "default_budget_policy_id": "analysis",
+      "handoff_contract_ids": ["role-handoff-v1"],
+      "minimum_review_depth": "focused"
+    },
+    {
+      "schema_version": 1,
+      "id": "software-engineer",
+      "display_name": "Software Engineer (Codex profile)",
+      "responsibility": "Implement only the explicitly authorized issue scope and configured checks.",
+      "agent_ids": [
+        "backend-engineer",
+        "frontend-engineer",
+        "tech-lead",
+        "documentation-writer",
+        "devops-engineer"
+      ],
+      "allowed_task_kinds": [
+        "analysis",
+        "implementation",
+        "bugfix",
+        "backend-implementation",
+        "frontend-implementation",
+        "api-change",
+        "data-model-change",
+        "refactor",
+        "documentation",
+        "runbook",
+        "changelog",
+        "ci-change",
+        "automation"
+      ],
+      "sandbox_ceiling": "workspace-write",
+      "required_skill_ids": [],
+      "required_evaluation_ids": [
+        "evals/v2/cases/backend-change.json",
+        "evals/v2/cases/frontend-change.json"
+      ],
+      "allowed_tool_capabilities": [
+        "inspect",
+        "edit-authorized-scope",
+        "verify-configured"
+      ],
+      "approval_rules": [
+        "scope-change",
+        "external-side-effect",
+        "publication"
+      ],
+      "default_budget_policy_id": "implementation",
+      "handoff_contract_ids": ["role-handoff-v1"],
+      "minimum_review_depth": "focused"
+    },
+    {
+      "schema_version": 1,
+      "id": "reviewer",
+      "display_name": "Reviewer (Codex profile)",
+      "responsibility": "Independently inspect candidate evidence without editing or accepting it.",
+      "agent_ids": [
+        "reality-checker",
+        "security-reviewer",
+        "tech-lead"
+      ],
+      "allowed_task_kinds": [
+        "analysis",
+        "code-review",
+        "security-review",
+        "risk-review",
+        "assumption-review",
+        "feasibility-review",
+        "architecture-review"
+      ],
+      "sandbox_ceiling": "read-only",
+      "required_skill_ids": [],
+      "required_evaluation_ids": [
+        "evals/v2/cases/security-review.json"
+      ],
+      "allowed_tool_capabilities": [
+        "inspect"
+      ],
+      "approval_rules": [
+        "scope-change",
+        "external-side-effect",
+        "publication"
+      ],
+      "default_budget_policy_id": "analysis",
+      "handoff_contract_ids": ["role-handoff-v1"],
+      "minimum_review_depth": "focused"
+    },
+    {
+      "schema_version": 1,
+      "id": "qa-evaluator",
+      "display_name": "QA Evaluator (Codex profile)",
+      "responsibility": "Assess observable acceptance evidence without claiming unperformed checks.",
+      "agent_ids": [
+        "qa-reviewer"
+      ],
+      "allowed_task_kinds": [
+        "analysis",
+        "test-plan",
+        "qa-review",
+        "regression-review"
+      ],
+      "sandbox_ceiling": "read-only",
+      "required_skill_ids": [],
+      "required_evaluation_ids": [
+        "evals/v2/cases/qa-review.json"
+      ],
+      "allowed_tool_capabilities": [
+        "inspect"
+      ],
+      "approval_rules": [
+        "scope-change",
+        "external-side-effect",
+        "publication"
+      ],
+      "default_budget_policy_id": "analysis",
+      "handoff_contract_ids": ["role-handoff-v1"],
+      "minimum_review_depth": "focused"
+    },
+    {
+      "schema_version": 1,
+      "id": "operations-observer",
+      "display_name": "Operations Observer (Codex profile)",
+      "responsibility": "Observe operations evidence without deploying or changing infrastructure.",
+      "agent_ids": [
+        "devops-engineer"
+      ],
+      "allowed_task_kinds": [
+        "analysis",
+        "deployment-review",
+        "observability"
+      ],
+      "sandbox_ceiling": "read-only",
+      "required_skill_ids": [],
+      "required_evaluation_ids": [
+        "evals/v1/cases/devops-engineer-pass.json"
+      ],
+      "allowed_tool_capabilities": [
+        "inspect"
+      ],
+      "approval_rules": [
+        "scope-change",
+        "external-side-effect",
+        "publication"
+      ],
+      "default_budget_policy_id": "analysis",
+      "handoff_contract_ids": ["role-handoff-v1"],
+      "minimum_review_depth": "focused"
+    }
+  ]
+}

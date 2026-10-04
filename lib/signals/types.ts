@@ -1,6 +1,6 @@
 export type SignalSeverity = "info" | "warning" | "critical";
 export type SignalState = "open" | "acknowledged" | "snoozed" | "resolved";
-export type SignalSource = "git" | "github" | "ci" | "deployment" | "issue" | "task" | "profile" | "note" | "session" | "commitment" | "objective";
+export type SignalSource = "git" | "github" | "ci" | "deployment" | "issue" | "task" | "profile" | "note" | "session" | "commitment" | "objective" | "harness";
 
 export type SignalRankingTier =
   | "production-failure"

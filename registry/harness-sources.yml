@@ -1,0 +1,11 @@
+# Reviewed local H1-H4 reference. Changes require explicit review and repinning.
+# This release label is not the primer or a skill's version.
+schema_version: 1
+source:
+  id: surtec-h1-h4
+  root: .
+  manifest: registry/harness-manifests/surtec-h1-h4.json
+  manifest_sha256: 7ee08746affc7f6fba13feffe56d9dabb237615406b34d861dbad51ae50389fc
+runners: {}
+# No filename/hash-based ownership or validation evidence is inferred.
+projects: {}

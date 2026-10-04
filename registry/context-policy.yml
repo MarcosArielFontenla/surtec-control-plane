@@ -1,0 +1,34 @@
+# Versioned trusted configuration; JSON syntax is valid YAML.
+{
+  "schema_version": 1,
+  "limits": {
+    "max_lines": 500,
+    "max_bytes": 60000,
+    "max_sources": 64
+  },
+  "budgets": {
+    "analysis": {
+      "max_attempts": 2,
+      "max_runtime_ms": 180000,
+      "max_total_tokens": 40000
+    },
+    "implementation": {
+      "max_attempts": 3,
+      "max_runtime_ms": 300000,
+      "max_total_tokens": 100000
+    }
+  },
+  "routes": [],
+  "runners": {},
+  "testing": {
+    "global": {
+      "mode": "functional",
+      "minimum_review_depth": "focused",
+      "runner_ids": []
+    },
+    "archetypes": {},
+    "projects": {},
+    "issues": {},
+    "roles": {}
+  }
+}

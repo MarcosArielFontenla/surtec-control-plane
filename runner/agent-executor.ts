@@ -28,6 +28,9 @@ export interface AgentRunInput {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   threadId?: string;
+  /** Internal context contract; never forwarded as an experimental protocol field. */
+  contextFingerprint?: string;
+  resumeContextFingerprint?: string;
   verifyCommands?: string[];
   outputSchema: Record<string, unknown>;
 }

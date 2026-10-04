@@ -9,6 +9,7 @@ import { getActivity, getProjectIntegrations, getSignals, openProject } from "..
 import { ProjectNotes } from "../components/ProjectNotes";
 import { ProjectProfileEditor } from "../components/ProjectProfileEditor";
 import { WorkSessionsPanel } from "../components/WorkSessionsPanel";
+import { ProjectHarnessPanel } from "../components/ProjectHarnessPanel";
 import { relativeTime } from "../relative-time";
 
 const HEALTH_LABEL: Record<IntegrationHealth, string> = {
@@ -286,6 +287,7 @@ export function ProjectDetailView({
       </section>
 
       <WorkSessionsPanel sessions={sessionState} projects={overview.projects} projectId={id} onChanged={onSessionsChanged ?? (async () => {})} onOpenTask={onOpenTask} />
+      <ProjectHarnessPanel key={id} projectId={id} />
 
       <div className="project-detail-grid">
         <TaskList title="Tareas activas" tasks={activeTasks} onOpenTask={onOpenTask} />

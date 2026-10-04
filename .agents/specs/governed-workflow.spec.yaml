@@ -1,0 +1,108 @@
+schema_version: 1
+name: Phase O - governed role workflows and evidence-bound review
+entity: GovernedWorkflow
+domains: [workflow-policy, context-admission, task-orchestration, issue-lifecycle, file-state, dashboard]
+purpose: Chain a finite set of logical roles through the existing task runtime under exact bounded approval, retaining human decisions and candidate-bound evidence.
+requirements:
+  - id: req-templates
+    description: Provide five code-owned versioned sequential templates named analysis, implementation, quality-review, operations-investigation and trivial-change. Reject arbitrary graphs, role stages and transitions. Logical role selection never spawns another runtime or changes project capabilities.
+  - id: req-grant
+    description: A no-effect issued preview precedes explicit human workflow approval. Bind the exact template, role-to-agent mapping, issue and scope, approved source and policy fingerprints, per-role client consent, aggregate budget and optional correction allowance. Approval permits only the enumerated downstream stages and bounded generated evidence, not arbitrary future tasks or changed authority.
+  - id: req-context
+    description: Every stage uses the existing attributable bounded context assembly and current role/project/agent intersection. Add strict version-2 workflow-stage admission alongside unchanged supported version-1 analysis and issue admission. Reassemble before every attempt and reject changed required sources, consent, scope, policy, plan or execution contract without model or worktree effects.
+  - id: req-gates
+    description: Stop at exact-plan approval before implementation and at human candidate acceptance. Material scope, write authority, client sharing, owner replacement, changed criteria, real scaffold and publication remain explicit human boundaries; unsupported actions stay denied. A human acknowledgement of advisory review risks cannot waive failed or missing trusted verification or stale candidates.
+  - id: req-lifecycle
+    description: Use the existing canonical version-1 issue transition guards and authorized actors for every issue change. Workflow state is not a second issue lifecycle. For workflow-managed implementation retain checking after passing verification until required role reviews are valid; do not invent a ready-for-review to checking edge or automatically reopen completed issues.
+  - id: req-depth
+    description: Derive intrinsic passive, focused or full review from trusted risk factors and show reasons. Effective review is the strictest applicable current role, testing, project, Harness and workflow floor. Existing profiles retain their focused minimum; full risk review also requires QA. Model output cannot downgrade depth or testing mode.
+  - id: req-candidate
+    description: Reviewer and QA use a read-only view of the exact managed candidate tree, not the current source checkout. Check contained ownership, inactive implementation lease, clean candidate revision and content binding before and after review. Bind receipts to candidate, scope, testing evidence, role, task/run, context, policy and approved authority; invalidate rather than replay stale evidence.
+  - id: req-handoff
+    description: Persist strict version-1 RoleHandoff records with the roadmap fields, concise redacted summaries and validated same-issue evidence references. Infrastructure owns identities and timestamps; models cannot mint authoritative references. Completed handoffs are immutable, and replacement records retain explicit lineage. Never store raw reasoning or private source bodies.
+  - id: req-output
+    description: Validate bounded role-specific plan, review, QA and operations outputs before creating handoff or review evidence. Normalize valid outputs to the existing task result without loosening the generic agent report. Invalid, missing, contradictory or unknown output and unsupported evidence references stop as needs-review or a visible workflow decision.
+  - id: req-correction
+    description: Automated correction is disabled by default and requires an explicit allowance of at most one per candidate lineage. Persist consumption before task admission, retain it across retries, cancellation and workflow replacement, and use the same authorized engineer and scope. Only a passed-verification candidate still in checking with concrete bounded review findings is eligible; protected policy, approval, authority and trusted verification probes cannot change. Reverify a new candidate and repeat required reviews. Failure, ambiguity or another correction requires a human decision.
+  - id: req-budget
+    description: Enforce finite aggregate task, attempt, active-runtime and token counters through existing leases, with correction caps drawn from remaining root budget. Defaults are seven tasks, ten attempts, 900000 active-runtime milliseconds and 100000 total tokens; reviewed configuration cannot exceed seven tasks, fourteen attempts, 1800000 milliseconds and 300000 tokens. Per-task controls may only tighten current role/project/worker limits. Deduplicate usage by run and stop safely on unknown recovery accounting.
+  - id: req-state
+    description: Store workflow records, stages, grants, handoffs, review receipts, correction lineage allowances and admission intents in a strict bounded version-1 file-first aggregate. Missing optional state reads empty without writes; malformed or future versions fail closed and retain bytes. Enforce cross-record ownership and revisions under existing locks and atomic replacement; never rewrite historical normal state or silently backfill approval.
+  - id: req-recovery
+    description: Reserve deterministic stage/task identities durably, reconcile cross-store admission and completion facts, and admit no execution until intent and authority are committed. Restart, retry, duplicate terminal events and lost leases never start downstream stages twice. Resume recomputes the next valid action with current authority; cancellation first records a durable stop and retains evidence and next action. Unprovable gaps require a human decision.
+  - id: req-boundaries
+    description: Preserve the sole installed runtime, no-network sandbox, one active project writer, scheduler capacity and existing publication gates. Manual issue dispatch, task retry, CLI and task review/cleanup cannot bypass an active workflow or discard its candidate tree. Workflow completion never pushes, opens a PR, merges, deploys or changes a sibling repository.
+  - id: req-ui
+    description: Show template, current stage and active role, completed handoffs, collected evidence, pending decision, blocked and recovery reasons, next allowed action, work scale, scope revision, candidate validity/fingerprint, review depth/reasons, correction and root budgets, testing mode and verification receipts. Reset stale preview, consent and acknowledgements on refresh or changed authority; expose stop and current-decision controls without automatic confirmation.
+  - id: req-acceptance
+    description: Automate all repeatable acceptance with synthetic state, protocol fakes and the real isolated local API/browser. Cover five templates, human gates, privacy, invalid inputs, candidate mutation, correction exhaustion, budgets, concurrent writers, partial persistence, cancellation, lease loss and restart. Assert denied requests have zero model/worktree/publication effects and cleanup preserves normal state and siblings.
+constraints:
+  - Follow docs/architecture/phase-o-workflow-design.md and .agents/specs/tasks/phase-o-governed-workflows.tasks.md only after actual human approval of the exact proposed design and tasks.
+  - The human selected bounded automatic chaining with human gates on 2026-10-01; this scope clarification is not approval of this specification or implementation.
+  - Existing issue, candidate, manifest and testing-evidence version-1 contracts remain supported. Version-2 admission is exclusive to server-owned workflow stages; generic request callers cannot supply a grant, manifest, metadata or candidate path.
+  - Planning proposals do not silently edit the existing issue plan, objective, acceptance criteria, assignment or scope. New authority requires an explicit current human action.
+  - Sequential product role orchestration does not activate Harness authoring multi-agent orchestration, change canonical pins, raise context budgets or authorize assistant delegation.
+  - No dependency installation, protocol regeneration, hardcoded model, paid runtime call, normal-state migration, external message, sibling mutation, commit, push, merge or deploy is included.
+  - Retain Phase N's disclosed runtime-read limitation; contained application-selected context and candidate worktree validation do not prove all later runtime reads are project-only.
+  - Hashes detect binding changes, not malicious modifications by the same OS user. Do not claim universal secret detection, injection immunity or stronger sandbox isolation.
+nonGoals:
+  - A visual builder, generic graph engine, new scheduler or distributed workers.
+  - Parallel role execution within one workflow, autonomous role delegation or arbitrary external actions.
+  - Hierarchical organization budgets, monetary pricing, company-wide cost accounting or the next roadmap phase.
+  - Changing the canonical issue lifecycle, retroactive required reviews for non-workflow history or waiving trusted testing failures.
+  - Applying Harness scaffolds, replacing active owners, editing objective criteria or extending publication permissions through workflow endpoints.
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-10-01T18:54:20Z"
+  acceptanceChecks:
+    - id: ac-behavior
+      requirementIds: [req-templates, req-grant, req-context, req-gates, req-lifecycle, req-depth, req-candidate, req-handoff, req-output, req-correction, req-budget, req-state, req-recovery, req-boundaries, req-ui, req-acceptance]
+      description: Offline behavior tests and protocol fakes cover deterministic workflows, admission, evidence, safety, persistence and recovery. The isolated real API/browser acceptance in the runbook is additionally mandatory before phase delivery.
+      command: pnpm test
+      expectedExitCode: 0
+    - id: ac-schemas
+      requirementIds: [req-templates, req-grant, req-context, req-handoff, req-output, req-candidate, req-budget, req-state, req-recovery]
+      description: Compile new strict versioned workflow contracts and explicit v1/v2 compatibility with invalid and cross-record cases verified by behavior tests.
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-context, req-lifecycle, req-depth, req-candidate, req-output, req-correction, req-budget, req-recovery, req-boundaries, req-ui]
+      description: Typecheck policy, store, services, existing runtime integration and dashboard without widening execution capabilities.
+      command: pnpm typecheck
+      expectedExitCode: 0
+    - id: ac-build
+      requirementIds: [req-ui, req-acceptance]
+      description: Build an inspectable workflow dashboard whose required decisions are visible and never submitted implicitly.
+      command: pnpm build
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications:
+  - date: "2026-10-04"
+    question: Add lib/workflows/validation.ts and lib/workflows/validation.test.ts to T010 for an exact running-to-completed correction candidate seal?
+    answer: The human explicitly approved this adjustment in this task conversation before editing those files.
+    affects: Permit only the consumed current correction stage to seal its newly verified candidate against the exact prior candidate base, same authority and task/run. Preserve immutable admitted input, completed stages, receipts, counters and lineage history; no schema, lifecycle or execution-permission change. Original approval metadata remains unchanged.
+  - date: "2026-10-04"
+    question: Include lib/workflows/review-evidence.ts and its existing test in T010 to recognize only exact correction transitions and candidates?
+    answer: The human explicitly approved these two additional files in this task conversation before implementation.
+    affects: T010 admits only owned correction progress with exact workflow, stage, task, scope, candidate and execution bindings. No schema, issue lifecycle, permissions or other target expansion is approved by this clarification. The original design approval time is unchanged.
+  - date: "2026-10-03"
+    question: Add runner/workflow-orchestrator.ts, its test and dashboard/src/server/workflow-api.test.ts to T009 to integrate evidence-sealed writers/successors and real HTTP/browser acceptance?
+    answer: The human explicitly answered yes in this task conversation after the read-only T009 review and before implementation.
+    affects: T009 includes these three additional targets with the original eight targets. Preserve current schemas, permissions, human gates and original approval time; automatic correction remains T010, with no paid runtime or publication.
+  - date: "2026-10-03"
+    question: Approve the reviewed T008 amendment adding six receipt/API targets and keeping writers and unsealed successors blocked until T009?
+    answer: The human explicitly answered yes in this task conversation after the read-only review and before implementation.
+    affects: T008 additionally includes lib/context/testing-evidence.ts, lib/context/testing-evidence.test.ts, lib/state/validation.ts, lib/state/store.test.ts, dashboard/src/server/index.ts and dashboard/src/server/workflow-api.test.ts. Admit additive v2 writer receipt bindings without execution authority or migration; integrate read-only controller runs, accounting, cancellation and conservative recovery only. Writer/candidate/handoff/review sealing and dependent successor execution remain T009; no paid call, new permission or original approval-time change.
+  - date: "2026-10-01"
+    question: Approve the exact Phase O design, specification and T001-T014 targets, beginning with T001?
+    answer: The human explicitly answered yes in this task conversation. The recorded timestamp is this session's acknowledgement, not an inferred earlier approval time.
+    affects: The prospective design and ordered T001-T014 are approved. Start T001 contracts and tests only in this delivery; material amendments still require renewed review and paid runtime/publication remain separately unauthorized.
+  - date: "2026-10-01"
+    question: Chain permitted stages automatically after approving a workflow with exact roles, scope, budget and consent, stopping at human gates, or confirm every stage separately?
+    answer: The human selected bounded automatic chaining with human gates in this task conversation.
+    affects: req-templates, req-grant, req-gates and req-recovery permit only exact finite downstream stages under a current bounded grant. They do not grant arbitrary dispatch, runtime calls during development or approval of this prospective design.
+  - date: "2026-10-02"
+    question: Add schemas/workflow-record.schema.json and lib/workflows/validation.test.ts to T002 to align work_scale with the canonical bounded value?
+    answer: The human explicitly approved this narrow compatibility correction in this task conversation before the schema/test edit.
+    affects: T002 additionally includes these two targets. Admit the existing v1 trivial, bounded and substantial work scales with a regression; no issue lifecycle, permissions, budget, acceptance-check or approval-time change.

@@ -16,6 +16,7 @@ import { loadProjectConfig } from "./portfolio-config";
 import { loadRegistryProjects } from "./registry";
 import { createInboxCache, mapWithConcurrency, readInbox, type InboxCache } from "./github-inbox";
 import { readGitStatus } from "../../../lib/git-status";
+import type { HarnessProfilesDocument } from "../../../lib/harness/types";
 
 export interface SignalEvidenceReader {
   read(): Promise<SignalEvidenceSnapshot>;
@@ -30,6 +31,7 @@ export interface SignalEvidenceDependencies {
   readProfiles?: () => ProjectProfile[];
   readClientPortfolio?: () => ClientPortfolioDocument;
   readOrganization?: () => OrganizationSnapshot;
+  readHarnessProfiles?: () => HarnessProfilesDocument;
   readNotes?: (projectId: string) => Note[];
   readInbox?: () => Promise<Inbox>;
   readRegisteredProjects?: () => { id: string; repo: string | null }[];
@@ -67,6 +69,7 @@ export function createSignalEvidenceReader(repoRoot: string, dependencies: Signa
       let profiles: ProjectProfile[] = [];
       let clientPortfolio: ClientPortfolioDocument = { schema_version: 1, clients: {}, commitments: {} };
       let organization: OrganizationSnapshot | undefined;
+      let harnessProfiles: HarnessProfilesDocument = { schema_version: 1, profiles: {} };
       let profilesAvailable = true;
       let discovered: { id: string; path: string }[] = [];
       let inbox: Inbox = { items: [], repos: [] };
@@ -75,6 +78,7 @@ export function createSignalEvidenceReader(repoRoot: string, dependencies: Signa
       try { profiles = readProfiles(); } catch { profilesAvailable = false; warnings.push("Portfolio profiles could not be read; other signal sources remain available."); }
       try { clientPortfolio = readClientPortfolio(); } catch { warnings.push("Client commitment evidence could not be read; other signal sources remain available."); }
       try { organization = readOrganization(); } catch { warnings.push("Organization objectives could not be read; project signals remain available."); }
+      try { harnessProfiles = dependencies.readHarnessProfiles?.() ?? harnessProfiles; } catch { warnings.push("Harness evidence could not be read; other signal sources remain available."); }
       try { discovered = discover(root, ignore); } catch { warnings.push("Project discovery failed; other signal sources remain available."); }
       try { inbox = await readInboxSnapshot(); } catch { warnings.push("GitHub issue evidence could not be read; other signal sources remain available."); }
       try { registered = readRegisteredProjects(); } catch { warnings.push("Integration registry could not be read; local signal sources remain available."); }
@@ -124,6 +128,7 @@ export function createSignalEvidenceReader(repoRoot: string, dependencies: Signa
           integrations: integrationsById.get(project.id) ?? null,
           last_activity_at: latestActivity(projectTasks, project.git),
           notes,
+          harness: Object.hasOwn(harnessProfiles.profiles, project.id) ? harnessProfiles.profiles[project.id] : null,
         };
       });
       const commitments = Object.values(clientPortfolio.commitments).filter((commitment) => {

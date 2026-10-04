@@ -3,6 +3,7 @@ import { ArrowLeft, CheckCircle2, CircleAlert } from "lucide-react";
 import type { TaskDetailModel, TaskEvent } from "../../../../lib/state/types";
 import type { ClientContextCategory, ClientContextShareAudit } from "../../../../lib/client-portfolio";
 import { fetchTaskDetail } from "../api";
+import { ContextManifestEvidence } from "../components/ContextPreview";
 
 function duration(value: number | null): string {
   if (value === null) return "—";
@@ -45,6 +46,7 @@ export function TaskDetailView({ taskId, onBack }: { taskId: string; onBack: () 
 
   useEffect(() => {
     let active = true;
+    setDetail(null); setError(null);
     const load = async () => {
       try {
         const next = await fetchTaskDetail(taskId);
@@ -91,6 +93,12 @@ export function TaskDetailView({ taskId, onBack }: { taskId: string; onBack: () 
         <div className="panel"><span className="b-label">Intentos</span><b>{orchestration?.attempts ?? 0}/{orchestration?.max_attempts ?? "—"}</b></div>
         <div className="panel"><span className="b-label">Tokens</span><b>{orchestration?.cumulative_tokens ?? 0}/{orchestration?.max_total_tokens ?? "—"}</b></div>
         <div className="panel"><span className="b-label">Cleanup</span><b>{detail.cleanup.status}</b></div>
+      </section>
+
+      <section className="detail-card panel" aria-label="Manifiesto de contexto">
+        <h3>Manifiesto de contexto</h3>
+        {task.envelope.context_manifest ? <ContextManifestEvidence manifest={task.envelope.context_manifest} />
+          : <p className="empty-mini">Tarea histórica sin manifiesto registrado. No se infieren perfil, consentimiento ni requisitos de contexto.</p>}
       </section>
 
       {sharedCategories.length > 0 && (

@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "harness_version": "surtec-h1-h4-v1",
+  "source_id": "surtec-h1-h4",
+  "format": "surtec-h1-h4",
+  "capabilities": {
+    "root_instructions": true,
+    "registry": true,
+    "routing": true,
+    "skills": true,
+    "specs": true,
+    "decisions": false,
+    "tasks": true,
+    "workflows": true,
+    "acceptance_checks": true,
+    "done_gate": true,
+    "evals": false,
+    "handoffs": false,
+    "policies": true,
+    "telemetry": false,
+    "validators": true,
+    "doctor": false,
+    "reconciliation": false,
+    "ownership_manifest": false
+  },
+  "expected_entries": [
+    {
+      "path": ".agents/AGENTS.md",
+      "sha256": "4c9c5b7f5a147d4df0b58486b57ee0693fb8c72f764dcf7910b3dee252eab37e",
+      "capability": "registry",
+      "required": true
+    },
+    {
+      "path": ".agents/cold-start/budget-manifest.yaml",
+      "sha256": "699fc2067d6e6786bb438514674701da295937f5a9c781e5d2152999b01fe427",
+      "capability": "acceptance_checks",
+      "required": true
+    },
+    {
+      "path": ".agents/cold-start/snapshots/agent-execution-safety.snapshot.md",
+      "sha256": "2401d742a75cc13a2f2f57c9c1664b0289cd19ae0e1d84242bd222daca48c859",
+      "capability": "skills",
+      "required": true
+    },
+    {
+      "path": ".agents/cold-start/snapshots/file-state-contracts.snapshot.md",
+      "sha256": "052149a680c9ee4a32c30ed66258c37390d954646daba09be27066b46403150e",
+      "capability": "skills",
+      "required": true
+    },
+    {
+      "path": ".agents/cold-start/snapshots/local-dashboard-validation.snapshot.md",
+      "sha256": "baf7fe9c93252ddf8f5a4dd146378bc094d55b4c3d8e5f860c2fdf7c16a34dec",
+      "capability": "skills",
+      "required": true
+    },
+    {
+      "path": ".agents/contracts/spec.schema.json",
+      "sha256": "62abeab002093f2262a24e78d3b3471e4ef7e4ef3a08d7dc2634838ee7992476",
+      "capability": "specs",
+      "required": true
+    },
+    {
+      "path": ".agents/orchestration/ROUTING.md",
+      "sha256": "9910f05745a20547c752b2430a7411ee96342fca00436c8f19d9ff3c8dca39ee",
+      "capability": "routing",
+      "required": true
+    },
+    {
+      "path": ".agents/policies/project.md",
+      "sha256": "ae3cf2e743261789297ce5b414b096545c2f984af2cd867e8d2cf27c38195bbb",
+      "capability": "policies",
+      "required": true
+    },
+    {
+      "path": ".agents/scripts/check-harness.ps1",
+      "sha256": "dc482aa21802148f289d1d2a51c043aaebfbedd2f0647518a1e087e4ae550571",
+      "capability": "validators",
+      "required": true
+    },
+    {
+      "path": ".agents/scripts/common.ps1",
+      "sha256": "f3cc42b48037ed968601d412010c6e7039e58e4ad9a827ea0b5ddeedf925eb28",
+      "capability": "validators",
+      "required": true
+    },
+    {
+      "path": ".agents/scripts/generate-snapshots.ps1",
+      "sha256": "49463b2eecd25370e21661edcccdfcf54dd0c0b151a65adce611506722614acd",
+      "capability": "validators",
+      "required": true
+    },
+    {
+      "path": ".agents/scripts/validate-budget.ps1",
+      "sha256": "b4448012f77731559667030e7f28361e3a35e272847de32d6a12c5ff647ba24a",
+      "capability": "validators",
+      "required": true
+    },
+    {
+      "path": ".agents/scripts/validate-spec.ps1",
+      "sha256": "7241001eecccb0d31ff3b49393dcf822c2b78bff26bd1d6570d04201b9f2aeba",
+      "capability": "validators",
+      "required": true
+    },
+    {
+      "path": ".agents/scripts/validate-tasks.ps1",
+      "sha256": "498771db8a6ad6f9ca6c1c18ca593d06f55ddcce2948b8adc9770db20217b9a6",
+      "capability": "validators",
+      "required": true
+    },
+    {
+      "path": ".agents/skills/agent-execution-safety/SKILL.md",
+      "sha256": "192424ab1657a212ad5c706981629ef9c23f651efd2ca8914cc563776488e1a4",
+      "capability": "skills",
+      "required": true
+    },
+    {
+      "path": ".agents/skills/file-state-contracts/SKILL.md",
+      "sha256": "7c125b319f65ea7857cad7d69c8ea1d4c6b004a86e45c2c0dd04927cd0162075",
+      "capability": "skills",
+      "required": true
+    },
+    {
+      "path": ".agents/skills/local-dashboard-validation/SKILL.md",
+      "sha256": "48ee9381d34e7baeea4c9d6ec7875b837c97fbd7000852376f1057571514bdef",
+      "capability": "skills",
+      "required": true
+    },
+    {
+      "path": ".agents/specs/CONTRACT.md",
+      "sha256": "1e67f9ea392c78694786c3b1f60e75cf2b947b4f779725af936690c41cccc9a0",
+      "capability": "specs",
+      "required": true
+    },
+    {
+      "path": ".agents/templates/entity.spec.yaml",
+      "sha256": "2084d3b781819730a9ec447ce3e505d7e1a06827d52eb8a9d0df848874418824",
+      "capability": "specs",
+      "required": true
+    },
+    {
+      "path": ".agents/templates/feature.tasks.md",
+      "sha256": "15c70c2bc1730da8682d846561067a3d1007d50c3751208337e448b1ae805a25",
+      "capability": "tasks",
+      "required": true
+    },
+    {
+      "path": ".agents/workflows/spec-clarify.md",
+      "sha256": "7f6333e22eab334a949a9227c4f7feb3a2d4146a8fca53c711fb4f804f43dd05",
+      "capability": "workflows",
+      "required": true
+    },
+    {
+      "path": ".agents/workflows/spec-converge.md",
+      "sha256": "973ef66086a0e8a5d06d0e7ad6e049ba52432462d136c64f9be8ee99a1227903",
+      "capability": "done_gate",
+      "required": true
+    },
+    {
+      "path": ".agents/workflows/spec-first.md",
+      "sha256": "6eb60e18ef47b58c702222e4b47874ebb4fc4fec704d9793a9e84305ca074a68",
+      "capability": "workflows",
+      "required": true
+    },
+    {
+      "path": ".agents/workflows/spec-tasks.md",
+      "sha256": "abea834c02c585a7acf2f57b8c05327aad8de5dae1b1a5e5f403fad55f04c8f8",
+      "capability": "workflows",
+      "required": true
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "0151348974ef1bf73b8ee4548691591bdcf702177f5f1e1b0726379887612e0b",
+      "capability": "root_instructions",
+      "required": true
+    }
+  ]
+}

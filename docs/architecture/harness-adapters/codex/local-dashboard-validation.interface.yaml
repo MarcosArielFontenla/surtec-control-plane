@@ -1,0 +1,4 @@
+interface:
+  display_name: "Local Dashboard Validation"
+  short_description: "Automate isolated end-to-end dashboard acceptance"
+  default_prompt: "Validate the current project phase through isolated local API and browser flows, preserving user state."

@@ -105,6 +105,17 @@ function standardHandler(message: WireMessage, server: FakeAppServer): void {
 }
 
 describe("CodexAppServerClient", () => {
+  it.each([undefined, "b".repeat(64)])("rejects mismatched governed thread bindings before even initializing", async (resumeContextFingerprint) => {
+    const server = new FakeAppServer(standardHandler);
+    await expect(new CodexAppServerClient(server).run(input({ threadId: "thread-1", contextFingerprint: "a".repeat(64), resumeContextFingerprint }), () => {}, new AbortController().signal)).rejects.toThrow(/binding/);
+    expect(server.received).toEqual([]); expect(server.killed).toBe(true);
+  });
+  it("resumes a matching governed contract without forwarding internal binding fields", async () => {
+    const server = new FakeAppServer(standardHandler);
+    await new CodexAppServerClient(server).run(input({ threadId: "thread-1", contextFingerprint: "a".repeat(64), resumeContextFingerprint: "a".repeat(64) }), () => {}, new AbortController().signal);
+    expect(server.received.some((message) => message.method === "thread/resume")).toBe(true);
+    expect(JSON.stringify(server.received)).not.toContain("contextFingerprint");
+  });
   it("performs the handshake, starts a thread and turn, streams events, and returns usage", async () => {
     const server = new FakeAppServer(standardHandler);
     const events: AgentEvent[] = [];

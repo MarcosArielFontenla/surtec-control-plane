@@ -1,0 +1,374 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:surtec:project-harness-profile:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runner_command",
+    "schema_version",
+    "project_id",
+    "status",
+    "detected_version",
+    "canonical_version",
+    "comparison",
+    "capability_results",
+    "drift_summary",
+    "observed_at",
+    "source_fingerprint",
+    "project_fingerprint",
+    "doctor_status",
+    "findings",
+    "entries",
+    "testing_policy",
+    "review_policy",
+    "backup_ready",
+    "rollback_ready",
+    "validation"
+  ],
+  "properties": {
+    "runner_command": { "type": ["string", "null"], "maxLength": 500 },
+    "schema_version": {
+      "const": 1
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+    },
+    "status": {
+      "enum": [
+        "absent",
+        "healthy",
+        "partial",
+        "legacy",
+        "invalid",
+        "unknown"
+      ]
+    },
+    "detected_version": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "canonical_version": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "comparison": {
+      "enum": [
+        "compatible",
+        "drift",
+        "unknown"
+      ]
+    },
+    "capability_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "capability",
+          "expected",
+          "status",
+          "evidence"
+        ],
+        "properties": {
+          "capability": {
+            "enum": [
+              "root_instructions",
+              "registry",
+              "routing",
+              "skills",
+              "specs",
+              "decisions",
+              "tasks",
+              "workflows",
+              "acceptance_checks",
+              "done_gate",
+              "evals",
+              "handoffs",
+              "policies",
+              "telemetry",
+              "validators",
+              "doctor",
+              "reconciliation",
+              "ownership_manifest"
+            ]
+          },
+          "expected": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "present",
+              "missing",
+              "unknown"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "maxItems": 8
+          }
+        }
+      },
+      "maxItems": 18
+    },
+    "drift_summary": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      },
+      "maxItems": 128
+    },
+    "observed_at": {
+      "type": "string",
+      "maxLength": 40,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "source_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "project_fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "doctor_status": {
+      "enum": [
+        "healthy",
+        "warning",
+        "invalid",
+        "unknown"
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "severity",
+          "observed",
+          "why",
+          "evidence",
+          "recommended_action",
+          "safely_automatable"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "warning",
+              "critical"
+            ]
+          },
+          "observed": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "why": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "maxItems": 8
+          },
+          "recommended_action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "safely_automatable": {
+            "type": "boolean"
+          }
+        }
+      },
+      "maxItems": 128
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "status",
+          "ownership",
+          "ownership_evidence"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "status": {
+            "enum": [
+              "present",
+              "missing",
+              "unsafe"
+            ]
+          },
+          "ownership": {
+            "enum": [
+              "scaffold-managed",
+              "surtec-generated",
+              "project-owned",
+              "user-owned",
+              "unknown"
+            ]
+          },
+          "ownership_evidence": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "maxItems": 128
+    },
+    "testing_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "mode",
+        "runner_id",
+        "requires_red_evidence",
+        "applicable_task_kinds"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "mode": {
+          "enum": [
+            "functional",
+            "strict-tdd"
+          ]
+        },
+        "runner_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requires_red_evidence": {
+          "type": "boolean"
+        },
+        "applicable_task_kinds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+          },
+          "maxItems": 32
+        }
+      }
+    },
+    "review_policy": {
+      "enum": [
+        "human-required",
+        "unknown"
+      ]
+    },
+    "backup_ready": {
+      "type": "boolean"
+    },
+    "rollback_ready": {
+      "type": "boolean"
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "observed_at"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown"
+          ]
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 40,
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

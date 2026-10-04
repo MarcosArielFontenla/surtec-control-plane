@@ -1,15 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { parse } from "yaml";
+import type { AgentRoleRegistry } from "../../../lib/context/types";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createApp } from "./index";
-import { readTask } from "../../../lib/state/store";
+import { readTask, updateTask } from "../../../lib/state/store";
 import type { ProcessManager } from "../../../runner/process-manager";
 import type { RunRecord } from "../../../lib/state/types";
 import { appendTaskEvent } from "../../../lib/state/events";
 import type { TaskControl } from "../../../runner/task-orchestrator";
 import { TaskControlError } from "../../../runner/task-orchestrator";
+import { createIssueService } from "./issue-service";
 
 async function apiRequest(app: ReturnType<typeof createApp>, path: string, init?: RequestInit): Promise<Response> {
   const method = (init?.method ?? "GET").toUpperCase();
@@ -76,7 +79,20 @@ beforeEach(() => {
   writeFileSync(join(stateDir, "tasks", "STK-1.json"), JSON.stringify(task), "utf8");
   process.env.SURTEC_STATE_DIR = stateDir;
   process.env.SURTEC_TIME_ZONE = "UTC";
+  for (const name of ["agents.yml", "agent-roles.yml", "context-policy.yml"]) cpSync(join("registry", name), join(root, "registry", name));
+  const roles = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
+  for (const path of new Set(roles.roles.flatMap((role) => role.required_evaluation_ids))) {
+    mkdirSync(join(root, ...path.split("/").slice(0, -1)), { recursive: true }); cpSync(path, join(root, path));
+  }
 });
+
+async function previewTask(app: ReturnType<typeof createApp>, input: { project: string; agent: string; instructions: string; client_context_categories?: string[] }) {
+  const role_id = "software-engineer";
+  const response = await apiRequest(app, "/api/context/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "analysis", ...input, role_id }) });
+  expect(response.status).toBe(200);
+  const preview = await response.json(); expect(preview.allowed).toBe(true);
+  return { ...input, role_id, preview_fingerprint: preview.fingerprint };
+}
 
 afterEach(() => {
   delete process.env.SURTEC_STATE_DIR;
@@ -86,6 +102,12 @@ afterEach(() => {
 });
 
 describe("api", () => {
+  it("protects workflow mutation routes before service invocation or task scheduling", async () => {
+    const fired = vi.fn(), preview = vi.fn();
+    const app = createApp(root, fired, undefined, undefined, { workflows: { preview } as never });
+    for (const path of ["/api/workflows/preview", "/api/workflows/start", "/api/workflows/example/decision", "/api/workflows/example/cancel", "/api/workflows/example/recover"]) expect((await app.request(path, { method: "POST", body: "{}" })).status).toBe(403);
+    expect(fired).not.toHaveBeenCalled(); expect(preview).not.toHaveBeenCalled(); expect(existsSync(join(stateDir, "workflows"))).toBe(false);
+  });
   it("GET /api/overview returns the four view arrays", async () => {
     const emptyRoot = mkdtempSync(join(tmpdir(), "surtec-ov-empty-"));
     process.env.SURTEC_PROJECTS_ROOT = emptyRoot;
@@ -236,12 +258,65 @@ describe("api", () => {
     const res = await apiRequest(app, "/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: "stock-control", agent: "backend-engineer", instructions: "Analyze auth." }),
+      body: JSON.stringify(await previewTask(app, { project: "stock-control", agent: "backend-engineer", instructions: "Analyze auth." })),
     });
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.id).toMatch(/^T-/);
     expect(fired).toEqual([body.id]);
+  });
+  it("rejects stale or omitted admission without scheduling or persisting a task", async () => {
+    const fired = vi.fn(); const app = createApp(root, fired);
+    const input = { project: "stock-control", agent: "backend-engineer", instructions: "Inspect synthetic source" };
+    const admitted = await previewTask(app, input);
+    const post = (body: unknown) => apiRequest(app, "/api/tasks", { method: "POST", body: JSON.stringify(body) });
+    expect((await post(input)).status).toBe(400);
+    expect((await post({ ...admitted, instructions: "Changed request" })).status).toBe(409);
+    expect((await post({ ...admitted, context_manifest: {} })).status).toBe(400);
+    expect(fired).not.toHaveBeenCalled();
+    expect((await (await app.request("/api/overview")).json()).inProgress).toHaveLength(1);
+    // A server restart invalidates the ephemeral issuance ledger.
+    const restarted = createApp(root, fired);
+    expect((await apiRequest(restarted, "/api/tasks", { method: "POST", body: JSON.stringify(admitted) })).status).toBe(409);
+    expect(fired).not.toHaveBeenCalled();
+  });
+  it("shares the issuance ledger with real locked issue dispatch and rejects stale or forged scope", async () => {
+    // The baseline fixture owns this project's writer slot; release it before new admission.
+    updateTask("STK-1", (task) => { task.lifecycle = "finished"; task.outcome = "completed"; task.finished_at = new Date().toISOString(); });
+    writeFileSync(join(root, "registry/projects.yml"), "projects:\n  stock-control:\n    allowed_agents: [backend-engineer]\n    sandbox: { default: workspace-write }\n    verify: ['node verify.mjs']\n");
+    const issues = createIssueService(root, { projectIds: () => ["stock-control"] });
+    const proposed = issues.create({ project_id: "stock-control", title: "Synthetic fix", expected_outcome: "Bounded result", acceptance_criteria: ["Verified result"], assigned_role_id: "backend-engineer", authorized_scope: { expected_outcome: "Bounded result", acceptance_criteria: ["Verified result"], allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["implementation"], explicit_exclusions: [] } });
+    const issue = issues.authorize(proposed.id, proposed.revision, "synthetic-human");
+    const fired = vi.fn(); const app = createApp(root, fired);
+    const previewResponse = await apiRequest(app, "/api/context/preview", { method: "POST", body: JSON.stringify({ kind: "issue", project: issue.project_id, issue_id: issue.id, expected_revision: issue.revision, agent: "backend-engineer", role_id: "software-engineer" }) });
+    expect(previewResponse.status).toBe(200); const preview = await previewResponse.json(); expect(preview.allowed).toBe(true);
+    const path = `/api/work-issues/${issue.id}/dispatch`;
+    const admission = { expected_revision: issue.revision, agent: "backend-engineer", role_id: "software-engineer", preview_fingerprint: preview.fingerprint };
+    const post = (body: unknown) => apiRequest(app, path, { method: "POST", body: JSON.stringify(body) });
+    const before = readFileSync(join(stateDir, "issues/issues.json"));
+    expect((await post({ ...admission, preview_fingerprint: "a".repeat(64) })).status).toBe(409);
+    expect((await post({ ...admission, authorized_scope: {} })).status).toBe(400);
+    expect(fired).not.toHaveBeenCalled(); expect(readFileSync(join(stateDir, "issues/issues.json"))).toEqual(before);
+    const response = await post(admission); expect(response.status).toBe(201); const result = await response.json();
+    expect(readTask(result.task_id)!.envelope.context_manifest).toMatchObject({ role_id: "software-engineer", sandbox: "workspace-write", fingerprint: preview.fingerprint });
+    expect(result.issue.assigned_role_id).toBe("backend-engineer"); expect(fired).toHaveBeenCalledWith(result.task_id);
+    expect((await post(admission)).status).toBe(409); expect(fired).toHaveBeenCalledOnce();
+  });
+
+  it("POST /api/tasks rejects workspace writes that are not linked to an authorized issue", async () => {
+    const fired: string[] = [];
+    const app = createApp(root, (id: string) => { fired.push(id); });
+    const res = await apiRequest(app, "/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project: "stock-control", agent: "backend-engineer", instructions: "Implement a change.", sandbox: "workspace-write",
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: expect.stringContaining("authorized local issue") });
+    expect(fired).toEqual([]);
   });
 
   it("POST /api/tasks returns 400 for a disallowed agent", async () => {
@@ -860,7 +935,7 @@ describe("GET /api/projects/:id/integrations", () => {
 
     const plainTaskResponse = await apiRequest(app, "/api/tasks", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: "stock-control", agent: "backend-engineer", instructions: "Inspect the project.", sandbox: "read-only" }),
+      body: JSON.stringify(await previewTask(app, { project: "stock-control", agent: "backend-engineer", instructions: "Inspect the project." })),
     });
     const plainTaskId = (await plainTaskResponse.json() as { id: string }).id;
     const plainTask = readTask(plainTaskId)!;
@@ -871,10 +946,10 @@ describe("GET /api/projects/:id/integrations", () => {
 
     const sharedTaskResponse = await apiRequest(app, "/api/tasks", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        project: "stock-control", agent: "backend-engineer", instructions: "Inspect the project.", sandbox: "read-only",
+      body: JSON.stringify(await previewTask(app, {
+        project: "stock-control", agent: "backend-engineer", instructions: "Inspect the project.",
         client_context_categories: ["confidential-notes"],
-      }),
+      })),
     });
     expect(sharedTaskResponse.status).toBe(201);
     const sharedTaskId = (await sharedTaskResponse.json() as { id: string }).id;
@@ -885,5 +960,48 @@ describe("GET /api/projects/:id/integrations", () => {
       client_id: client.id,
       categories: ["confidential-notes"],
     });
+  });
+
+  it("creates local issues, requires explicit authorization, and dispatches through linked task lineage", async () => {
+    const enqueued: string[] = [];
+    const issueService = createIssueService(root, {
+      projectIds: () => ["stock-control"],
+      createTask: (_input, _repoRoot, trusted) => ({ id: trusted!.taskId }),
+    });
+    const app = createApp(root, (id) => enqueued.push(id), undefined, undefined, { issues: issueService });
+    const issueInput = {
+      project_id: "stock-control", title: "Deliver the local issue flow", expected_outcome: "A task is tied to approved scope.",
+      acceptance_criteria: ["The scope is recorded.", "Execution is linked."],
+      assigned_role_id: "backend-engineer", next_action: "Implement the authorized flow.",
+      authorized_scope: {
+        expected_outcome: "A task is tied to approved scope.", acceptance_criteria: ["The scope is recorded.", "Execution is linked."],
+        allowed_path_patterns: ["dashboard/src/**"], excluded_path_patterns: [], allowed_change_categories: ["api", "tests"], explicit_exclusions: [],
+      },
+    };
+    const created = await apiRequest(app, "/api/work-issues", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(issueInput) });
+    expect(created.status).toBe(201);
+    const { issue } = await created.json() as { issue: { id: string; status: string; revision: number } };
+    expect(issue.status).toBe("proposed");
+    expect((await app.request("/api/work-issues")).status).toBe(200);
+
+    const blockedDispatch = await apiRequest(app, `/api/work-issues/${issue.id}/dispatch`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_revision: issue.revision, agent: "backend-engineer" }),
+    });
+    expect(blockedDispatch.status).toBe(409);
+
+    const authorization = await apiRequest(app, `/api/work-issues/${issue.id}/authorize`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_revision: issue.revision, approval_id: "local-phase-test" }),
+    });
+    expect(authorization.status).toBe(200);
+    const authorizedIssue = (await authorization.json() as { issue: { revision: number; status: string } }).issue;
+    const dispatched = await apiRequest(app, `/api/work-issues/${issue.id}/dispatch`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_revision: authorizedIssue.revision, agent: "backend-engineer" }),
+    });
+    expect(dispatched.status).toBe(201);
+    const body = await dispatched.json() as { issue: { status: string; task_ids: string[] }; task_id: string };
+    expect(body.issue.status).toBe("working");
+    expect(body.issue.task_ids).toEqual([body.task_id]);
+    expect(enqueued).toEqual([body.task_id]);
+    expect((await app.request(`/api/work-issues/${issue.id}`)).status).toBe(200);
   });
 });

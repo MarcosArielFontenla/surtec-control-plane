@@ -1,0 +1,77 @@
+schema_version: 1
+name: Phase M - Harness source, inventory, health and drift
+entity: ProjectHarnessProfile
+domains:
+  - harness-inspection
+  - persistence
+  - portfolio-signals
+  - dashboard
+purpose: Observe local project harnesses against an explicitly trusted versioned source without applying or executing their scaffolds.
+requirements:
+  - id: req-source
+    description: A trusted local source registry pins source identity, harness version, manifest and baseline fingerprints. Missing or changed canonical evidence produces unknown comparison rather than silent adoption. Manifests declare version-dependent capabilities and expected entries.
+  - id: req-inventory
+    description: Read-only bounded inspection reports absent, healthy, partial, legacy, invalid or unknown status, evidence-based detected version, capabilities, required missing entries, harmless additions, references, routing, skill metadata, context-budget risk and drift. Unsupported formats remain unknown rather than falsely invalid.
+  - id: req-doctor
+    description: A read-only Doctor reports stable finding ids, severity, bounded observed evidence, explanation, recommended action and whether remediation is safely automatable. It distinguishes structural checks from trusted recorded validation results; missing execution evidence remains unknown.
+  - id: req-policy
+    description: Ownership is scaffold-managed, surtec-generated, project-owned, user-owned or unknown only with explicit trusted evidence. Hash matches and filenames do not establish ownership. Testing policy is versioned, defaults to functional and permits strict-tdd only by trusted opt-in with an exact registered runner. Report review policy and backup/rollback readiness without fabricating evidence or executing runners.
+  - id: req-state
+    description: Versioned profile state stores bounded observations, source fingerprint, observation timestamp, capability results, drift summary and Doctor status, never complete private instructions. An explicit protected refresh may update control-plane state only; malformed or future versions fail safely and missing state remains compatible.
+  - id: req-signals
+    description: Deterministic signals cover missing harness on active projects, invalid routing, trusted failed done gates, canonical version drift, missing required acceptance checks, excessive context and drift requiring human review. Severity considers lifecycle and criticality; absence is not unconditionally critical. Project detail exposes actionable evidence linked from Today.
+  - id: req-acceptance
+    description: Automate real local API and browser acceptance using isolated state and synthetic projects, including no harness, healthy, partial, invalid, legacy/unsupported, changed canonical evidence, ownership protection, refresh/reload/restart and unchanged project bytes. Existing dispatch and issue workflows remain compatible.
+constraints:
+  - The user selected the reviewed H1-H4 scaffold in this repository as the initial curated canonical baseline.
+  - Proposed initial source is a curated manifest for the current reviewed scaffold, not a generator or a full repository copy. Its baseline version is an explicitly selected release label, not inferred from primer or skill versions. Only declared reviewed entries participate in comparison; application source and private state are excluded.
+  - Canonical configuration is a trusted local control-plane registry, not writable through project Markdown or imported project state. No downloading or arbitrary generator commands are supported in this phase.
+  - Inspect only registered project roots. Reject traversal and escaped or linked entries, bound file counts and sizes, and treat all Markdown as untrusted data. Do not execute project scripts, validators or instructions during inspection.
+  - GET observations and Doctor are read-only. A protected refresh operation writes profile observations only under the control-plane state directory, with existing locking and atomic replacement conventions.
+  - Distinguish observed structural readiness, declared policies and trusted validation evidence. No validation run, ownership, repair authorization or backup readiness may be inferred solely from documentation claims.
+  - Preserve existing user changes and external repositories. No paid runtime calls, external messages, commits, pushes, merges or deployments are included.
+nonGoals:
+  - Applying, synchronizing, repairing, deleting or overwriting any project scaffold.
+  - Automatic ownership classification from path names or content hashes.
+  - Executing arbitrary trusted or untrusted commands, enabling strict-tdd globally, or changing agent dispatch capabilities.
+  - Supporting every historical scaffold dialect or pretending unavailable evidence is healthy.
+  - Activating telemetry, multi-agent orchestration or skill drift evaluation.
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-09-30T02:22:07Z"
+  acceptanceChecks:
+    - id: ac-behavior
+      requirementIds: [req-source, req-inventory, req-doctor, req-policy, req-state, req-signals, req-acceptance]
+      description: Automated tests exercise bounded read-only inspection, invalid and missing state, trusted-source drift, evidence and ownership semantics, deterministic signals, API protection and UI regressions. Separate real API/browser smoke is mandatory before delivery, not implied by this command.
+      command: pnpm test
+      expectedExitCode: 0
+    - id: ac-schemas
+      requirementIds: [req-source, req-policy, req-state, req-signals]
+      description: Existing and new product schemas compile with explicit version dispatch and strict contract checks covered by the behavior suite.
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-inventory, req-doctor, req-state, req-signals]
+      description: Domain, state, API and UI boundaries typecheck without widening execution authority.
+      command: pnpm typecheck
+      expectedExitCode: 0
+    - id: ac-build
+      requirementIds: [req-signals, req-acceptance]
+      description: Dashboard production build succeeds with Harness evidence and Doctor presentation.
+      command: pnpm build
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications:
+  - date: "2026-09-29"
+    question: Approve the design and use the reviewed H1-H4 scaffold as the initial canonical source?
+    answer: The user explicitly approved the design and selected H1-H4 in the task conversation. The timestamp records approval acknowledgement, not an inferred earlier event.
+    affects: req-source and canonical source constraint
+  - date: "2026-09-29"
+    question: Add App.tsx so Harness signals open dashboard evidence rather than launching the editor?
+    answer: The user explicitly approved this narrow navigation delta in the task conversation; other signal navigation remains unchanged.
+    affects: req-signals and T008 target paths
+  - date: "2026-09-30"
+    question: Add lib/feedback-metrics.ts with a thirty-day freshness window for the Harness signal source?
+    answer: The user explicitly approved this narrow compatibility delta in the task conversation. It changes neither cost nor execution authority.
+    affects: req-signals and T007 target paths

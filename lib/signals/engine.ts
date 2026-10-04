@@ -7,6 +7,7 @@ import type { ProjectIntegrationsSnapshot } from "../integrations/types";
 import { redactText } from "../security/redaction";
 import type { Signal, SignalRankingTier, SignalSource } from "./types";
 import type { Objective, OrganizationSnapshot } from "../organization";
+import type { ProjectHarnessProfile } from "../harness/types";
 
 export interface SignalProjectEvidence {
   id: string;
@@ -17,6 +18,7 @@ export interface SignalProjectEvidence {
   integrations: ProjectIntegrationsSnapshot | null;
   last_activity_at: string | null;
   notes: Note[];
+  harness?: ProjectHarnessProfile | null;
 }
 
 export interface SignalWorkSessionEvidence {
@@ -640,6 +642,22 @@ function severityWeight(value: Signal["severity"]): number {
   return value === "critical" ? 3 : value === "warning" ? 2 : 1;
 }
 
+function harnessCandidates(project: SignalProjectEvidence, observedAt: string): Signal[] {
+  const profile = project.harness;
+  if (!profile) return [];
+  const lifecycle = project.profile?.lifecycle ?? project.status;
+  if (lifecycle === "archived" || lifecycle === "paused") return [];
+  const active = lifecycle === "active";
+  const findings = profile.findings.filter((entry) => entry.severity !== "info");
+  if (active && profile.status === "absent") findings.unshift({ id: "absent", severity: "warning", observed: "Active project has no observed Harness.", why: "No local instruction scaffold was observed.", evidence: ["AGENTS.md", ".agents"], recommended_action: "Review whether this project needs a scaffold; installation requires separate approval.", safely_automatable: false });
+  return findings.map((entry) => candidate({ projectId: project.id, source: "harness", type: `harness-${entry.id.replaceAll("_", "-").slice(0, 70)}`, occurrence: entry.id,
+    severity: active && project.profile?.criticality === "high" && (entry.id === "routing-invalid" || entry.id === "done-gate-failed") ? "critical" : active ? "warning" : "info",
+    title: `Harness: ${entry.observed}`, reason: entry.why, evidenceAt: profile.observed_at,
+    suggestedAction: entry.recommended_action, actionKind: "inspect-harness", tier: "hygiene",
+    evidence: { harness_status: profile.status, finding_id: entry.id, paths: entry.evidence, doctor_status: profile.doctor_status, observation_fingerprint: profile.project_fingerprint },
+  }, observedAt));
+}
+
 export function generateSignals(evidence: SignalEvidenceSnapshot, clock: Date = new Date()): Signal[] {
   const now = new Date(clock);
   const observedAt = now.toISOString();
@@ -651,6 +669,7 @@ export function generateSignals(evidence: SignalEvidenceSnapshot, clock: Date = 
     ...sessionCandidates(evidence.sessions ?? [], observedAt),
     ...commitmentCandidates(evidence.commitments ?? [], projectKinds, now, observedAt),
     ...objectiveCandidates(evidence, now, observedAt),
+    ...evidence.projects.filter((project) => safeId(project.id)).flatMap((project) => harnessCandidates(project, observedAt)),
   ].map((signal) => {
     const links = evidence.organization?.project_objectives[signal.project_id];
     const primaryId = links?.primary_objective_id;

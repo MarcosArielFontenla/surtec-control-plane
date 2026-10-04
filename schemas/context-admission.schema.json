@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/context-admission.schema.json",
+  "title": "ContextAdmission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "manifest_fingerprint", "instructions_length", "instructions_hash"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "enum": ["analysis", "issue"] },
+    "manifest_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "instructions_length": { "type": "integer", "minimum": 1, "maximum": 20000 },
+    "instructions_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "issue_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+    "issue_revision": { "type": "integer", "minimum": 1 },
+    "issue_status": { "enum": ["authorized", "working"] }
+  },
+  "oneOf": [
+    { "properties": { "kind": { "const": "analysis" }, "issue_id": false, "issue_revision": false, "issue_status": false } },
+    { "properties": { "kind": { "const": "issue" }, "issue_id": {}, "issue_revision": {}, "issue_status": {} }, "required": ["issue_id", "issue_revision", "issue_status"] }
+  ]
+}

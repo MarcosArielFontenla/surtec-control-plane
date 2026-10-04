@@ -23,7 +23,10 @@ The UI runs at `http://localhost:5173`; Vite proxies `/api` to the API at `http:
 
 Quality gates:
 
+Harness checks require PowerShell 7 and `powershell-yaml` 0.4.12. Install once with `Install-Module powershell-yaml -RequiredVersion 0.4.12 -Scope CurrentUser`. See [Harness validation](docs/runbooks/harness-validation.md) for safe commands and limitations.
+
 ```text
+pnpm harness:check
 pnpm schemas:check
 pnpm secrets:check
 pnpm test

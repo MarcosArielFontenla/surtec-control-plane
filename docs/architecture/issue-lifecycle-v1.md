@@ -1,6 +1,6 @@
 # Issue lifecycle contract v1
 
-Status: Normative Phase J design contract. This lifecycle is not connected to current APIs, task records, UI, or persistence.
+Status: Normative Phase J design baseline and transition reference. Phase L now uses this vocabulary and envelope guard in its local issue workflow; this catalog alone does not prove every designed edge has a production endpoint. Current implementation and acceptance are documented in `docs/runbooks/local-work-issues.md` and `docs/runbooks/phase-l-acceptance.md`.
 
 ## Canonical vocabulary
 
@@ -21,7 +21,7 @@ type IssueStatus =
 
 `WorkScale` describes proportionate process, not permission. Trivial work must not be given substantial-work ceremony merely by default. Substantial work needs durable scope, acceptance criteria, evidence requirements, and a next action before authorization. Bounded work uses explicit scope and acceptance proportional to its risk. No scale bypasses project policy, sandbox, budget, or required approval.
 
-`IssueStatus` describes the local issue intent and its decision state. It is not a replacement for the existing `TaskRecord.lifecycle`, task outcome, Codex turn status, work-session status, or GitHub status. Mapping those existing states into an issue is future work and must preserve their owners.
+`IssueStatus` describes local issue intent and decisions, not a replacement for `TaskRecord.lifecycle`, task outcome, Codex turn status, work-session status, or GitHub status. Phase L links those records while preserving their owners; new mappings must continue to respect that boundary.
 
 ## Transition contract
 

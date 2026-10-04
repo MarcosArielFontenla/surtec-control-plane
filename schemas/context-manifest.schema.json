@@ -1,0 +1,389 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/context-manifest.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fingerprint",
+    "project_id",
+    "role_id",
+    "agent_id",
+    "task_kind",
+    "sandbox",
+    "tools",
+    "approval_rules",
+    "budget",
+    "limits",
+    "sources",
+    "excluded_categories",
+    "selected_categories",
+    "omitted_sources",
+    "total_bytes",
+    "total_lines",
+    "routing",
+    "testing"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+    },
+    "role_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+    },
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+    },
+    "task_kind": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+    },
+    "sandbox": {
+      "enum": [
+        "read-only",
+        "workspace-write"
+      ]
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "inspect",
+          "edit-authorized-scope",
+          "verify-configured"
+        ]
+      }
+    },
+    "approval_rules": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_attempts",
+        "max_runtime_ms",
+        "max_total_tokens"
+      ],
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "max_runtime_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400000
+        },
+        "max_total_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000000
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_lines",
+        "max_bytes",
+        "max_sources"
+      ],
+      "properties": {
+        "max_lines": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128000
+        },
+        "max_sources": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "layer",
+          "source_type",
+          "revision",
+          "reason",
+          "bytes",
+          "lines",
+          "sensitivity"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "layer": {
+            "enum": [
+              "runtime-safety",
+              "company",
+              "objective",
+              "project",
+              "issue",
+              "harness-routing",
+              "instructions",
+              "role",
+              "execution-policy",
+              "resume"
+            ]
+          },
+          "source_type": {
+            "enum": [
+              "policy",
+              "record",
+              "instruction",
+              "skill",
+              "decision",
+              "summary"
+            ]
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128000
+          },
+          "lines": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2000
+          },
+          "sensitivity": {
+            "enum": [
+              "public",
+              "local",
+              "client-selected"
+            ]
+          }
+        }
+      }
+    },
+    "excluded_categories": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+      }
+    },
+    "selected_categories": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+      }
+    },
+    "omitted_sources": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
+    },
+    "total_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 128000
+    },
+    "total_lines": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2000
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "work_scale",
+        "action",
+        "review_depth",
+        "qa_required",
+        "reasons",
+        "delegation"
+      ],
+      "properties": {
+        "work_scale": {
+          "enum": [
+            "trivial",
+            "bounded",
+            "substantial"
+          ]
+        },
+        "action": {
+          "enum": [
+            "direct",
+            "planning",
+            "review",
+            "qa",
+            "needs-decision"
+          ]
+        },
+        "review_depth": {
+          "enum": [
+            "focused",
+            "full"
+          ]
+        },
+        "qa_required": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "delegation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "admitted",
+            "executable",
+            "reasons"
+          ],
+          "properties": {
+            "admitted": {
+              "type": "boolean"
+            },
+            "executable": {
+              "const": false
+            },
+            "reasons": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            }
+          }
+        }
+      }
+    },
+    "testing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "minimum_review_depth",
+        "runner_ids",
+        "commands",
+        "reasons",
+        "requires_red_evidence"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "functional",
+            "strict-tdd"
+          ]
+        },
+        "minimum_review_depth": {
+          "enum": [
+            "focused",
+            "full"
+          ]
+        },
+        "runner_ids": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+          }
+        },
+        "commands": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "requires_red_evidence": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

@@ -10,6 +10,9 @@ import { DEFAULT_IGNORE, discoverProjects, type DiscoveredProject } from "../dis
 import { expandHome } from "../expand-home";
 import { assertSafeIdentifier } from "../security/identifiers";
 import { canonicalPath, isPathWithin } from "../security/paths";
+import { authorizeRoleSelection, readRoles } from "./roles";
+import { ContextContractError } from "../context/validation";
+import type { AgentRole, ToolCapability } from "../context/types";
 
 export interface PolicyAgent {
   id: string;
@@ -226,6 +229,25 @@ export class PolicyService {
         }),
       })),
     };
+  }
+
+  listRoles(): AgentRole[] {
+    try { return readRoles(this.repoRoot, this.listAgents()); }
+    catch (error) {
+      if (error instanceof ContextContractError) throw new PolicyError(error.message, "configuration");
+      throw error;
+    }
+  }
+
+  authorizeRole(input: { project: string; agent: string; roleId: string; taskKind: string; sandbox: SandboxMode; selfVerify: boolean }): { project: PolicyProject; agent: PolicyAgent; role: AgentRole; tools: ToolCapability[] } {
+    const allowed = this.authorizeDispatch(input);
+    const role = this.listRoles().find((candidate) => candidate.id === input.roleId);
+    if (!role) throw new PolicyError("Unknown logical role", "denied");
+    try { return { ...allowed, role, tools: authorizeRoleSelection(role, { agent: allowed.agent, sandbox: input.sandbox, taskKind: input.taskKind, selfVerify: input.selfVerify }) }; }
+    catch (error) {
+      if (error instanceof ContextContractError) throw new PolicyError(error.message, "denied");
+      throw error;
+    }
   }
 
   authorizeDispatch(input: { project: string; agent: string; sandbox: SandboxMode; selfVerify: boolean }): { project: PolicyProject; agent: PolicyAgent } {

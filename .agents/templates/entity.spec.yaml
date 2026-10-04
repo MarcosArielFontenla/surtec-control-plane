@@ -1,0 +1,26 @@
+# Copy to .agents/specs/<entity>.spec.yaml only for triggered work.
+# Replace scaffold text, derive checks from requirements, and seek human review.
+schema_version: 1
+name: placeholder
+entity: placeholder
+domains:
+  - placeholder
+purpose: placeholder
+requirements:
+  - id: req-001
+    description: placeholder
+constraints: []
+nonGoals: []
+designContract:
+  status: placeholder
+  reviewedBy: null
+  approvedAt: null
+  acceptanceChecks:
+    - id: ac-001
+      requirementIds:
+        - req-001
+      description: placeholder
+      command: placeholder
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications: []

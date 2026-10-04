@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:surtec:harness-manifest:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "harness_version",
+    "source_id",
+    "format",
+    "capabilities",
+    "expected_entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "harness_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+    },
+    "format": {
+      "const": "surtec-h1-h4"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_instructions",
+        "registry",
+        "routing",
+        "skills",
+        "specs",
+        "decisions",
+        "tasks",
+        "workflows",
+        "acceptance_checks",
+        "done_gate",
+        "evals",
+        "handoffs",
+        "policies",
+        "telemetry",
+        "validators",
+        "doctor",
+        "reconciliation",
+        "ownership_manifest"
+      ],
+      "properties": {
+        "root_instructions": {
+          "type": "boolean"
+        },
+        "registry": {
+          "type": "boolean"
+        },
+        "routing": {
+          "type": "boolean"
+        },
+        "skills": {
+          "type": "boolean"
+        },
+        "specs": {
+          "type": "boolean"
+        },
+        "decisions": {
+          "type": "boolean"
+        },
+        "tasks": {
+          "type": "boolean"
+        },
+        "workflows": {
+          "type": "boolean"
+        },
+        "acceptance_checks": {
+          "type": "boolean"
+        },
+        "done_gate": {
+          "type": "boolean"
+        },
+        "evals": {
+          "type": "boolean"
+        },
+        "handoffs": {
+          "type": "boolean"
+        },
+        "policies": {
+          "type": "boolean"
+        },
+        "telemetry": {
+          "type": "boolean"
+        },
+        "validators": {
+          "type": "boolean"
+        },
+        "doctor": {
+          "type": "boolean"
+        },
+        "reconciliation": {
+          "type": "boolean"
+        },
+        "ownership_manifest": {
+          "type": "boolean"
+        }
+      }
+    },
+    "expected_entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "capability",
+          "required",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "capability": {
+            "enum": [
+              "root_instructions",
+              "registry",
+              "routing",
+              "skills",
+              "specs",
+              "decisions",
+              "tasks",
+              "workflows",
+              "acceptance_checks",
+              "done_gate",
+              "evals",
+              "handoffs",
+              "policies",
+              "telemetry",
+              "validators",
+              "doctor",
+              "reconciliation",
+              "ownership_manifest"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      },
+      "maxItems": 128,
+      "minItems": 1
+    }
+  }
+}

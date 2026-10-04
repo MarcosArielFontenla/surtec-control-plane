@@ -62,6 +62,7 @@ function SignalCard({
   onOpenTask,
   onOpenProject,
   onPrepareTask,
+  onOpenHarness,
 }: {
   signal: Signal;
   pinned: boolean;
@@ -70,6 +71,7 @@ function SignalCard({
   onOpenTask: (id: string) => void;
   onOpenProject: (id: string) => void;
   onPrepareTask: (signal: Signal) => void;
+  onOpenHarness?: (id: string) => void;
 }) {
   const taskId = signal.evidence.task_id;
   const category = signal.project_id === "surtec" && signal.source === "objective" ? "Objetivo SURTEC"
@@ -111,8 +113,8 @@ function SignalCard({
       </div>
       <div className="today-signal-links">
         {typeof taskId === "string" && <button type="button" className="ghost-btn" onClick={() => onOpenTask(taskId)}>Ver tarea <ArrowUpRight size={13} /></button>}
-        <button type="button" className="ghost-btn" onClick={() => onOpenProject(signal.project_id)}>{signal.project_id === "surtec" && signal.source === "objective" ? "Abrir SURTEC" : "Abrir proyecto"} <ArrowUpRight size={13} /></button>
-        {!(signal.project_id === "surtec" && signal.source === "objective") && <button type="button" className="ghost-btn" onClick={() => onPrepareTask(signal)}><Send size={13} /> Preparar tarea</button>}
+        <button type="button" className="ghost-btn" onClick={() => signal.source === "harness" ? onOpenHarness?.(signal.project_id) : onOpenProject(signal.project_id)}>{signal.source === "harness" ? "Ver Harness" : signal.project_id === "surtec" && signal.source === "objective" ? "Abrir SURTEC" : "Abrir proyecto"} <ArrowUpRight size={13} /></button>
+        {signal.source !== "harness" && !(signal.project_id === "surtec" && signal.source === "objective") && <button type="button" className="ghost-btn" onClick={() => onPrepareTask(signal)}><Send size={13} /> Preparar tarea</button>}
       </div>
       {busy && <span className="today-signal-busy" role="status">Guardando acción…</span>}
     </article>
@@ -129,6 +131,7 @@ function SignalSection({
   onOpenTask,
   onOpenProject,
   onPrepareTask,
+  onOpenHarness,
 }: {
   title: string;
   signals: Signal[];
@@ -139,6 +142,7 @@ function SignalSection({
   onOpenTask: (id: string) => void;
   onOpenProject: (id: string) => void;
   onPrepareTask: (signal: Signal) => void;
+  onOpenHarness?: (id: string) => void;
 }) {
   return (
     <section className="today-portfolio-section">
@@ -147,7 +151,7 @@ function SignalSection({
         <div className="today-signal-grid">
           {signals.map((signal) => (
             <SignalCard key={signal.id} signal={signal} pinned={pinnedIds.includes(signal.id)} busy={busySignal === signal.id}
-              onAction={onAction} onOpenTask={onOpenTask} onOpenProject={onOpenProject} onPrepareTask={onPrepareTask} />
+              onAction={onAction} onOpenTask={onOpenTask} onOpenProject={onOpenProject} onPrepareTask={onPrepareTask} onOpenHarness={onOpenHarness} />
           ))}
         </div>
       )}
@@ -161,6 +165,7 @@ export function TodayView({
   onOpenTask,
   onOpenProject,
   onPrepareTask,
+  onOpenHarness,
   onRefresh,
   projects = [],
 }: {
@@ -169,6 +174,7 @@ export function TodayView({
   onOpenTask: (id: string) => void;
   onOpenProject: (id: string) => Promise<void>;
   onPrepareTask: (signal: Signal) => void;
+  onOpenHarness?: (id: string) => void;
   onRefresh: () => Promise<TodayModel>;
   projects?: ProjectView[];
 }) {
@@ -191,6 +197,7 @@ export function TodayView({
   };
 
   const signalProps = {
+    onOpenHarness,
     pinnedIds: data.portfolio.pinned_signal_ids,
     empty: "No hay elementos en esta sección por ahora.",
     busySignal,

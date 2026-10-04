@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:surtec:harness-source-registry:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source",
+    "runners",
+    "projects"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "root",
+        "manifest",
+        "manifest_sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "manifest": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "manifest_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "runners": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "projects": {
+      "type": "object",
+      "maxProperties": 1000,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ownership",
+          "testing_policy",
+          "review_policy",
+          "backup_ready",
+          "rollback_ready",
+          "validation"
+        ],
+        "properties": {
+          "ownership": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "classification",
+                "evidence"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "classification": {
+                  "enum": [
+                    "scaffold-managed",
+                    "surtec-generated",
+                    "project-owned",
+                    "user-owned",
+                    "unknown"
+                  ]
+                },
+                "evidence": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                }
+              }
+            },
+            "maxItems": 128
+          },
+          "testing_policy": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schema_version",
+              "mode",
+              "runner_id",
+              "requires_red_evidence",
+              "applicable_task_kinds"
+            ],
+            "properties": {
+              "schema_version": {
+                "const": 1
+              },
+              "mode": {
+                "enum": [
+                  "functional",
+                  "strict-tdd"
+                ]
+              },
+              "runner_id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "requires_red_evidence": {
+                "type": "boolean"
+              },
+              "applicable_task_kinds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+                },
+                "maxItems": 32
+              }
+            }
+          },
+          "review_policy": {
+            "enum": [
+              "human-required",
+              "unknown"
+            ]
+          },
+          "backup_ready": {
+            "type": "boolean"
+          },
+          "rollback_ready": {
+            "type": "boolean"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "fingerprint",
+                  "status",
+                  "observed_at"
+                ],
+                "properties": {
+                  "fingerprint": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "status": {
+                    "enum": [
+                      "passed",
+                      "failed"
+                    ]
+                  },
+                  "observed_at": {
+                    "type": "string",
+                    "maxLength": 40,
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

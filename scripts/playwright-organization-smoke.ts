@@ -102,6 +102,29 @@ async function main(): Promise<void> {
     await page.getByRole("button", { name: "SURTEC" }).click();
     await page.getByRole("heading", { name: "Objetivos", exact: true }).waitFor();
 
+    const profileNameBackground = await page.locator(".organization-company-form input").evaluate((element) => getComputedStyle(element).backgroundColor);
+    const profileButtonWidth = await page.locator(".organization-company-form > .ibtn").evaluate((element) => element.getBoundingClientRect().width);
+    const projectButtonWidth = await page.locator(".organization-project-links > .ibtn").first().evaluate((element) => element.getBoundingClientRect().width);
+    const projectSelectAppearance = await page.locator(".organization-project-links select").first().evaluate((element) => ({
+      colorScheme: getComputedStyle(element).colorScheme,
+      maxWidth: getComputedStyle(element).maxWidth,
+    }));
+    const selectAppearance = await page.locator(".organization-objective-form select").first().evaluate((element) => ({
+      colorScheme: getComputedStyle(element).colorScheme,
+      options: Array.from(element.querySelectorAll("option"), (option) => ({
+        color: getComputedStyle(option).color,
+        background: getComputedStyle(option).backgroundColor,
+      })),
+    }));
+    assert.equal(profileNameBackground, "rgb(10, 20, 32)", "company name input uses the dark theme instead of the browser default");
+    assert.ok(profileButtonWidth < 220, `company save button stays compact (was ${profileButtonWidth}px)`);
+    assert.ok(projectButtonWidth < 220, `project-link save button stays compact (was ${projectButtonWidth}px)`);
+    assert.equal(projectSelectAppearance.colorScheme, "dark", "project objective select follows the dark theme");
+    assert.equal(projectSelectAppearance.maxWidth, "460px", "project objective select does not stretch across the whole row");
+    assert.equal(selectAppearance.colorScheme, "dark", "native select menu follows the dark theme");
+    assert.ok(selectAppearance.options.every((option) => ["rgb(243, 249, 252)", "rgb(255, 255, 255)"].includes(option.color)), "select options use readable light text");
+    assert.ok(selectAppearance.options.every((option) => ["rgb(14, 27, 42)", "rgb(31, 78, 112)"].includes(option.background)), "select options use a contrasting dark surface");
+
     const card = (id: string) => page.locator(".organization-objective-card").filter({ hasText: `Outcome obj-${id}` });
     assert.match(await card("healthy").innerText(), /Saludable/);
     assert.match(await card("missing").innerText(), /Requiere revisión/);
@@ -118,7 +141,16 @@ async function main(): Promise<void> {
     assert.equal(savedCompany.length, 1, "company profile is submitted once");
     assert.equal(savedCompany[0]?.mission, "Updated synthetic local mission.");
     assert.equal(await page.getByText("personal-project", { exact: true }).count(), 1, "personal projects remain in the project-link inventory");
-    console.log("Playwright Organization smoke passed: company edit, healthy/missing/stale/paused/achieved objective states, project evidence, and authenticated local write.");
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileLayout = await page.evaluate(() => ({
+      viewportWidth: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      saveProfileWidth: document.querySelector(".organization-company-form > .ibtn")?.getBoundingClientRect().width ?? 0,
+      saveLinksWidth: document.querySelector(".organization-project-links > .ibtn")?.getBoundingClientRect().width ?? 0,
+    }));
+    assert.ok(mobileLayout.documentWidth <= mobileLayout.viewportWidth + 1, `organization view has no mobile horizontal overflow (${JSON.stringify(mobileLayout)})`);
+    assert.ok(mobileLayout.saveProfileWidth < 220 && mobileLayout.saveLinksWidth < 220, "organization save actions remain compact on mobile");
+    console.log("Playwright Organization smoke passed: company edit, objective health states, project evidence, authenticated local write, compact dark-theme controls, and mobile layout.");
     await page.close();
   } finally {
     if (browser) await browser.close();

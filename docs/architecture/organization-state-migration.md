@@ -1,6 +1,6 @@
 # Organization state migration contract
 
-Status: Design contract for later roadmap phases. No migration is implemented or run in Phase J.
+Status: Historical Phase J migration contract with implemented Phase K and Phase N compatibility addenda. Phase J itself implemented or ran no migration; later addenda describe current behavior without changing that baseline.
 
 ## Existing persisted contracts
 
@@ -26,7 +26,7 @@ Read models such as `/api/today`, project integration snapshots (`schema_version
 
 1. Every new persisted document has a required integer `schema_version` whose value is checked by its JSON Schema. Do not overload a record revision, timestamp, suite id, or API version as a storage version.
 2. An incompatible format change increments one version. Migration is explicit and sequential (`v1 -> v2 -> v3`); a reader never guesses a format from incidental fields.
-3. Existing unversioned files remain named legacy formats and are handled only by an explicit legacy-to-versioned migrator. The normal reader must not silently reinterpret malformed or unknown-future versions as the current version.
+3. Existing unversioned files remain named supported legacy formats. Only an explicit migrator may convert them to a versioned whole-document contract; additive independently versioned fields do not imply that conversion. The normal reader must not silently reinterpret malformed or unknown-future versions as the current version.
 4. For append-only JSONL, version each new event record or wrap it in a versioned envelope. Readers must continue to parse the supported legacy line format; never rewrite an existing event log in place merely to add a version tag.
 5. Keep runtime and JSON Schema validation aligned. Add migration fixtures for every supported source version and validate both source and target contracts. Do not accept unknown properties by default to simulate forward compatibility.
 6. Version API read models separately from storage contracts. A derived response version does not imply a persisted-state migration.
@@ -70,3 +70,25 @@ This contract does not add `Company`, `Objective`, or `Issue` records, a schema 
 Phase K adds `state/organization/organization.json` as a new `schema_version: 1` aggregate for the single SURTEC company, objective records, and canonical project-objective links. The aggregate is validated as a whole, checked for parent cycles/depth and cross-record consistency, and replaced atomically under its own lock. An absent organization store returns the documented empty SURTEC profile without creating a file; malformed and future versions fail closed.
 
 The existing portfolio profile contract moves from v1 to v2. On its first read, the locked migration validates the complete v1 source and target, reports only counts and SHA-256 fingerprints, saves/verifies a byte-for-byte ignored backup under `state/backups/phase-k-portfolio-profiles/`, validates a unique same-directory staged file, then atomically replaces the source. The deterministic category map is `personal -> personal` and `client -> client-product`; every other profile field is copied unchanged. No v1 portfolio profile file was present in the local workspace when Phase K began, so the migration path was validated with synthetic fixtures and no user profile bytes were migrated during implementation.
+
+## Phase N additive task compatibility
+
+Phase N does not introduce a whole-task/event migration or rewrite historical normal state. The outer task envelope/record and existing event lines remain the named unversioned baseline. New strict subdocuments have independent version dispatch and cross-record binding; a task revision is still a concurrency counter, not a storage version.
+
+| Contract | Current reader/admission behavior |
+| --- | --- |
+| Historical task without context/admission/testing fields | Readable without rewriting bytes or inventing manifests, consent, receipt, approval or timestamps. Initial legacy execution remains supported only without a persisted thread; a second attempt, thread resume or manual retry requires a new explicitly previewed governed task. |
+| `TaskEnvelope.context_manifest` | Optional for legacy reads; every new admitted task includes `schema_version: 1`. Strict validation checks fingerprint, identities, sandbox, consent and budget bindings. Persist source hashes, reasons, classifications and sizes, not selected source-document copies. |
+| `TaskEnvelope.context_admission` | Strict `schema_version: 1`, required for governed execution/retry. Stores original instruction hash/length and preview/issue references; cannot exist without a valid manifest or be fabricated from current observations. |
+| `TaskRecord.testing_evidence` | Strict `schema_version: 1`, captured by verification infrastructure and bound to task/run/project/issue/scope/policy/context/candidate. Absence is not verified completion; legacy evidence-gap acknowledgement cannot waive a governed receipt. |
+| Malformed, tampered or future subdocuments | Fail closed on read/write and preserve original bytes. A present invalid value cannot fall back to the legacy branch; no silent downgrade or unknown-property tolerance. |
+| Append-only task events | Existing lines remain unchanged. New context/verification observations use the existing event contract; snapshot replacement and event append remain separate durable operations. |
+| Existing issue `assigned_role_id` | Continues to identify the registered agent adapter. Logical context role is recorded separately; preview/dispatch must retain the authorized assignment, scope and revision. |
+
+Task updates retain their existing per-task locks and atomic replacement. Issue and task records, candidate/evidence updates and events are not one multi-file transaction. Cancellation, leases, attempt/token/runtime ceilings, explicit issue review and publication gates remain authoritative. Rejecting incompatible context does not repair or delete user state.
+
+Preview's issuance ledger holds at most 256 fingerprints for five minutes and is not persisted. API restart loses pending issuance and rotates the session token: obtain a fresh token and explicitly regenerate preview before new dispatch. Already admitted tasks retain their versioned binding and receipts; execution reconstructs current context without requiring the old ledger. Changed required sources, policy, consent or issue scope stop safely; thread reuse also requires an unchanged prompt/execution contract. A working issue can use its existing explicit blocked/resume workflow to authorize a new task, not to retrofit missing historical evidence.
+
+Context preview must not trigger the Phase K portfolio-profile migration: a v1 profile store refuses preview with an explicit migration requirement and unchanged bytes. The existing ordinary migration flow remains separate. Phase L issue and Phase M observation state retain their existing version-1 contracts; Phase N does not migrate or refresh them as a side effect of preview.
+
+There is no Phase N bulk migrator, backup rewrite, downgrade tool or rollback command to run. Preserve ignored local state and earlier Phase K backups. Test evidence uses synthetic legacy/current/future/tampered records and isolated restart fixtures, never normal client state; see [Phase N acceptance](../runbooks/phase-n-acceptance.md#t012-final-closure---2026-10-01). Future incompatible whole-document changes still require the explicit migration/backup/rollback procedure above.

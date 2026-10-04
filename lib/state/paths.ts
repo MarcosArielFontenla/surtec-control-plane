@@ -51,3 +51,15 @@ export function workSessionsPath(base: string = stateDir()): string {
 export function organizationStatePath(base: string = stateDir()): string {
   return join(base, "organization", "organization.json");
 }
+
+export function issueStatePath(base: string = stateDir()): string {
+  return join(base, "issues", "issues.json");
+}
+
+export function workflowStatePath(base: string = stateDir()): string {
+  return join(base, "workflows", "workflows.json");
+}
+
+export function harnessProfilesPath(base: string = stateDir()): string {
+  return join(base, "harness", "profiles.json");
+}

@@ -8,6 +8,31 @@ import type { ClientCommitment, ClientContextCategory, ClientContextOptions, Cli
 import type { FeedbackMetrics } from "../../../lib/feedback-metrics";
 import type { CompanyProfile, Objective, OrganizationSnapshot, ProjectObjectiveLinks } from "../../../lib/organization";
 import type { PortfolioProfileMigrationReport } from "../../../lib/state/portfolio-profiles";
+import type { IssueCreateInput, IssueLineage, ReviewCandidate, WorkIssue } from "../../../lib/issues/types";
+import type { ProjectHarnessProfile } from "../../../lib/harness/types";
+import type { AgentRole } from "../../../lib/context/types";
+import type { ContextPreview, ContextPreviewRequest } from "../server/context-service";
+
+export type { ContextPreview, ContextPreviewRequest };
+export type ContextRole = Pick<AgentRole, "id" | "display_name" | "responsibility" | "sandbox_ceiling"> & { agents: string[] };
+
+export async function getContextRoles(project: string): Promise<{ roles: ContextRole[] }> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(project)}/context/roles`, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Context profiles unavailable (${response.status})`);
+  return response.json() as Promise<{ roles: ContextRole[] }>;
+}
+
+export async function previewContext(request: ContextPreviewRequest): Promise<ContextPreview> {
+  return issueMutation("/api/context/preview", request);
+}
+
+export interface HarnessResponse { observation: ProjectHarnessProfile; saved: ProjectHarnessProfile | null }
+export async function getProjectHarness(id: string, refresh = false): Promise<HarnessResponse> {
+  const path = `/api/projects/${encodeURIComponent(id)}/harness${refresh ? "/refresh" : ""}`;
+  const response = refresh ? await mutate(path) : await fetch(path, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Harness unavailable (${response.status})`);
+  return response.json() as Promise<HarnessResponse>;
+}
 
 let sessionTokenPromise: Promise<string> | null = null;
 let sessionFetch: typeof fetch | null = null;
@@ -389,10 +414,85 @@ export async function fetchDispatchOptions(): Promise<DispatchOptions> {
   return (await res.json()) as DispatchOptions;
 }
 
+async function issueMutation<T>(path: string, body: unknown): Promise<T> {
+  const res = await mutate(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const error = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? `local issue operation failed: ${res.status}`);
+  }
+  return await res.json() as T;
+}
+
+export async function getWorkIssues(): Promise<{ issues: WorkIssue[] }> {
+  const res = await fetch("/api/work-issues", { cache: "no-store" });
+  if (!res.ok) throw new Error(`local issues failed: ${res.status}`);
+  return await res.json() as { issues: WorkIssue[] };
+}
+
+export async function getWorkIssue(id: string): Promise<IssueLineage> {
+  const res = await fetch(`/api/work-issues/${encodeURIComponent(id)}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`local issue detail failed: ${res.status}`);
+  return await res.json() as IssueLineage;
+}
+
+export async function createWorkIssue(input: IssueCreateInput): Promise<{ issue: WorkIssue }> {
+  return issueMutation("/api/work-issues", input);
+}
+
+export async function authorizeWorkIssue(id: string, expectedRevision: number): Promise<{ issue: WorkIssue }> {
+  return issueMutation(`/api/work-issues/${encodeURIComponent(id)}/authorize`, { expected_revision: expectedRevision, approval_id: `local-${crypto.randomUUID()}` });
+}
+
+export async function dispatchWorkIssue(id: string, expectedRevision: number, agent: string, admission: {
+  role_id: string; preview_fingerprint: string; client_context_categories: ClientContextCategory[];
+}): Promise<{ issue: WorkIssue; task_id: string }> {
+  return issueMutation(`/api/work-issues/${encodeURIComponent(id)}/dispatch`, { expected_revision: expectedRevision, agent, ...admission });
+}
+
+export async function approveWorkIssueScope(issue: WorkIssue): Promise<{ issue: WorkIssue }> {
+  const proposal = issue.scope_change_proposal;
+  if (!proposal) throw new Error("scope proposal is no longer available");
+  return issueMutation(`/api/work-issues/${encodeURIComponent(issue.id)}/scope-decision`, {
+    decision: "approve", expected_revision: issue.revision, proposal_id: proposal.id, approval_id: `local-${crypto.randomUUID()}`,
+  });
+}
+
+export async function rejectWorkIssueScope(issue: WorkIssue): Promise<{ issue: WorkIssue }> {
+  const proposal = issue.scope_change_proposal;
+  if (!proposal) throw new Error("scope proposal is no longer available");
+  return issueMutation(`/api/work-issues/${encodeURIComponent(issue.id)}/scope-decision`, {
+    decision: "reject", expected_revision: issue.revision, proposal_id: proposal.id,
+    rationale: "The proposed scope expansion was not approved; cancel this issue rather than silently widening it.",
+  });
+}
+
+export async function resumeWorkIssue(issue: WorkIssue): Promise<{ issue: WorkIssue }> {
+  return issueMutation(`/api/work-issues/${encodeURIComponent(issue.id)}/resume`, {
+    expected_revision: issue.revision, rationale: "Blocker reviewed locally; resume authorized by the owner.",
+  });
+}
+
+export async function resolveWorkIssueDecision(issue: WorkIssue): Promise<{ issue: WorkIssue }> {
+  return issueMutation(`/api/work-issues/${encodeURIComponent(issue.id)}/resolve-decision`, {
+    expected_revision: issue.revision, approval_id: `local-${crypto.randomUUID()}`,
+    rationale: "Verification gap reviewed; authorize another attempt under the unchanged scope.",
+  });
+}
+
+export async function acceptWorkIssueCandidate(issue: WorkIssue, candidate: ReviewCandidate, confirmedCriteria: string[], acknowledgeEvidenceGaps: boolean): Promise<{ issue: WorkIssue }> {
+  return issueMutation(`/api/work-issues/${encodeURIComponent(issue.id)}/accept`, {
+    expected_revision: issue.revision, candidate_id: candidate.id, fingerprint: candidate.diff_fingerprint,
+    approval_id: `local-${crypto.randomUUID()}`, rationale: "Accepted locally after reviewing the exact candidate.",
+    confirmed_criteria: confirmedCriteria, acknowledge_evidence_gaps: acknowledgeEvidenceGaps,
+  });
+}
+
 export async function createTask(body: {
   project: string;
   agent: string;
   instructions: string;
+  role_id: string;
+  preview_fingerprint: string;
   sandbox?: string;
   self_verify?: boolean;
   client_context_categories?: ClientContextCategory[];

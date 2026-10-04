@@ -41,6 +41,13 @@ jobs:
       - name: Check repository configuration
         run: pnpm repository:check
 
+      - name: Install Harness YAML parser
+        shell: pwsh
+        run: Install-Module powershell-yaml -RequiredVersion 0.4.12 -Scope CurrentUser -Force -Repository PSGallery
+
+      - name: Validate Harness contracts
+        run: pnpm harness:check
+
       - name: Validate schemas
         run: pnpm schemas:check
 

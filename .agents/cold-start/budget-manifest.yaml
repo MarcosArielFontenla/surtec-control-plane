@@ -1,0 +1,69 @@
+# Repository-controlled context only; not a measurement of the host's prompt.
+version: 1
+budgetLines: 500
+loadMode: full-skills
+counting: physical-lines-including-frontmatter
+overflowAction: decompose-without-skipping-required-reads
+alwaysLoad:
+  - AGENTS.md
+  - .agents/policies/project.md
+  - .agents/orchestration/ROUTING.md
+# Deduplicate the union for cross-domain work. Conditional references below
+# are included in each declared worst case. Extra code, specs, workflows,
+# snapshots and external/system skills must be accounted for separately.
+taskClasses:
+  - name: harness-maintenance
+    artifacts:
+      - .agents/AGENTS.md
+      - docs/architecture/harness-v5.2-adaptation.md
+  - name: architecture-implementation
+    artifacts:
+      - docs/architecture/current-architecture.md
+  - name: agent-runtime-safety
+    artifacts:
+      - docs/architecture/current-architecture.md
+      - .agents/skills/agent-execution-safety/SKILL.md
+      - docs/architecture/execution-runtime.md
+      - docs/security/threat-model.md
+  - name: persistence-migration
+    artifacts:
+      - docs/architecture/current-architecture.md
+      - .agents/skills/file-state-contracts/SKILL.md
+      - docs/decisions/ADR-0002-file-first-durable-orchestration.md
+      - docs/architecture/organization-state-migration.md
+  - name: dashboard-workflow
+    artifacts:
+      - docs/architecture/current-architecture.md
+      - .agents/skills/local-dashboard-validation/SKILL.md
+      - docs/runbooks/local-development.md
+  - name: local-issues-acceptance
+    artifacts:
+      - docs/architecture/current-architecture.md
+      - .agents/skills/agent-execution-safety/SKILL.md
+      - .agents/skills/file-state-contracts/SKILL.md
+      - .agents/skills/local-dashboard-validation/SKILL.md
+      - docs/architecture/execution-runtime.md
+      - docs/decisions/ADR-0002-file-first-durable-orchestration.md
+      - docs/runbooks/local-work-issues.md
+  - name: issue-lifecycle-contracts
+    artifacts:
+      - docs/architecture/current-architecture.md
+      - .agents/skills/file-state-contracts/SKILL.md
+      - .agents/skills/local-dashboard-validation/SKILL.md
+      - docs/decisions/ADR-0002-file-first-durable-orchestration.md
+      - docs/runbooks/local-work-issues.md
+      - docs/architecture/issue-lifecycle-v1.md
+  - name: explanation-status
+    artifacts: []
+  - name: spec-first-planning
+    artifacts:
+      - .agents/specs/CONTRACT.md
+      - .agents/templates/entity.spec.yaml
+      - .agents/templates/feature.tasks.md
+      - .agents/workflows/spec-first.md
+      - .agents/workflows/spec-clarify.md
+      - .agents/workflows/spec-tasks.md
+  - name: spec-convergence
+    artifacts:
+      - .agents/specs/CONTRACT.md
+      - .agents/workflows/spec-converge.md

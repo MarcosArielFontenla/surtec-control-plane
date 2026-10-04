@@ -48,6 +48,12 @@ function model(signals: Signal[] = [], over: Partial<TodayModel> = {}): TodayMod
 }
 
 describe("TodayView", () => {
+  it("opens Harness evidence without preparing a task or launching the editor", () => {
+    const onOpenHarness = vi.fn(); const onOpenProject = vi.fn(); const onPrepareTask = vi.fn();
+    render(<TodayView data={model([signal(1, { source: "harness", title: "Harness evidence" })])} error={null} onOpenTask={vi.fn()} onOpenProject={onOpenProject} onOpenHarness={onOpenHarness} onPrepareTask={onPrepareTask} onRefresh={async () => model()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Ver Harness" })); expect(onOpenHarness).toHaveBeenCalledWith("project-1");
+    expect(onOpenProject).not.toHaveBeenCalled(); expect(screen.queryByRole("button", { name: "Preparar tarea" })).not.toBeInTheDocument();
+  });
   it("renders portfolio recommendations and keeps the existing task activity accessible", () => {
     const onOpenTask = vi.fn();
     render(<TodayView data={model([signal(1)])} error={null} onOpenTask={onOpenTask} onOpenProject={async () => {}}

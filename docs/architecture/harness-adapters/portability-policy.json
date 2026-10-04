@@ -1,0 +1,4 @@
+{
+  "version": 1,
+  "excludedCoreWords": ["Codex", "OpenAI", "Claude", "Cursor", "Copilot"]
+}

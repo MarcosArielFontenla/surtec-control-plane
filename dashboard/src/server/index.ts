@@ -44,11 +44,19 @@ import { createWorkSessionService, WorkSessionConflictError, WorkSessionNotFound
 import { UnsupportedWorkSessionSchemaVersionError } from "../../../lib/state/work-sessions";
 import { createClientPortfolioService, ClientPortfolioConflictError, ClientPortfolioNotFoundError, ClientPortfolioValidationError, type ClientPortfolioService } from "./client-portfolio-service";
 import { ClientPortfolioStoreError, UnsupportedClientPortfolioVersionError } from "../../../lib/state/client-portfolio";
-import type { ClientTaskContext } from "./client-portfolio-service";
 import { createOrganizationService, OrganizationNotFoundError, OrganizationValidationError, type OrganizationService } from "./organization-service";
 import { UnsupportedOrganizationVersionError } from "../../../lib/state/organization";
 import { validateCompanyProfile, validateObjective } from "../../../lib/state/validation";
 import type { Objective } from "../../../lib/organization";
+import type { Inbox } from "../../../lib/state/types";
+import type { IssueCreateInput } from "../../../lib/issues/types";
+import { createIssueService, IssueServiceError } from "./issue-service";
+import { IssueStateError, UnsupportedIssueVersionError } from "../../../lib/state/issues";
+import { createHarnessService, type HarnessService } from "./harness-service";
+import { HarnessStateError, readHarnessProfiles } from "../../../lib/state/harness-profiles";
+import { createContextService, ContextPreviewError, type ContextService } from "./context-service";
+import { ContextContractError } from "../../../lib/context/validation";
+import { createWorkflowService, WorkflowServiceError, type WorkflowService } from "./workflow-service";
 
 export interface AppDependencies {
   integrations?: ProjectIntegrationsReader;
@@ -56,6 +64,11 @@ export interface AppDependencies {
   workSessions?: WorkSessionService;
   clientPortfolio?: ClientPortfolioService;
   organization?: OrganizationService;
+  issues?: ReturnType<typeof createIssueService>;
+  inbox?: () => Promise<Inbox>;
+  harness?: HarnessService;
+  context?: ContextService;
+  workflows?: WorkflowService;
 }
 
 type JsonBodyResult = { ok: true; value: unknown } | { ok: false; status: 400 | 413; error: string };
@@ -96,11 +109,13 @@ export function createApp(
   const integrations = dependencies.integrations ?? createProjectIntegrationsService(repoRoot, {
     readDependencies: (path) => depsCache.getObservation(path, () => readDepsStatus(path)),
   });
+  const harness = dependencies.harness ?? createHarnessService(repoRoot);
   const signals = dependencies.signals ?? createSignalService({
     reader: createSignalEvidenceReader(repoRoot, {
       integrations,
       inboxCache,
       readGit: (path) => gitStatusCache.get(path),
+      readHarnessProfiles: () => readHarnessProfiles(),
     }),
   });
   const workSessions = dependencies.workSessions ?? createWorkSessionService(repoRoot, {
@@ -108,6 +123,74 @@ export function createApp(
   });
   const clientPortfolio = dependencies.clientPortfolio ?? createClientPortfolioService(repoRoot);
   const organization = dependencies.organization ?? createOrganizationService();
+  const contextService = dependencies.context ?? createContextService(repoRoot);
+  const issues = dependencies.issues ?? createIssueService(repoRoot, { context: contextService });
+  const workflows = dependencies.workflows ?? createWorkflowService(repoRoot, { issues });
+
+  const workflowErrorResponse = (c: Context, error: unknown) => {
+    if (error instanceof WorkflowServiceError) return c.json({ error: error.message, ...(error.workflowId ? { workflow_id: error.workflowId } : {}) }, error.status);
+    if (error instanceof ContextPreviewError) return c.json({ error: error.message }, error.status);
+    // Registry/store/process errors may contain private bodies or machine paths.
+    return c.json({ error: "Workflow state, policy or sources are unavailable; no execution was enabled." }, 409);
+  };
+  app.get("/api/workflows", (c) => {
+    c.header("Cache-Control", "no-store");
+    const query = new URL(c.req.url).searchParams;
+    if ([...query.keys()].some((key) => !["issue_id", "project_id"].includes(key) || query.getAll(key).length !== 1)) return c.json({ error: "Invalid workflow query fields" }, 400);
+    try { return c.json({ workflows: workflows.list(Object.fromEntries(query)) }); }
+    catch (error) { return workflowErrorResponse(c, error); }
+  });
+  app.get("/api/workflows/:id", (c) => {
+    c.header("Cache-Control", "no-store");
+    try { return c.json(workflows.detail(c.req.param("id"))); }
+    catch (error) { return workflowErrorResponse(c, error); }
+  });
+  for (const action of ["preview", "start"] as const) app.post(`/api/workflows/${action}`, async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    try { return c.json(workflows[action](parsed.value), action === "start" ? 201 : 200); }
+    catch (error) { return workflowErrorResponse(c, error); }
+  });
+  for (const action of ["decision", "cancel", "recover"] as const) app.post(`/api/workflows/:id/${action}`, async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c, 4 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    try { return c.json(action === "decision" ? workflows.decide(c.req.param("id"), parsed.value) : workflows[action](c.req.param("id"), parsed.value)); }
+    catch (error) { return workflowErrorResponse(c, error); }
+  });
+
+  const contextErrorResponse = (c: Context, error: unknown) => {
+    if (error instanceof ContextPreviewError) return c.json({ error: error.message }, error.status);
+    if (error instanceof ContextContractError) return c.json({ error: error.message }, 409);
+    if (error instanceof PolicyError) return c.json({ error: "Context role/project policy is unavailable or denied." }, error.code === "not-found" ? 404 : error.code === "denied" ? 403 : 409);
+    return c.json({ error: "Context sources are invalid or unavailable; preview made no changes." }, 409);
+  };
+  app.get("/api/projects/:id/context/roles", (c) => {
+    c.header("Cache-Control", "no-store");
+    try { return c.json({ roles: contextService.roles(c.req.param("id")) }); }
+    catch (error) { return contextErrorResponse(c, error); }
+  });
+  app.post("/api/context/preview", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    try { return c.json(contextService.preview(parsed.value)); }
+    catch (error) { return contextErrorResponse(c, error); }
+  });
+
+  const harnessResponse = (c: Context, projectId: string, refresh: boolean) => {
+    c.header("Cache-Control", "no-store");
+    try { return c.json(refresh ? harness.refresh(projectId) : harness.read(projectId)); }
+    catch (error) {
+      if (error instanceof PolicyError) return c.json({ error: "Project Harness access is unavailable." }, error.code === "not-found" ? 404 : 400);
+      if (error instanceof HarnessStateError || error instanceof StateLockConflictError) return c.json({ error: "Harness state is invalid, unsupported or busy; no project files were changed." }, 409);
+      return c.json({ error: "Harness observation is unavailable." }, 500);
+    }
+  };
+  app.get("/api/projects/:id/harness", (c) => harnessResponse(c, c.req.param("id"), false));
+  app.get("/api/projects/:id/harness/doctor", (c) => harnessResponse(c, c.req.param("id"), false));
+  app.post("/api/projects/:id/harness/refresh", (c) => harnessResponse(c, c.req.param("id"), true));
 
   const workSessionErrorResponse = (c: Context, error: unknown) => {
     if (error instanceof WorkSessionValidationError) return c.json({ error: error.message }, 400);
@@ -134,6 +217,15 @@ export function createApp(
     if (error instanceof OrganizationNotFoundError) return c.json({ error: error.message }, 404);
     if (error instanceof StateLockConflictError) return c.json({ error: "organization state is being updated; retry shortly" }, 409);
     return c.json({ error: "local organization state is unavailable" }, 500);
+  };
+
+  const issueErrorResponse = (c: Context, error: unknown) => {
+    if (error instanceof IssueServiceError) return c.json({ error: error.message }, error.status);
+    if (error instanceof UnsupportedIssueVersionError) return c.json({ error: error.message }, 409);
+    if (error instanceof IssueStateError) return c.json({ error: "local issue state is invalid; no issue data was changed" }, 409);
+    if (error instanceof StateLockConflictError) return c.json({ error: "local issue state is being updated; retry shortly" }, 409);
+    if (error instanceof ValidationError) return c.json({ error: error.message }, error.status);
+    return c.json({ error: "local issue operation failed" }, 500);
   };
 
   app.get("/api/organization", (c) => {
@@ -190,6 +282,105 @@ export function createApp(
       const links = organization.setProjectObjectives(c.req.param("id"), body.objective_ids as string[], body.primary_objective_id as string | null);
       return c.json({ links, organization: organization.read() });
     } catch (error) { return organizationErrorResponse(c, error); }
+  });
+
+  app.get("/api/work-issues", (c) => {
+    c.header("Cache-Control", "no-store");
+    try { return c.json({ issues: issues.list() }); }
+    catch (error) { return issueErrorResponse(c, error); }
+  });
+
+  app.get("/api/work-issues/:id", (c) => {
+    c.header("Cache-Control", "no-store");
+    try { return c.json(issues.get(c.req.param("id"))); }
+    catch (error) { return issueErrorResponse(c, error); }
+  });
+
+  app.post("/api/work-issues", async (c) => {
+    const parsed = await boundedJsonBody(c, 32 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    if (typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) return c.json({ error: "invalid local issue body" }, 400);
+    try { return c.json({ issue: issues.create(parsed.value as IssueCreateInput) }, 201); }
+    catch (error) { return issueErrorResponse(c, error); }
+  });
+
+  app.post("/api/work-issues/:id/authorize", async (c) => {
+    const parsed = await boundedJsonBody(c, 4 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const body = parsed.value as { expected_revision?: unknown; approval_id?: unknown };
+    if (!Number.isSafeInteger(body?.expected_revision) || typeof body.approval_id !== "string") return c.json({ error: "expected_revision and approval_id are required" }, 400);
+    try { return c.json({ issue: issues.authorize(c.req.param("id"), body.expected_revision as number, body.approval_id) }); }
+    catch (error) { return issueErrorResponse(c, error); }
+  });
+
+  app.post("/api/work-issues/:id/resume", async (c) => {
+    const parsed = await boundedJsonBody(c, 4 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const body = parsed.value as { expected_revision?: unknown; rationale?: unknown };
+    if (!Number.isSafeInteger(body?.expected_revision) || typeof body.rationale !== "string") return c.json({ error: "expected_revision and rationale are required" }, 400);
+    try { return c.json({ issue: issues.resumeBlocked(c.req.param("id"), body.expected_revision as number, body.rationale) }); }
+    catch (error) { return issueErrorResponse(c, error); }
+  });
+
+  app.post("/api/work-issues/:id/resolve-decision", async (c) => {
+    const parsed = await boundedJsonBody(c, 4 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const body = parsed.value as { expected_revision?: unknown; approval_id?: unknown; rationale?: unknown };
+    if (!Number.isSafeInteger(body?.expected_revision) || typeof body.approval_id !== "string" || typeof body.rationale !== "string") return c.json({ error: "decision resolution fields are invalid" }, 400);
+    try { return c.json({ issue: issues.resolveDecision(c.req.param("id"), body.expected_revision as number, body.approval_id, body.rationale) }); }
+    catch (error) { return issueErrorResponse(c, error); }
+  });
+
+  app.post("/api/work-issues/:id/scope-decision", async (c) => {
+    const parsed = await boundedJsonBody(c, 8 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const body = parsed.value as { expected_revision?: unknown; proposal_id?: unknown; approval_id?: unknown; decision?: unknown; rationale?: unknown };
+    if (!Number.isSafeInteger(body?.expected_revision) || typeof body.proposal_id !== "string" || (body.decision !== "approve" && body.decision !== "reject")) return c.json({ error: "scope decision fields are invalid" }, 400);
+    try {
+      const issue = body.decision === "approve"
+        ? issues.approveScopeRevision(c.req.param("id"), body.expected_revision as number, body.proposal_id, String(body.approval_id ?? ""))
+        : issues.rejectScopeRevision(c.req.param("id"), body.expected_revision as number, body.proposal_id, String(body.rationale ?? ""));
+      return c.json({ issue });
+    } catch (error) { return issueErrorResponse(c, error); }
+  });
+
+  app.post("/api/work-issues/:id/rework", async (c) => {
+    const parsed = await boundedJsonBody(c, 8 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const body = parsed.value as { expected_revision?: unknown; candidate_id?: unknown; fingerprint?: unknown; rationale?: unknown };
+    if (!Number.isSafeInteger(body?.expected_revision) || typeof body.candidate_id !== "string" || typeof body.fingerprint !== "string" || typeof body.rationale !== "string") return c.json({ error: "rework decision fields are invalid" }, 400);
+    try { return c.json({ issue: issues.requestRework(c.req.param("id"), body.expected_revision as number, body.candidate_id, body.fingerprint, body.rationale) }); }
+    catch (error) { return issueErrorResponse(c, error); }
+  });
+
+  app.post("/api/work-issues/:id/dispatch", async (c) => {
+    const parsed = await boundedJsonBody(c, 4 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const body = parsed.value as { expected_revision?: unknown; agent?: unknown; role_id?: string; preview_fingerprint?: string; client_context_categories?: unknown };
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => !["expected_revision", "agent", "role_id", "preview_fingerprint", "client_context_categories"].includes(key))) return c.json({ error: "Invalid issue dispatch fields" }, 400);
+    if (!Number.isSafeInteger(body?.expected_revision) || typeof body.agent !== "string") return c.json({ error: "expected_revision and agent are required" }, 400);
+    try {
+      const result = issues.dispatch(c.req.param("id"), body.expected_revision as number, body.agent, { role_id: body.role_id, preview_fingerprint: body.preview_fingerprint, client_context_categories: body.client_context_categories });
+      onTaskCreated(result.taskId);
+      return c.json({ issue: result.issue, task_id: result.taskId }, 201);
+    } catch (error) {
+      if (error instanceof ValidationError) return c.json({ error: error.message }, error.status);
+      return issueErrorResponse(c, error);
+    }
+  });
+
+  app.post("/api/work-issues/:id/accept", async (c) => {
+    const parsed = await boundedJsonBody(c, 8 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    const body = parsed.value as { expected_revision?: unknown; candidate_id?: unknown; fingerprint?: unknown; approval_id?: unknown; rationale?: unknown; confirmed_criteria?: unknown; acknowledge_evidence_gaps?: unknown };
+    if (!Number.isSafeInteger(body?.expected_revision) || typeof body.candidate_id !== "string" || typeof body.fingerprint !== "string" || typeof body.approval_id !== "string" || typeof body.rationale !== "string" || !Array.isArray(body.confirmed_criteria) || body.confirmed_criteria.some((item) => typeof item !== "string")) return c.json({ error: "candidate acceptance fields are invalid" }, 400);
+    try {
+      return c.json({ issue: issues.acceptCandidate(c.req.param("id"), {
+        expectedRevision: body.expected_revision as number, candidateId: body.candidate_id, fingerprint: body.fingerprint,
+        approvalId: body.approval_id, rationale: body.rationale, confirmedCriteria: body.confirmed_criteria as string[],
+        acknowledgeEvidenceGaps: body.acknowledge_evidence_gaps === true,
+      }) });
+    } catch (error) { return issueErrorResponse(c, error); }
   });
 
   app.get("/api/clients", (c) => {
@@ -371,18 +562,20 @@ export function createApp(
     const body = parsed.value;
     if (typeof body !== "object" || body === null || Array.isArray(body)) return c.json({ error: "invalid task body" }, 400);
     try {
-      const taskInput = body as { project: string; agent: string; instructions: string; sandbox?: string; self_verify?: boolean; client_context_categories?: unknown };
-      const clientContext: ClientTaskContext | null = Object.hasOwn(body as object, "client_context_categories")
-        ? clientPortfolio.buildTaskContext(String(taskInput.project ?? ""), taskInput.client_context_categories)
-        : null;
+      const taskInput = body as import("./dispatch").CreateTaskInput;
+      if (taskInput.sandbox === "workspace-write") {
+        return c.json({ error: "workspace-write tasks must be created and dispatched from an explicitly authorized local issue" }, 409);
+      }
       const { id } = createTask(
-        { ...taskInput, client_context: clientContext },
+        taskInput,
         repoRoot,
+        undefined,
+        { context: contextService },
       );
       onTaskCreated(id);
       return c.json({ id }, 201);
     } catch (err) {
-      if (err instanceof ValidationError) return c.json({ error: err.message }, 400);
+      if (err instanceof ValidationError) return c.json({ error: err.message }, err.status);
       if (err instanceof ClientPortfolioValidationError || err instanceof ClientPortfolioNotFoundError
         || err instanceof ClientPortfolioConflictError || err instanceof ClientPortfolioStoreError) {
         return clientPortfolioErrorResponse(c, err);
@@ -542,7 +735,7 @@ export function createApp(
 
   app.get("/api/inbox", async (c) => {
     try {
-      return c.json(await inboxCache.get("inbox", () => readInbox(repoRoot)));
+      return c.json(dependencies.inbox ? await dependencies.inbox() : await inboxCache.get("inbox", () => readInbox(repoRoot)));
     } catch (err) {
       return c.json({ error: (err as Error).message }, 500);
     }

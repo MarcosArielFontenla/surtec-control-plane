@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/workflow-document.schema.json",
+  "title": "WorkflowDocument",
+  "$comment": "New optional v1 aggregate. Unknown versions must fail without repair or downgrade; the store owns locking and cross-store reconciliation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "workflows",
+    "stages",
+    "grants",
+    "decisions",
+    "handoffs",
+    "review_receipts",
+    "admission_intents",
+    "accounting",
+    "lineages",
+    "events"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "workflows": {
+      "type": "object",
+      "maxProperties": 500,
+      "propertyNames": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json"
+      }
+    },
+    "stages": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/stage"
+      }
+    },
+    "grants": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "https://surtec.dev/schemas/workflow-grant.schema.json"
+      }
+    },
+    "decisions": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/decision"
+      }
+    },
+    "handoffs": {
+      "type": "object",
+      "maxProperties": 5000,
+      "propertyNames": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "https://surtec.dev/schemas/role-handoff.schema.json"
+      }
+    },
+    "review_receipts": {
+      "type": "object",
+      "maxProperties": 5000,
+      "propertyNames": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "https://surtec.dev/schemas/review-receipt.schema.json"
+      }
+    },
+    "admission_intents": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/intent"
+      }
+    },
+    "accounting": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/accounting"
+      }
+    },
+    "lineages": {
+      "type": "object",
+      "maxProperties": 5000,
+      "propertyNames": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/lineage"
+      }
+    },
+    "events": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 20000,
+      "uniqueItems": false,
+      "items": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/event"
+      }
+    }
+  }
+}

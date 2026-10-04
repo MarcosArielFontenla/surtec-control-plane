@@ -2,10 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://surtec.dev/schemas/task-record.schema.json",
   "title": "TaskRecord",
+  "description": "Authoritative task snapshot. Legacy envelopes remain readable without rewrite; optional context manifests are independently versioned and enforced by runtime binding validation.",
   "type": "object",
   "additionalProperties": false,
   "required": ["envelope", "lifecycle", "outcome", "created_at", "started_at", "updated_at", "finished_at", "result", "logs_path"],
   "properties": {
+    "testing_evidence": { "$ref": "https://surtec.dev/schemas/testing-evidence.schema.json" },
     "envelope": { "$ref": "https://surtec.dev/schemas/task-envelope.schema.json" },
     "lifecycle": { "type": "string", "enum": ["queued", "running", "finished"] },
     "outcome": { "type": ["string", "null"], "enum": ["completed", "partial", "blocked", "failed", "needs-review", "cancelled", null] },

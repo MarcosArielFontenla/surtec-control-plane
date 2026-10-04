@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/context-admission-v2.schema.json",
+  "title": "ContextAdmissionV2",
+  "$comment": "Strict workflow-stage references, not proof of current authority, consent, predecessor evidence or permission to execute.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "workflow_id", "stage_id", "stage_generation", "stage_kind", "task_id", "template_id", "template_version", "grant_id", "authority_revision", "role_id", "issue_id", "issue_revision", "scope_revision", "scope_fingerprint", "approved_plan", "predecessor_stage_id", "handoff_id", "candidate", "manifest_fingerprint", "instructions_length", "instructions_hash"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "kind": { "const": "workflow-stage" },
+    "workflow_id": { "$ref": "#/$defs/id" },
+    "stage_id": { "$ref": "#/$defs/id" },
+    "stage_generation": { "$ref": "#/$defs/revision" },
+    "stage_kind": { "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/stageKind" },
+    "task_id": { "$ref": "#/$defs/id" },
+    "template_id": { "enum": ["analysis", "implementation", "quality-review", "operations-investigation", "trivial-change"] },
+    "template_version": { "const": 1 },
+    "grant_id": { "$ref": "#/$defs/id" },
+    "authority_revision": { "$ref": "#/$defs/revision" },
+    "role_id": { "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/role" },
+    "issue_id": { "$ref": "#/$defs/id" },
+    "issue_revision": { "$ref": "#/$defs/revision" },
+    "scope_revision": { "$ref": "#/$defs/revision" },
+    "scope_fingerprint": { "$ref": "#/$defs/hash" },
+    "approved_plan": { "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/properties/approved_plan" },
+    "predecessor_stage_id": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+    "handoff_id": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+    "candidate": { "oneOf": [{ "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/candidate" }, { "type": "null" }] },
+    "manifest_fingerprint": { "$ref": "#/$defs/hash" },
+    "instructions_length": { "type": "integer", "minimum": 1, "maximum": 20000 },
+    "instructions_hash": { "$ref": "#/$defs/hash" }
+  },
+  "$defs": {
+    "id": { "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id" },
+    "hash": { "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/hash" },
+    "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+  }
+}

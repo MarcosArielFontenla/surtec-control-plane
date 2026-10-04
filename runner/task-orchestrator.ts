@@ -3,11 +3,13 @@ import type { AgentExecutor } from "./agent-executor";
 import type { TaskRecord } from "../lib/state/types";
 import { appendTaskEvent } from "../lib/state/events";
 import { ensureTaskOrchestration } from "../lib/state/orchestration";
-import { listTasks, StateLockConflictError, updateTask, withStateLock } from "../lib/state/store";
+import { listTasks, readTask, StateLockConflictError, updateTask, withStateLock } from "../lib/state/store";
 import { cancelledResult, failureResult } from "./result";
 import { codexExecutor } from "./codex-executor";
 import { runTask, type TaskRunCompletion, type TaskRunOptions } from "./run-task";
 import type { Tracer } from "../lib/observability/tracing";
+import { redactContextText } from "../lib/context/assemble";
+import type { WorkflowOrchestrator } from "./workflow-orchestrator";
 
 export interface TaskControl {
   enqueue(taskId: string): void;
@@ -33,6 +35,7 @@ export interface TaskOrchestratorOptions {
   now?: () => Date;
   tracer?: Tracer;
   runAttempt?: (taskId: string, options: TaskRunOptions) => Promise<TaskRunCompletion | null>;
+  workflows?: WorkflowOrchestrator;
 }
 
 interface ActiveAttempt {
@@ -67,6 +70,7 @@ export class TaskOrchestrator implements TaskControl {
   private poller: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
   private stopped = true;
+  private readonly workflows?: WorkflowOrchestrator;
 
   constructor(options: TaskOrchestratorOptions = {}) {
     this.repoRoot = options.repoRoot ?? process.cwd();
@@ -79,6 +83,8 @@ export class TaskOrchestrator implements TaskControl {
     this.retryBaseMs = options.retryBaseMs ?? positiveInteger(process.env.SURTEC_WORKER_RETRY_BASE_MS, 1_000, 60_000);
     this.now = options.now ?? (() => new Date());
     this.runAttempt = options.runAttempt ?? ((taskId, runOptions) => runTask(taskId, this.repoRoot, executor, { ...runOptions, tracer: options.tracer }));
+    this.workflows = options.workflows;
+    this.workflows?.connect(this, this.workerId);
   }
 
   start(): void {
@@ -146,7 +152,12 @@ export class TaskOrchestrator implements TaskControl {
     const updated = updateTask(taskId, (record) => {
       found = true;
       const orchestration = ensureTaskOrchestration(record);
+      if (record.envelope.context_admission?.schema_version === 2) throw new TaskControlError("Workflow task retry requires its current controller; manual retry is denied", 409);
+      if (typeof record.envelope.metadata.issue_id === "string") {
+        throw new TaskControlError(`issue-linked tasks must be resumed through the local issue workflow: ${record.envelope.metadata.issue_id}`, 409);
+      }
       if (record.lifecycle !== "finished") throw new TaskControlError(`task is not finished: ${taskId}`, 409);
+      if (!record.envelope.context_manifest || !record.envelope.context_admission) throw new TaskControlError("Retry requires an admitted context binding; explicitly dispatch a new governed task", 409);
       if (record.outcome === "completed" || record.outcome === "partial") throw new TaskControlError(`successful task cannot be retried: ${taskId}`, 409);
       if (orchestration.attempts >= orchestration.max_attempts) throw new TaskControlError(`task attempt budget is exhausted: ${taskId}`, 409);
       if (orchestration.cumulative_tokens >= orchestration.max_total_tokens) throw new TaskControlError(`task token budget is exhausted: ${taskId}`, 409);
@@ -157,6 +168,9 @@ export class TaskOrchestrator implements TaskControl {
       record.lifecycle = "queued";
       record.outcome = null;
       record.finished_at = null;
+      const previousRun = record.envelope.metadata.run;
+      const run = previousRun && typeof previousRun === "object" && !Array.isArray(previousRun) ? previousRun as Record<string, unknown> : {};
+      if (record.result?.summary && record.result.status !== "needs-review") record.envelope.metadata.run = { ...run, prior_summary: redactContextText(record.result.summary).slice(0, 2000) };
       record.result = null;
       record.updated_at = at;
       changed = true;
@@ -174,6 +188,7 @@ export class TaskOrchestrator implements TaskControl {
       if (snapshot.lifecycle !== "running") continue;
       const expiry = snapshot.orchestration?.lease?.expires_at;
       if (expiry && Date.parse(expiry) > now.getTime()) continue;
+      if (snapshot.envelope.context_admission?.schema_version === 2 && this.workflows) { if (this.workflows.recoverExpired(snapshot)) recovered++; continue; }
       let disposition: "retry" | "failed" | "cancelled" | null = null;
       let previousRunId: string | null = null;
       try {
@@ -227,10 +242,14 @@ export class TaskOrchestrator implements TaskControl {
     if (this.ticking) return 0;
     this.ticking = true;
     try {
+      // Reconciliation never runs under scheduler/task locks.
+      this.recoverExpiredLeases();
+      this.schedulePendingRetries();
+      this.workflows?.reconcile();
+      const launches: TaskRecord[] = [];
+      const denied: string[] = [];
       try {
-        return withStateLock("orchestrator-schedule", () => {
-          this.recoverExpiredLeases();
-          this.schedulePendingRetries();
+        const count = withStateLock("orchestrator-schedule", () => {
           const now = this.now();
           const snapshots = listTasks();
           const running = snapshots.filter((record) => isLeaseCurrent(record, now.getTime()));
@@ -248,19 +267,26 @@ export class TaskOrchestrator implements TaskControl {
             const orchestration = snapshot.orchestration;
             if (orchestration?.retry_at && Date.parse(orchestration.retry_at) > now.getTime()) continue;
             if (snapshot.envelope.sandbox === "workspace-write" && writeProjects.has(snapshot.envelope.project)) continue;
+            if (snapshot.envelope.context_admission?.schema_version === 2 && this.workflows) {
+              try { if (!this.workflows.canClaim(snapshot)) continue; }
+              catch { denied.push(snapshot.envelope.context_admission.workflow_id); continue; }
+            }
             try {
               const claim = this.claim(snapshot.envelope.id, now);
               if (!claim) continue;
               claimed += 1;
               available -= 1;
               if (claim.envelope.sandbox === "workspace-write") writeProjects.add(claim.envelope.project);
-              this.launch(claim);
+              launches.push(claim);
             } catch (error) {
               if (!(error instanceof StateLockConflictError)) throw error;
             }
           }
           return claimed;
         });
+        for (const id of denied) this.workflows?.block(id, "Current sources, scope or workflow admission changed before claim.");
+        for (const record of launches) this.launch(record);
+        return count;
       } catch (error) {
         if (error instanceof StateLockConflictError) return 0;
         throw error;
@@ -304,11 +330,22 @@ export class TaskOrchestrator implements TaskControl {
     const controller = new AbortController();
     const heartbeat = setInterval(() => this.heartbeat(taskId, runId, controller), this.heartbeatMs);
     heartbeat.unref?.();
-    const promise = this.runAttempt(taskId, { signal: controller.signal, runId, workerId: this.workerId })
+    let proof: object | undefined;
+    const promise = Promise.resolve().then(() => {
+      if (record.envelope.context_admission?.schema_version === 2 && this.workflows) proof = this.workflows.claimRun(taskId, runId);
+      return this.runAttempt(taskId, { signal: controller.signal, runId, workerId: this.workerId, workflowExecution: proof });
+    })
       .then((completion) => {
         if (completion?.retryable && !completion.stale) this.tryScheduleRetry(taskId, runId, completion.reason ?? "transient execution failure");
       })
       .catch((error: unknown) => {
+        if (record.envelope.context_admission?.schema_version === 2 && this.workflows) {
+          try {
+            this.finalizeWorkflowFailure(taskId, runId);
+            this.workflows.block(record.envelope.context_admission.workflow_id, "Workflow attempt failed without provable completion; retained facts require review.", true);
+          } catch { /* preserve ambiguous state for the next bounded reconciliation */ }
+          return;
+        }
         const reason = (error as Error)?.message ?? "unexpected worker failure";
         try {
           this.finalizeUnexpectedFailure(taskId, runId, reason);
@@ -320,6 +357,8 @@ export class TaskOrchestrator implements TaskControl {
       .finally(() => {
         clearInterval(heartbeat);
         this.active.delete(taskId);
+        if (proof) this.workflows?.release(proof);
+        try { this.workflows?.reconcile(); } catch { /* next bounded tick retries retained reconciliation */ }
         if (!this.stopped) this.requestTick();
       });
     this.active.set(taskId, { runId, controller, heartbeat, promise });
@@ -365,8 +404,22 @@ export class TaskOrchestrator implements TaskControl {
     });
     if (updated && changed) appendTaskEvent({ task_id: taskId, type: "failed", revision: updated.revision!, run_id: runId, attempt: updated.orchestration!.attempts, payload: { reason, retryable: true }, at });
   }
+  private finalizeWorkflowFailure(taskId: string, runId: string): void {
+    const at = this.now().toISOString();
+    updateTask(taskId, (record) => {
+      if (record.lifecycle !== "running" || record.orchestration?.lease?.run_id !== runId) return false;
+      record.lifecycle = "finished"; record.outcome = "needs-review"; record.finished_at = at; record.updated_at = at;
+      record.orchestration.lease = null; record.orchestration.retry_at = null;
+      record.orchestration.last_failure = { kind: "terminal", message: "Workflow attempt requires retained-fact review", at, run_id: runId };
+      record.result = failureResult(record.envelope, "Workflow attempt requires retained-fact review", record.logs_path ?? ""); record.result.status = "needs-review";
+    });
+  }
 
   private scheduleRetry(taskId: string, runId: string, reason: string): void {
+    // Until provable workflow retry reconciliation exists, keep failed v2
+    // attempts terminal rather than applying the generic legacy retry path.
+    const snapshot = readTask(taskId);
+    if (snapshot?.envelope.context_admission?.schema_version === 2) return;
     let scheduled = false;
     const now = this.now();
     let retryAt = now.toISOString();

@@ -7,9 +7,27 @@ import type { Objective, OrganizationSnapshot } from "../organization";
 import { validateSignal } from "../state/validation";
 import type { SignalProjectEvidence, SignalEvidenceSnapshot } from "./engine";
 import { generateSignals } from "./engine";
+import type { ProjectHarnessProfile } from "../harness/types";
+import { SIGNAL_FRESHNESS_DAYS } from "../feedback-metrics";
 
 const NOW = new Date("2026-09-27T12:00:00.000Z");
 const observedAt = "2026-09-27T11:59:00.000Z";
+
+describe("Harness signals", () => {
+  it("registers the approved thirty-day Feedback freshness window", () => {
+    expect(SIGNAL_FRESHNESS_DAYS.harness).toBe(30);
+  });
+  const harness = { project_id: "alpha", status: "absent", observed_at: observedAt, findings: [], doctor_status: "unknown", project_fingerprint: "a".repeat(64) } as unknown as ProjectHarnessProfile;
+  it("ranks active absence as warning, never automatic critical", () => {
+    const evidence = { projects: [project({ harness })], tasks: [], issues: [] };
+    const signal = generateSignals(evidence, NOW).find((entry) => entry.source === "harness")!;
+    expect(signal.severity).toBe("warning"); expect(signal.action_kind).toBe("inspect-harness"); expect(validateSignal(signal)).toBe(true);
+    expect(generateSignals(evidence, NOW).find((entry) => entry.source === "harness")?.id).toBe(signal.id);
+  });
+  it("omits absent Harness on paused projects and preserves other sources", () => {
+    expect(generateSignals({ projects: [project({ harness, profile: profile({ lifecycle: "paused" }) })], tasks: [], issues: [] }, NOW).filter((entry) => entry.source === "harness")).toEqual([]);
+  });
+});
 
 function profile(overrides: Partial<ProjectProfile> = {}): ProjectProfile {
   return {

@@ -134,9 +134,9 @@ export function OrganizationView({ projects, profiles }: { projects: ProjectView
     <section className="panel organization-company">
       <div className="section-head"><div><span className="organization-kicker">EMPRESA · RAÍZ ESTRATÉGICA</span><h2>{organization.company.display_name}</h2></div><span className="organization-local">Local · una sola empresa</span></div>
       <form onSubmit={submitCompany} className="organization-company-form">
-        <label>Nombre visible<input maxLength={100} required value={displayName} disabled={busy} onChange={(event) => setDisplayName(event.target.value)} /></label>
-        <label>Misión<textarea maxLength={800} rows={3} value={mission} disabled={busy} onChange={(event) => setMission(event.target.value)} placeholder="¿Qué cambio busca producir SURTEC?" /></label>
-        <label>Principios operativos<textarea maxLength={5000} rows={4} value={principlesText} disabled={busy} onChange={(event) => setPrinciplesText(event.target.value)} placeholder="Un principio por línea" /></label>
+        <label className="organization-company-name">Nombre visible<input maxLength={100} required value={displayName} disabled={busy} onChange={(event) => setDisplayName(event.target.value)} /></label>
+        <label className="organization-company-mission">Misión<textarea maxLength={800} rows={3} value={mission} disabled={busy} onChange={(event) => setMission(event.target.value)} placeholder="¿Qué cambio busca producir SURTEC?" /></label>
+        <label className="organization-company-principles">Principios operativos<textarea maxLength={5000} rows={4} value={principlesText} disabled={busy} onChange={(event) => setPrinciplesText(event.target.value)} placeholder="Un principio por línea" /></label>
         <button className="ibtn primary" type="submit" disabled={busy}>{busy ? "Guardando…" : "Guardar perfil"}</button>
       </form>
       <p className="organization-meta">Última revisión: {organization.company.last_reviewed_at ?? "pendiente"} · Objetivos activos: {organization.company.active_objective_ids.length}</p>

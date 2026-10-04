@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/role-handoff.schema.json",
+  "title": "RoleHandoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "issue_id",
+    "from_role_id",
+    "to_role_id",
+    "execution_id",
+    "outcome_summary",
+    "evidence_ids",
+    "unresolved_questions",
+    "risks",
+    "recommended_next_action",
+    "requested_decision",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+    },
+    "issue_id": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+    },
+    "from_role_id": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/role"
+    },
+    "to_role_id": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/role"
+    },
+    "execution_id": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+    },
+    "outcome_summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "evidence_ids": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+      }
+    },
+    "unresolved_questions": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500,
+        "pattern": "\\S"
+      }
+    },
+    "risks": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500,
+        "pattern": "\\S"
+      }
+    },
+    "recommended_next_action": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "requested_decision": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/timestamp"
+    }
+  }
+}

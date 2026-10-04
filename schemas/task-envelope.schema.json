@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://surtec.dev/schemas/task-envelope.schema.json",
   "title": "TaskEnvelope",
+  "description": "Named legacy unversioned task envelope with an optional strict version-1 context manifest. Absence preserves legacy history and never grants governed admission.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -78,6 +79,15 @@
     },
     "self_verify": {
       "type": "boolean"
+    },
+    "context_manifest": {
+      "$ref": "https://surtec.dev/schemas/context-manifest.schema.json"
+    },
+    "context_admission": {
+      "oneOf": [
+        { "$ref": "https://surtec.dev/schemas/context-admission.schema.json" },
+        { "$ref": "https://surtec.dev/schemas/context-admission-v2.schema.json" }
+      ]
     }
   }
 }

@@ -70,6 +70,7 @@ describe("portfolio signal evidence reader", () => {
       discover: () => [{ id: "alpha", path: "/private/alpha" }],
       readGit: () => ({ branch: "main", dirty: true, uncommitted: 1, ahead: 0, behind: 0, last_commit: null, ok: true }),
       readTasks: () => { throw new Error("task store failure"); },
+      readHarnessProfiles: () => { throw new Error("private harness store content"); },
       readProfiles: () => { throw new Error("profile store failure"); },
       readNotes: () => [],
       readInbox: async () => { throw new Error("provider failure"); },
@@ -82,6 +83,7 @@ describe("portfolio signal evidence reader", () => {
     expect(evidence.projects[0].profile_available).toBe(false);
     expect(evidence.warnings).toEqual(expect.arrayContaining([
       "Task evidence could not be read; other signal sources remain available.",
+      "Harness evidence could not be read; other signal sources remain available.",
       "Portfolio profiles could not be read; other signal sources remain available.",
       "GitHub issue evidence could not be read; other signal sources remain available.",
     ]));

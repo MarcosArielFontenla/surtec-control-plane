@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SandboxMode, TaskRecord } from "../lib/state/types";
@@ -9,6 +9,8 @@ import { readTaskEvents } from "../lib/state/events";
 import { TaskControlError, TaskOrchestrator } from "./task-orchestrator";
 import type { TaskRunCompletion, TaskRunOptions } from "./run-task";
 import type { AgentExecutor } from "./agent-executor";
+import { assembleContext, contextHash } from "../lib/context/assemble";
+import { WorkflowOrchestrator } from "./workflow-orchestrator";
 
 function record(id: string, sandbox: SandboxMode = "read-only", project = "p", order = 0): TaskRecord {
   return {
@@ -106,6 +108,14 @@ describe("TaskOrchestrator", () => {
     controlled.finish("R-1");
     controlled.finish("W-2");
   });
+  it("adding workflow reconciliation does not add a scheduler or weaken generic project-writer capacity", async () => {
+    writeTask(record("W-1", "workspace-write", "same", 1)); writeTask(record("W-2", "workspace-write", "same", 2)); writeTask(record("R-1", "read-only", "same", 3));
+    const controlled = controlledRunner(), workflows = new WorkflowOrchestrator(root), worker = new TaskOrchestrator({ repoRoot: root, workflows, maxConcurrent: 2, now: () => new Date(nowMs), runAttempt: controlled.run });
+    expect(await worker.runOnce()).toBe(2); expect(controlled.run.mock.calls.map(([id]) => id)).toEqual(["W-1", "R-1"]); expect(await worker.runOnce()).toBe(0);
+    controlled.finish("W-1"); controlled.finish("R-1"); await worker.stop();
+    expect(await worker.runOnce()).toBe(1); expect(controlled.run.mock.calls.at(-1)?.[0]).toBe("W-2"); controlled.finish("W-2"); await worker.stop();
+    expect(existsSync(join(root, "state/workflows/workflows.json"))).toBe(false);
+  });
 
   it("cancels queued work durably without launching it", () => {
     writeTask(record("T-1"));
@@ -201,7 +211,7 @@ describe("TaskOrchestrator", () => {
     expect(readTask("T-1")).toMatchObject({ lifecycle: "finished", outcome: "failed", orchestration: { last_failure: { kind: "budget" } } });
   });
 
-  it("allows a manual retry only while budgets remain", () => {
+  it("refuses legacy manual retries without inventing admission or changing persisted state", () => {
     const failed = record("T-1");
     failed.lifecycle = "finished";
     failed.outcome = "failed";
@@ -210,7 +220,8 @@ describe("TaskOrchestrator", () => {
     writeTask(failed);
     const worker = new TaskOrchestrator({ now: () => new Date(nowMs), runAttempt: controlledRunner().run });
 
-    expect(worker.retry("T-1")).toMatchObject({ lifecycle: "queued", outcome: null });
+    expect(() => worker.retry("T-1")).toThrow(/admitted context binding/);
+    expect(readTask("T-1")).toMatchObject({ lifecycle: "finished", outcome: "failed" });
 
     updateTask("T-1", (task) => {
       task.lifecycle = "finished";
@@ -218,6 +229,37 @@ describe("TaskOrchestrator", () => {
       task.orchestration!.attempts = task.orchestration!.max_attempts;
     });
     expect(() => worker.retry("T-1")).toThrow(TaskControlError);
+  });
+  it("retains only a bounded redacted prior summary when manually retrying governed work", () => {
+    const failed = record("GOV-1"); const budget = defaultTaskOrchestration();
+    failed.envelope.context_manifest = assembleContext({
+      schema_version: 1, project_id: "p", agent_id: "agent", role_id: "planner", task_kind: "analysis", sandbox: "read-only", tools: ["inspect"], approval_rules: [],
+      budget: { max_attempts: budget.max_attempts, max_runtime_ms: budget.max_runtime_ms, max_total_tokens: budget.max_total_tokens },
+      limits: { max_lines: 500, max_bytes: 60000, max_sources: 64 }, selected_categories: [], excluded_categories: [], omitted_sources: [],
+      routing: { work_scale: "trivial", action: "direct", review_depth: "focused", qa_required: false, reasons: ["Synthetic fixture"], delegation: { admitted: false, executable: false, reasons: ["Unavailable"] } },
+      testing: { mode: "functional", minimum_review_depth: "focused", runner_ids: [], commands: [], reasons: ["Functional default"], requires_red_evidence: false },
+    }, [{ id: "runtime/safety-v1", layer: "runtime-safety", source_type: "policy", text: "Synthetic safety", reason: "Fixture", sensitivity: "public" }]).manifest;
+    failed.envelope.context_admission = { schema_version: 1, kind: "analysis", manifest_fingerprint: failed.envelope.context_manifest.fingerprint, instructions_length: 4, instructions_hash: contextHash("work") };
+    failed.lifecycle = "finished"; failed.outcome = "failed"; failed.orchestration!.attempts = 1;
+    failed.result = { task_id: "GOV-1", agent: "agent", status: "failed", summary: "Summary ".repeat(400), files_changed: [], commands_run: [], tests_run: [], risks: [], blockers: [], next_steps: [], artifacts: [], logs_path: "" };
+    writeTask(failed); const worker = new TaskOrchestrator({ now: () => new Date(nowMs), runAttempt: controlledRunner().run });
+    const queued = worker.retry("GOV-1");
+    expect(queued.lifecycle).toBe("queued"); expect(queued.result).toBeNull();
+    expect((queued.envelope.metadata.run as { prior_summary: string }).prior_summary).toHaveLength(2000);
+    updateTask("GOV-1", (task) => { task.lifecycle = "finished"; task.outcome = "failed"; task.orchestration!.cumulative_tokens = task.orchestration!.max_total_tokens; });
+    expect(() => worker.retry("GOV-1")).toThrow(/token budget/);
+  });
+
+  it("requires issue-linked work to resume through the issue authorization workflow", () => {
+    const failed = record("I-TASK-1", "workspace-write", "stock-control");
+    failed.envelope.metadata.issue_id = "I-12345678-1234-1234-1234-123456789abc";
+    failed.lifecycle = "finished";
+    failed.outcome = "needs-review";
+    writeTask(failed);
+    const worker = new TaskOrchestrator({ now: () => new Date(nowMs), runAttempt: controlledRunner().run });
+
+    expect(() => worker.retry("I-TASK-1")).toThrow(/resumed through the local issue workflow/i);
+    expect(readTask("I-TASK-1")).toMatchObject({ lifecycle: "finished", outcome: "needs-review" });
   });
 
   it("runs a claimed task through the real runner boundary with a fake executor", async () => {

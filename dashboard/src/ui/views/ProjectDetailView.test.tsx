@@ -50,6 +50,7 @@ function integrations(overrides: Partial<ProjectIntegrationsSnapshot> = {}): Pro
 }
 
 function renderDetail(snapshot = integrations()) {
+  vi.spyOn(api, "getProjectHarness").mockRejectedValue(new Error("Synthetic optional Harness unavailable"));
   vi.spyOn(api, "getProjectIntegrations").mockResolvedValue(snapshot);
   vi.spyOn(api, "getSignals").mockResolvedValue({ schema_version: 1, observed_at: observedAt, pinned_signal_ids: [], warnings: [], signals: [] } satisfies SignalFeed);
   vi.spyOn(api, "getActivity").mockResolvedValue({ items: [

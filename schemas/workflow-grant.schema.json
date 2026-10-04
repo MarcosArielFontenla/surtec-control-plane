@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/workflow-grant.schema.json",
+  "title": "WorkflowGrant",
+  "$comment": "Server-derived human decision binding; schema validity does not grant dispatch permission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "workflow_id",
+    "project_id",
+    "issue_id",
+    "issue_revision",
+    "scope_revision",
+    "authority_revision",
+    "template_id",
+    "template_version",
+    "authorized_scope",
+    "role_assignments",
+    "permitted_stage_kinds",
+    "source_fingerprints",
+    "policy_fingerprint",
+    "preview_fingerprint",
+    "testing_policy_fingerprint",
+    "minimum_review_depth",
+    "testing_mode",
+    "budget",
+    "correction",
+    "approved_by",
+    "approval_id",
+    "approved_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "id": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+    },
+    "workflow_id": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+    },
+    "project_id": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+    },
+    "issue_id": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+    },
+    "issue_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "scope_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "authority_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "template_id": {
+      "enum": [
+        "analysis",
+        "implementation",
+        "quality-review",
+        "operations-investigation",
+        "trivial-change"
+      ]
+    },
+    "template_version": {
+      "const": 1
+    },
+    "authorized_scope": {
+      "$ref": "https://surtec.dev/schemas/work-issue.schema.json#/properties/authorized_scope"
+    },
+    "role_assignments": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role_id",
+          "agent_id",
+          "sandbox",
+          "client_context_categories"
+        ],
+        "properties": {
+          "role_id": {
+            "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/role"
+          },
+          "agent_id": {
+            "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+          },
+          "sandbox": {
+            "enum": [
+              "read-only",
+              "workspace-write"
+            ]
+          },
+          "client_context_categories": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "client-identity",
+                "project-outcome",
+                "active-commitments",
+                "service-context",
+                "confidential-notes"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "permitted_stage_kinds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 7,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/stageKind"
+      }
+    },
+    "source_fingerprints": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "fingerprint"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
+          },
+          "fingerprint": {
+            "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/hash"
+          }
+        }
+      }
+    },
+    "policy_fingerprint": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/hash"
+    },
+    "preview_fingerprint": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/hash"
+    },
+    "testing_policy_fingerprint": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/hash"
+    },
+    "minimum_review_depth": {
+      "enum": [
+        "focused",
+        "full"
+      ]
+    },
+    "testing_mode": {
+      "enum": [
+        "functional",
+        "strict-tdd"
+      ]
+    },
+    "budget": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/budget"
+    },
+    "correction": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/correction"
+    },
+    "approved_by": {
+      "const": "human"
+    },
+    "approval_id": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/id"
+    },
+    "approved_at": {
+      "$ref": "https://surtec.dev/schemas/workflow-record.schema.json#/$defs/timestamp"
+    }
+  }
+}

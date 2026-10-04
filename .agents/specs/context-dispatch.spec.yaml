@@ -1,0 +1,96 @@
+schema_version: 1
+name: Phase N - bounded context and logical roles
+entity: ContextDispatch
+domains: [context-assembly, execution-policy, task-evidence, dashboard]
+purpose: Assemble attributable bounded task context and enforce logical role restrictions through the existing runtime and policy boundaries.
+requirements:
+  - id: req-roles
+    description: Versioned role profiles define responsibility, task kinds, sandbox ceiling, required skills/evaluations, capabilities, approvals, budget policy and handoff references. Provide six safe defaults over existing registered agents; role selection never grants project or agent permissions.
+  - id: req-context
+    description: Assemble ten roadmap layers in stable precedence, deduplicate sources and attribute fingerprints, selection reasons, exact byte/line sizes and sensitivity. Project instructions are untrusted context, not privileged policy. Select files through contained explicit metadata and supported Harness routes, never recursive Markdown concatenation.
+  - id: req-budget
+    description: Enforce configurable rendered-context limits with defaults of 500 physical lines and 60000 UTF-8 bytes, code ceilings of 2000 lines and 128000 bytes, at most 64 sources and 256 KiB per inspected file. Required invalid or oversized context blocks dispatch without truncating mandatory instructions. Preserve existing instruction length, runtime, token, attempt and concurrency ceilings; role defaults only tighten them.
+  - id: req-privacy
+    description: Exclude all client categories by default and resolve selected consent categories server-side through the existing client-context service. Preview and manifest never expose confidential bodies, credentials or absolute source paths. Redact known secret/path forms before transmission; no claim of universal secret detection or instruction-injection immunity is made.
+  - id: req-routing
+    description: Deterministically explain direct execution, planning, review depth, QA or human decision using authorized issue scale/scope/domains, criticality/security/migration, trusted policies, role capabilities and budget/concurrency evidence. Delegation admission requires independent objectively verifiable benefit and isolated authority; it is an inspectable decision only, not permission to spawn workers in this phase.
+  - id: req-testing
+    description: Resolve the most restrictive applicable global/archetype/project/issue/role testing and review constraints from trusted versioned configuration. Functional is default and only exact currently authorized runners may execute. Strict TDD requires trusted runner configuration and independently captured ordered RED/GREEN plus REFACTOR or justified no-refactor evidence bound to scope/candidate; missing evidence cannot become verified completion. No policy-waiver editor or implicit downgrade is introduced.
+  - id: req-preview
+    description: Before generic analysis or issue dispatch show safe role/context/routing/testing/review/budget/approval and excluded-category evidence. A fingerprint binds preview to request, issue revision, consent and current sources/policy; server reassembly rejects stale or forged previews before task creation. Preview alone never queues work, saves Harness observations or executes a runner.
+  - id: req-evidence
+    description: Every new admitted task records a strict version-1 context manifest and role/routing/policy evidence as an additive validated envelope field under existing task locks/atomic writes. Persist hashes and bounded classifications, not copies of source documents. Revalidate before each attempt; changes to admitted required context or safety policy stop safely. Bound and redact prior summaries; do not reuse a thread across changed consent or a broadened execution contract.
+  - id: req-compatibility
+    description: Preserve named legacy task envelopes and logs without rewriting or inventing historical manifests. Historical issue agent assignments remain valid through explicit compatibility mappings, never silent role reassignment. New dispatch paths, including the CLI, use the same admission boundary; unsupported legacy retries require a new explicit governed dispatch rather than fabricated context approval.
+  - id: req-acceptance
+    description: Automate deterministic context/policy/privacy/overflow/staleness tests, fake-protocol dispatch/execution tests and real isolated API/browser preview-dispatch-inspection-reload/restart flows. Prove denied requests cause no task/worktree/provider effect and project inspection leaves source bytes unchanged.
+constraints:
+  - Follow docs/architecture/phase-n-context-design.md and the path-specific draft tasks, subject to actual human approval before implementation.
+  - The roadmap request authorizes design preparation, not automatic approval of this exact prospective contract.
+  - The existing sole runtime, policy service, issue scope gates, managed worktrees, leases and review publication gates retain authority. Lower context layers cannot change their code-owned decisions.
+  - Tracked role/context configuration contains no private data or machine paths. Project Markdown cannot create tool permissions, command authority or confidential-context consent.
+  - Version new subdocuments without silently migrating or deleting historical normal state. Missing optional data and invalid required data remain distinct.
+  - Do not change pinned H1-H4 canonical files or fingerprints merely to accommodate this feature. Product documentation additions must preserve declared Harness context budgets.
+  - No paid calls, external messages, sibling mutations, new dependencies, commits, pushes, merges or deploys are included.
+  - Application-selected project context sources are contained and bounded. Subsequent runtime filesystem reads are not guaranteed project-only; retain the existing sandbox, network, write-scope and approval controls and disclose this limitation in preview and runtime safety context.
+nonGoals:
+  - Executing delegated workflows, creating parallel workers or implementing the next roadmap phase.
+  - Hierarchical company budgets, cost accounting, new scheduler infrastructure or autonomous routines.
+  - Scaffold provisioning, source repinning, reconciliation or policy-waiver administration.
+  - A new provider, fixed model, generic plugin framework or automatic semantic interpretation of arbitrary Markdown routing.
+  - Universal prevention of sensitive user-authored text or model misinterpretation; sandbox and policy enforcement remain mandatory.
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-09-30T12:48:07Z"
+  acceptanceChecks:
+    - id: ac-behavior
+      requirementIds: [req-roles, req-context, req-budget, req-privacy, req-routing, req-testing, req-preview, req-evidence, req-compatibility, req-acceptance]
+      description: Offline fixtures and protocol fakes cover assembly, restrictions, privacy, staleness, persistence and dispatch behavior. The separate isolated real API/browser smoke is additionally mandatory before delivery.
+      command: pnpm test
+      expectedExitCode: 0
+    - id: ac-schemas
+      requirementIds: [req-roles, req-context, req-testing, req-evidence, req-compatibility]
+      description: Compile product schemas and validate versioned role/config/context contracts plus explicit legacy compatibility through behavior tests.
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-roles, req-context, req-routing, req-preview, req-evidence]
+      description: Typecheck policy, assembly, persistence, execution and UI integration without widening capabilities.
+      command: pnpm typecheck
+      expectedExitCode: 0
+    - id: ac-build
+      requirementIds: [req-preview, req-acceptance]
+      description: Build the dashboard with role/context preview and inspectable task evidence.
+      command: pnpm build
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications:
+  - date: "2026-10-01"
+    question: Approve the narrow T012 verification-test amendment after the filtered done runner reproduced a grouped interruption-test timeout?
+    answer: The user explicitly approved adding runner/verify.test.ts, separating cancellation and attempt-ownership cases with a ten-second timeout per case and unchanged assertions. Revalidate the whole feature; no runtime, permission, global test timeout or command-catalog change is authorized.
+    affects: T012 additionally targets runner/verify.test.ts for test isolation/timing only. Original design approval metadata, production cancellation/lease limits, Harness environment policy, canonical pins and normal state remain unchanged.
+  - date: "2026-09-30"
+    question: Approve the T009 integration amendment for independently captured testing evidence, runner integration and additive strict persistence/configuration contracts?
+    answer: The user explicitly answered yes in the task conversation. Implement infrastructure observations, pre-implementation RED and final-candidate GREEN, unchanged trusted probes, explicit policy refactor justification and authoritative issue gates; no paid calls or next-task implementation.
+    affects: T009 retains its original targets and adds runner/run-task.ts and its test, state types/validation/store tests, issue types, task-record/issue-evidence/testing-evidence/context-config schemas, context types/validation/testing-policy and their tests, and context-service and its test. Legacy evidence is not backfilled; default policy and canonical pins remain unchanged.
+  - date: "2026-09-30"
+    question: Approve minimal versioned admission references and shared execution reassembly with the additional T008 persistence and service targets?
+    answer: The user explicitly approved the amendment in the task conversation. Persist only instruction length/hash, manifest fingerprint and original issue identity/revision/status. Validate live authority before reconstructing the admitted projection; missing historical bindings require a new confirmed task.
+    affects: T008 additionally targets dashboard/src/server/dispatch.ts and dispatch.test.ts, context-service.ts and context-service.test.ts, lib/state/types.ts, validation.ts and store.test.ts, schemas/task-envelope.schema.json and the new schemas/context-admission.schema.json. No source-document copies, automatic backfill or paid runtime calls are authorized.
+  - date: "2026-09-30"
+    question: Approve the prospective Phase N design, specification and twelve ordered tasks?
+    answer: The user explicitly approved them in the task conversation. The timestamp records this session's acknowledgement, not an inferred earlier approval time.
+    affects: Entire prospective design and T001-T012; subsequent material deltas require renewed review.
+  - date: "2026-09-30"
+    question: Approve temporary inspection of the installed stable protocol before deciding whether it can restrict runtime reads?
+    answer: The user explicitly approved the inspection amendment. Temporary generation found no readable-root restriction; no model turn or repository binding replacement occurred.
+    affects: Runtime-surface inspection only; the result does not establish project-only reads.
+  - date: "2026-09-30"
+    question: Continue with contained application-selected context and the existing sandbox while acknowledging that later runtime reads are not proven project-only?
+    answer: The user explicitly selected option 1 in the task conversation. No additional runtime filesystem isolation or protocol refresh is included.
+    affects: req-roles, req-context, req-preview, req-evidence and T004-T012 retain their original scope with this disclosed runtime-read limitation.
+  - date: "2026-09-30"
+    question: Include API admission wiring in T007 and advance the minimum T008 fail-closed guard before governed tasks can be queued?
+    answer: The user explicitly approved the amendment in the task conversation. The runner holds governed tasks as needs-review without model/worktree effects until T008 implements execution context enforcement.
+    affects: T007 additionally targets dashboard/src/server/index.ts and index.test.ts plus runner/run-task.ts and run-task.test.ts for this temporary guard only. T008-T012 remain pending; no runtime bypass or paid call is authorized.

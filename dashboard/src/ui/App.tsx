@@ -120,7 +120,8 @@ export function App() {
             <div className="project-detail-section panel"><p>El proyecto ya no está en el portfolio actual.</p><button type="button" className="ghost-btn" onClick={() => setSelectedProject(null)}>Volver al portfolio</button></div>
           ) : view === "Hoy" ? (
             <TodayView data={today.data} error={today.error} onOpenTask={setSelectedTask} onRefresh={today.refresh} projects={data?.projects ?? []}
-              onOpenProject={(id) => id === "surtec" ? (setNav("SURTEC"), Promise.resolve()) : openProject(id, "vscode")} onPrepareTask={prepareTask} />
+              onOpenProject={(id) => id === "surtec" ? (setNav("SURTEC"), Promise.resolve()) : openProject(id, "vscode")}
+              onOpenHarness={(id) => { setSelectedTask(null); setSelectedProject(id); }} onPrepareTask={prepareTask} />
           ) : view === "SURTEC" ? (
             <OrganizationView projects={data?.projects ?? []} profiles={profiles} />
           ) : view === "Clientes" ? (

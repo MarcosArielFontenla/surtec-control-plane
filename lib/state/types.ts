@@ -1,7 +1,19 @@
 // Canonical TS mirror of schemas/task-envelope.schema.json
 import type { Signal } from "../signals/types";
+import type { ContextAdmissionV2, ContextManifest } from "../context/types";
 
 export type SandboxMode = "read-only" | "workspace-write";
+export interface ContextAdmissionV1 {
+  schema_version: 1;
+  kind: "analysis" | "issue";
+  manifest_fingerprint: string;
+  instructions_length: number;
+  instructions_hash: string;
+  issue_id?: string;
+  issue_revision?: number;
+  issue_status?: "authorized" | "working";
+}
+export type ContextAdmission = ContextAdmissionV1 | ContextAdmissionV2;
 
 export interface TaskEnvelope {
   id: string;
@@ -18,6 +30,9 @@ export interface TaskEnvelope {
   requires_human_approval: boolean;
   metadata: Record<string, unknown>;
   self_verify?: boolean;
+  // Absent identifies the supported legacy envelope; reads never fabricate history.
+  context_manifest?: ContextManifest;
+  context_admission?: ContextAdmission;
 }
 
 // Canonical TS mirror of schemas/agent-result.schema.json
@@ -93,6 +108,7 @@ export interface TaskOrchestration {
 }
 
 export interface TaskRecord {
+  testing_evidence?: import("../context/testing-evidence").TestingEvidence;
   envelope: TaskEnvelope;
   lifecycle: Lifecycle;
   outcome: AgentOutcome | null;

@@ -152,6 +152,10 @@ export class CodexAppServerClient {
     signal.addEventListener("abort", onAbort, { once: true });
 
     try {
+      if (input.contextFingerprint !== undefined && (!/^[a-f0-9]{64}$/.test(input.contextFingerprint) ||
+          (input.threadId && input.resumeContextFingerprint !== input.contextFingerprint))) {
+        throw new CodexProtocolError("Thread context binding is invalid; a new confirmed task is required");
+      }
       const initializeParams: InitializeParams = {
         clientInfo: { name: "surtec_control_plane", title: "Surtec Control Plane", version: "0.1.0" },
         capabilities: null,

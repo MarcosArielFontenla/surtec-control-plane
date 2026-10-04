@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/issue-document.schema.json",
+  "title": "IssueDocument",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "issues", "candidates", "evidence", "events"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "issues": { "type": "object", "maxProperties": 500, "additionalProperties": { "$ref": "https://surtec.dev/schemas/work-issue.schema.json" } },
+    "candidates": { "type": "object", "maxProperties": 1000, "additionalProperties": { "$ref": "https://surtec.dev/schemas/review-candidate.schema.json" } },
+    "evidence": { "type": "object", "maxProperties": 5000, "additionalProperties": { "$ref": "https://surtec.dev/schemas/issue-evidence.schema.json" } },
+    "events": { "type": "array", "maxItems": 20000, "items": { "type": "object", "additionalProperties": false, "required": ["id", "issue_id", "type", "at", "scope_revision", "payload"], "properties": { "id": { "type": "string", "minLength": 1, "maxLength": 100 }, "issue_id": { "type": "string", "pattern": "^I-[A-Fa-f0-9-]{36}$" }, "type": { "type": "string", "minLength": 1, "maxLength": 100 }, "at": { "type": "string", "format": "date-time" }, "scope_revision": { "type": "integer", "minimum": 1 }, "payload": { "type": "object", "maxProperties": 30 } } } }
+  }
+}
