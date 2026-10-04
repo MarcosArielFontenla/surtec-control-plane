@@ -13,6 +13,9 @@ import { appendTaskEvent } from "../../../lib/state/events";
 import type { TaskControl } from "../../../runner/task-orchestrator";
 import { TaskControlError } from "../../../runner/task-orchestrator";
 import { createIssueService } from "./issue-service";
+import { serve } from "@hono/node-server";
+import type { AddressInfo } from "node:net";
+import { chromium } from "playwright";
 
 async function apiRequest(app: ReturnType<typeof createApp>, path: string, init?: RequestInit): Promise<Response> {
   const method = (init?.method ?? "GET").toUpperCase();
@@ -353,6 +356,58 @@ describe("api", () => {
     const res = await apiRequest(app, "/api/tasks/STK-1/retry", { method: "POST" });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: "budget exhausted" });
+  });
+
+  it("blocks active workflow task shortcuts through real HTTP/browser, reload and fresh API reconstruction", async () => {
+    cpSync("registry/workflow-policy.yml", join(root, "registry/workflow-policy.yml"));
+    writeFileSync(join(root, "registry/projects.yml"), "projects:\n  stock-control:\n    allowed_agents: [product-manager, backend-engineer, tech-lead]\n    sandbox: { default: workspace-write }\n");
+    const controls = fakeTaskControl(), app = createApp(root, controls);
+    const created = createIssueService(root, { projectIds: () => ["stock-control"] }).create({ project_id: "stock-control", title: "Synthetic workflow boundary", expected_outcome: "Inspect evidence", acceptance_criteria: ["Evidence retained"], assigned_role_id: "backend-engineer",
+      authorized_scope: { expected_outcome: "Inspect evidence", acceptance_criteria: ["Evidence retained"], allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["code"], explicit_exclusions: [] } });
+    const request = { template_id: "analysis", template_version: 1, project_id: "stock-control", issue_id: created.id, expected_revision: created.revision, selected_agents: { "portfolio-analyst": "product-manager" } };
+    const preview = await apiRequest(app, "/api/workflows/preview", { method: "POST", body: JSON.stringify(request) }); expect(preview.status).toBe(200);
+    const started = await apiRequest(app, "/api/workflows/start", { method: "POST", body: JSON.stringify({ request, preview_fingerprint: (await preview.json()).fingerprint, confirm: true, approval_id: "synthetic-only" }) });
+    expect(started.status).toBe(201); const detail = await started.json(), id: string = detail.stages[0].task_id;
+    const paths = [join(stateDir, "tasks", `${id}.json`), join(stateDir, "events", `${id}.jsonl`), join(stateDir, "workflows/workflows.json"), join(stateDir, "issues/issues.json")];
+    const before = paths.map((path) => readFileSync(path));
+    const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    try {
+      if (!server.address()) await new Promise<void>((resolve, reject) => { server.once("listening", resolve); server.once("error", reject); });
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const token: string = (await (await fetch(`${base}/api/session`)).json()).token;
+      for (const action of ["retry", "cancel", "approve", "reject"]) {
+        const response = await fetch(`${base}/api/tasks/${id}/${action}`, { method: "POST", headers: { "X-Surtec-Session": token } });
+        expect(response.status).toBe(409); expect(JSON.stringify(await response.json())).not.toContain(root);
+      }
+      if (process.env.SURTEC_WORKFLOW_BROWSER_SMOKE === "1") {
+        try { browser = await chromium.launch({ headless: true }); }
+        catch (error) { if (process.platform !== "win32" || !(error instanceof Error) || !error.message.includes("Executable doesn't exist")) throw error; browser = await chromium.launch({ headless: true, channel: "msedge" }); }
+        const page = await browser.newPage(), pageErrors: string[] = []; page.on("pageerror", (error) => pageErrors.push(error.message));
+        await page.goto(`${base}/api/session`);
+        const statuses = await page.evaluate(async (taskId) => {
+          const { token } = await (await fetch("/api/session")).json();
+          return Promise.all(["retry", "cancel", "approve", "reject"].map(async (action) => (await fetch(`/api/tasks/${taskId}/${action}`, { method: "POST", headers: { "X-Surtec-Session": token } })).status));
+        }, id);
+        expect(statuses).toEqual([409, 409, 409, 409]); await page.reload(); expect(pageErrors).toEqual([]);
+      }
+      const reconstructed = createApp(root, controls);
+      expect((await reconstructed.request(`/api/tasks/${id}/retry`, { method: "POST", headers: { "X-Surtec-Session": token } })).status).toBe(403);
+      for (const action of ["retry", "cancel", "approve", "reject"]) expect((await apiRequest(reconstructed, `/api/tasks/${id}/${action}`, { method: "POST" })).status).toBe(409);
+      expect(paths.map((path) => readFileSync(path))).toEqual(before);
+      for (const callback of [controls.retry, controls.cancel, controls.enqueue]) expect(callback).not.toHaveBeenCalled();
+      expect((await app.request(`/api/tasks/${id}/events`)).status).toBe(200);
+    } finally {
+      try { await browser?.close(); if (browser) expect(browser.isConnected()).toBe(false); }
+      finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); expect(server.listening).toBe(false); }
+    }
+  }, 25000);
+
+  it.each(["retry", "cancel", "approve", "reject"])("returns a sanitized conflict for %s when workflow ownership is corrupt", async (action) => {
+    writeFinishedReadOnly("FREE-1"); const path = join(stateDir, "workflows/workflows.json"); mkdirSync(join(stateDir, "workflows"), { recursive: true }); writeFileSync(path, "{");
+    const controls = fakeTaskControl(), app = createApp(root, controls), before = readFileSync(join(stateDir, "tasks/FREE-1.json"));
+    const response = await apiRequest(app, `/api/tasks/FREE-1/${action}`, { method: "POST" }); expect(response.status).toBe(409); expect(await response.json()).toEqual({ error: "Workflow ownership is unavailable; task action denied without effects" });
+    expect(readFileSync(join(stateDir, "tasks/FREE-1.json"))).toEqual(before); expect(readFileSync(path, "utf8")).toBe("{"); expect(controls.retry).not.toHaveBeenCalled(); expect(controls.cancel).not.toHaveBeenCalled();
   });
 
   it("task control mutations fail closed when no worker was injected", async () => {

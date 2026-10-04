@@ -191,15 +191,17 @@ describe("runTask", () => {
     for (const effect of [run, createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
     expect(existsSync(join(root, "state/workflows"))).toBe(false); expect(readTask("T-1")!.testing_evidence).toBeUndefined();
   });
-  it("holds the exact stage after expired-lease recovery and rejects stale run identity without effects", async () => {
+  it("retains the exact expired stage without a controller and rejects recovery, retry and stale execution without effects", async () => {
     const record = workflowFixture(); record.lifecycle = "running"; record.orchestration!.attempts = 1;
     record.orchestration!.lease = { run_id: "old-stage-run", worker_id: "fixture", acquired_at: "2026-01-01T00:00:00Z", heartbeat_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-01T00:00:01Z" }; writeTask(record);
     const scheduler = new TaskOrchestrator({ repoRoot: root, executor });
-    expect(scheduler.recoverExpiredLeases()).toBe(1);
-    const path = join(root, "state/tasks/T-1.json"), recovered = readFileSync(path);
-    expect(await runTask("T-1", root, executor, { runId: "old-stage-run" })).toBeNull(); expect(readFileSync(path)).toEqual(recovered);
-    expect(await runTask("T-1", root, executor)).toMatchObject({ outcome: "needs-review", retryable: false });
+    const path = join(root, "state/tasks/T-1.json"), before = readFileSync(path);
+    expect(scheduler.recoverExpiredLeases()).toBe(0); expect(await scheduler.runOnce()).toBe(0);
+    expect(() => scheduler.retry("T-1")).toThrow(/current controller/);
+    expect(await runTask("T-1", root, executor, { runId: "old-stage-run" })).toMatchObject({ stale: true, retryable: false });
+    expect(await runTask("T-1", root, executor)).toBeNull(); expect(readFileSync(path)).toEqual(before);
     expect(readTask("T-1")!.envelope.context_admission).toEqual(record.envelope.context_admission);
+    expect(readTaskEvents("T-1")).toEqual([]);
     for (const effect of [run, createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
   });
   it("holds a scheduler-owned valid v2 lease and fences expired ownership without changing its bytes", async () => {

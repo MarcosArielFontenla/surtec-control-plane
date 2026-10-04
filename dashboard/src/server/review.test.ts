@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskRecord } from "../../../lib/state/types";
@@ -8,9 +8,11 @@ vi.mock("../../../runner/worktree", () => ({ pushBranch: vi.fn(), removeWorktree
 import { pushBranch, removeWorktree } from "../../../runner/worktree";
 vi.mock("../../../runner/github", () => ({ ensurePullRequest: vi.fn(), buildPrBody: vi.fn(() => "PR_BODY") }));
 import { ensurePullRequest } from "../../../runner/github";
-import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
+import { approveTask, rejectTask, ReviewError, ReviewConflictError, TaskNotFoundError } from "./review";
 import { writeTask, readTask } from "../../../lib/state/store";
 import { readTaskEvents } from "../../../lib/state/events";
+import { mutateWorkflowDocument } from "../../../lib/state/workflows";
+import type { WorkflowStatus } from "../../../lib/workflows/types";
 
 let root: string;
 let projectRepo: string;
@@ -29,6 +31,34 @@ function record(id: string, over: Partial<TaskRecord> & { sandbox?: "read-only" 
     updated_at: "2026-05-29T10:00:00Z", finished_at: "2026-05-29T10:30:00Z",
     result: null, logs_path: null, decision: over.decision ?? null,
   };
+}
+
+function retainWorkflow(candidateTaskId: string, status: WorkflowStatus = "running", stageTaskId: string | null = null, retainedBy: "root" | "stage" | "lineage" | "none" = "root"): void {
+  const at = "2026-10-04T00:00:00Z", hash = "a".repeat(64);
+  const budget = { max_tasks: 7, max_attempts: 10, max_runtime_ms: 900000, max_total_tokens: 100000 };
+  mutateWorkflowDocument((d) => {
+    d.grants["grant-1"] = { schema_version: 1, id: "grant-1", workflow_id: "workflow-1", project_id: "stock-control", issue_id: "issue-1", issue_revision: 1, scope_revision: 1, authority_revision: 1, template_id: "analysis", template_version: 1,
+      authorized_scope: { expected_outcome: "Inspect synthetic evidence", acceptance_criteria: ["Evidence retained"], allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["code"], explicit_exclusions: [] },
+      role_assignments: [{ role_id: "planner", agent_id: "backend-engineer", sandbox: "read-only", client_context_categories: [] }], permitted_stage_kinds: ["analysis"], source_fingerprints: [{ id: "safety", fingerprint: hash }], policy_fingerprint: hash, preview_fingerprint: hash, testing_policy_fingerprint: hash,
+      minimum_review_depth: "focused", testing_mode: "functional", budget, correction: { enabled: false, max_corrections: 0, budget: null }, approved_by: "human", approval_id: "synthetic-only", approved_at: at };
+    d.workflows["workflow-1"] = { schema_version: 1, id: "workflow-1", revision: 1, project_id: "stock-control", issue_id: "issue-1", scope_revision: 1, template_id: "analysis", template_version: 1, status, work_scale: "bounded", current_grant_id: "grant-1", authority_revision: 1,
+      stage_ids: ["stage-1"], current_stage_id: "stage-1", pending_decision_id: status === "waiting-human" ? "decision-1" : null, lineage_id: null,
+      candidate: { candidate_id: "candidate-1", issue_id: "issue-1", repository_id: "stock-control", task_id: candidateTaskId, execution_id: "run-1", scope_revision: 1, base_revision: "b".repeat(40), candidate_revision: "c".repeat(40), changed_paths: ["src/change.ts"], diff_fingerprint: hash, content_fingerprint: hash, testing_evidence_fingerprint: hash },
+      approved_plan: null, review_policy: null, budget, counters: { tasks: stageTaskId ? 1 : 0, attempts: 0, runtime_ms: 0, total_tokens: 0, accounting_complete: true }, blocked_reason: status === "needs-decision" ? "Synthetic review" : null,
+      recovery_state: "none", next_action: "Inspect retained evidence", stop_requested_at: status === "cancelled" ? at : null, created_at: at, updated_at: at, completed_at: status === "cancelled" ? at : null };
+    d.stages["stage-1"] = { schema_version: 1, id: "stage-1", workflow_id: "workflow-1", grant_id: "grant-1", authority_revision: 1, generation: 1, ordinal: 1, kind: "analysis", role_id: "planner", agent_id: "backend-engineer", sandbox: "read-only", status: stageTaskId ? "reserved" : "pending", phase: "execution", task_id: stageTaskId, execution_id: null,
+      predecessor_stage_id: null, supersedes_stage_id: null, handoff_id: null, output: null, output_fingerprint: null, candidate: null, context_fingerprint: stageTaskId ? hash : null, created_at: at, updated_at: at };
+    if (stageTaskId) d.admission_intents["intent-1"] = { schema_version: 1, id: "intent-1", workflow_id: "workflow-1", stage_id: "stage-1", grant_id: "grant-1", authority_revision: 1, task_id: stageTaskId, status: "reserved", expected_issue_revision: 1, expected_workflow_revision: 1, context_fingerprint: hash, blocked_reason: null, created_at: at, updated_at: at };
+    if (status === "waiting-human") d.decisions["decision-1"] = { schema_version: 1, id: "decision-1", workflow_id: "workflow-1", kind: "proposal-acknowledgement", status: "pending", expected_workflow_revision: 1, expected_issue_revision: 1, resource_fingerprint: hash, candidate_id: null, review_receipt_ids: [], summary: "Inspect synthetic evidence", approval_id: null, decided_by: null, rationale: null, created_at: at, decided_at: null };
+    if (retainedBy !== "root") {
+      const owner = d.workflows["workflow-1"]!, candidate = owner.candidate!; owner.candidate = null;
+      if (retainedBy === "stage") d.stages["stage-1"]!.candidate = candidate;
+      if (retainedBy === "lineage") {
+        owner.lineage_id = "lineage-1";
+        d.lineages["lineage-1"] = { schema_version: 1, id: "lineage-1", project_id: "stock-control", issue_id: "issue-1", scope_revision: 1, origin_task_id: candidateTaskId, workflow_ids: ["workflow-1"], candidate_ids: [], correction_limit: 0, corrections_consumed: 0, consumed_stage_id: null, consumed_at: null };
+      }
+    }
+  });
 }
 
 beforeEach(() => {
@@ -180,5 +210,68 @@ describe("rejectTask", () => {
     expect(completed.cleanup_completed).toBe(true);
     expect(completed.attempts).toBe(2);
     expect(removeWorktree).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("active workflow review boundary", () => {
+  it.each(["running", "waiting-human", "needs-decision"] as const)("denies publication and candidate cleanup while %s without changing snapshots or events", (status) => {
+    writeTask(record("TREE-1")); retainWorkflow("TREE-1", status);
+    const path = join(root, "state/tasks/TREE-1.json"), workflowPath = join(root, "state/workflows/workflows.json");
+    const before = readFileSync(path), workflowBefore = readFileSync(workflowPath);
+    expect(() => approveTask("TREE-1", root)).toThrow(ReviewConflictError);
+    expect(() => rejectTask("TREE-1", root)).toThrow(ReviewConflictError);
+    expect(pushBranch).not.toHaveBeenCalled(); expect(ensurePullRequest).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
+    expect(readFileSync(path)).toEqual(before); expect(readFileSync(workflowPath)).toEqual(workflowBefore); expect(readTaskEvents("TREE-1")).toEqual([]);
+  });
+  it("checks durable stage ownership even when a task has no workflow metadata", () => {
+    writeTask(record("TREE-1")); writeTask(record("ROLE-1", { sandbox: "read-only" })); retainWorkflow("TREE-1", "running", "ROLE-1");
+    expect(() => approveTask("ROLE-1", root)).toThrow(/Active workflow/); expect(() => rejectTask("ROLE-1", root)).toThrow(/Active workflow/);
+    expect(readTask("ROLE-1")!.decision).toBeNull(); expect(readTaskEvents("ROLE-1")).toEqual([]);
+  });
+  it.each(["stage", "lineage"] as const)("protects older candidate tasks retained only by the %s, not the current root", (retainedBy) => {
+    writeTask(record("TREE-1")); retainWorkflow("TREE-1", "running", null, retainedBy);
+    expect(() => approveTask("TREE-1", root)).toThrow(ReviewConflictError); expect(() => rejectTask("TREE-1", root)).toThrow(ReviewConflictError);
+    expect(pushBranch).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled(); expect(readTaskEvents("TREE-1")).toEqual([]);
+  });
+  it.each(["approved", "rejected"] as const)("does not treat a stored %s flag as an ownership bypass", (status) => {
+    writeTask(record("TREE-1", { decision: { status, at: "2026-10-01T00:00:00Z" } })); retainWorkflow("TREE-1");
+    expect(() => (status === "approved" ? approveTask : rejectTask)("TREE-1", root)).toThrow(ReviewConflictError);
+    expect(readTaskEvents("TREE-1")).toEqual([]); expect(pushBranch).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
+  });
+  it("does not block unrelated publication because an unadmitted read-only reservation has no task yet", () => {
+    writeTask(record("FREE-1")); retainWorkflow("not-a-candidate", "running", "MISSING-ROLE", "none");
+    expect(approveTask("FREE-1", root).status).toBe("approved"); expect(pushBranch).toHaveBeenCalledTimes(1);
+  });
+  it.each(["branch", "worktree"])("denies an independent task aliasing the retained %s", (alias) => {
+    writeTask(record("TREE-1")); const other = record("ALIAS-1");
+    if (alias === "branch") other.envelope.metadata.run = { branch: "agent/TREE-1-backend-engineer", worktree_path: "/tmp/unrelated", committed: true };
+    else other.envelope.metadata.run = { branch: "agent/ALIAS-1-backend-engineer", worktree_path: "/tmp/wt/../wt", committed: true };
+    writeTask(other); retainWorkflow("TREE-1");
+    expect(() => approveTask("ALIAS-1", root)).toThrow(/retains this managed tree/); expect(() => rejectTask("ALIAS-1", root)).toThrow(/retains this managed tree/);
+    expect(pushBranch).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled(); expect(readTaskEvents("ALIAS-1")).toEqual([]);
+  });
+  it.each(["approve", "reject"] as const)("does not resume a partial %s while ownership is active", (action) => {
+    writeTask(record("TREE-1", { decision: { status: action === "approve" ? "approving" : "rejecting", at: "2026-10-01T00:00:00Z", attempts: 1, pushed: action === "approve" } }));
+    retainWorkflow("TREE-1"); const before = readFileSync(join(root, "state/tasks/TREE-1.json"));
+    expect(() => (action === "approve" ? approveTask : rejectTask)("TREE-1", root)).toThrow(ReviewConflictError);
+    expect(readFileSync(join(root, "state/tasks/TREE-1.json"))).toEqual(before); expect(ensurePullRequest).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
+  });
+  it("retains the tree after stop intent until cancellation is terminal", () => {
+    writeTask(record("TREE-1")); retainWorkflow("TREE-1");
+    mutateWorkflowDocument((d) => { const owner = d.workflows["workflow-1"]!; owner.revision++; owner.stop_requested_at = "2026-10-04T00:00:00Z"; });
+    expect(() => rejectTask("TREE-1", root)).toThrow(ReviewConflictError); expect(removeWorktree).not.toHaveBeenCalled();
+  });
+  it("permits separately authorized cleanup after terminal workflow cancellation", () => {
+    writeTask(record("TREE-1")); retainWorkflow("TREE-1", "cancelled");
+    expect(rejectTask("TREE-1", root).status).toBe("rejected"); expect(removeWorktree).toHaveBeenCalledTimes(1);
+  });
+  it("preserves unrelated publication while another tree is retained", () => {
+    writeTask(record("TREE-1")); const other = record("FREE-1"); other.envelope.metadata.run = { branch: "agent/FREE-1-backend-engineer", worktree_path: "/tmp/other", committed: true }; writeTask(other); retainWorkflow("TREE-1");
+    expect(approveTask("FREE-1", root).status).toBe("approved"); expect(pushBranch).toHaveBeenCalledTimes(1);
+  });
+  it.each(["{", '{"schema_version":2}'])("fails closed on unavailable workflow ownership and preserves its bytes: %s", (bytes) => {
+    writeTask(record("TREE-1")); const path = join(root, "state/workflows/workflows.json"); mkdirSync(join(root, "state/workflows"), { recursive: true }); writeFileSync(path, bytes);
+    expect(() => approveTask("TREE-1", root)).toThrow(/ownership is unavailable/); expect(() => rejectTask("TREE-1", root)).toThrow(/ownership is unavailable/);
+    expect(readFileSync(path, "utf8")).toBe(bytes); expect(readTaskEvents("TREE-1")).toEqual([]); expect(pushBranch).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
   });
 });

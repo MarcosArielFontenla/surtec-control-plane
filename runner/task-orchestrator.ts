@@ -10,6 +10,9 @@ import { runTask, type TaskRunCompletion, type TaskRunOptions } from "./run-task
 import type { Tracer } from "../lib/observability/tracing";
 import { redactContextText } from "../lib/context/assemble";
 import type { WorkflowOrchestrator } from "./workflow-orchestrator";
+import { readWorkflowDocument } from "../lib/state/workflows";
+import { canonicalPath } from "../lib/security/paths";
+import { expandHome } from "../lib/expand-home";
 
 export interface TaskControl {
   enqueue(taskId: string): void;
@@ -20,6 +23,54 @@ export interface TaskControl {
 export class TaskControlError extends Error {
   constructor(message: string, readonly status: 404 | 409) {
     super(message);
+  }
+}
+
+// State-only manual-action fence. Durable references, not caller metadata or
+// the current stage alone, retain every tree an active workflow may need.
+export function assertTaskOutsideActiveWorkflow(record: TaskRecord): void {
+  try {
+    const document = readWorkflowDocument(), admission = record.envelope.context_admission;
+    if (admission?.schema_version === 2) {
+      const owner = document.workflows[admission.workflow_id], stage = document.stages[admission.stage_id];
+      if (!owner || !stage || stage.workflow_id !== owner.id || stage.task_id !== record.envelope.id
+        || stage.generation !== admission.stage_generation || stage.grant_id !== admission.grant_id
+        || stage.authority_revision !== admission.authority_revision) {
+        throw new TaskControlError("Workflow task ownership cannot be proven; use its current workflow decision", 409);
+      }
+    }
+    const active = Object.values(document.workflows).filter((owner) => !["completed", "cancelled"].includes(owner.status));
+    const activeIds = new Set(active.map((owner) => owner.id));
+    const protectedTasks = new Set<string>(), protectedTrees = new Set<string>();
+    const retainTree = (id: string) => { protectedTasks.add(id); protectedTrees.add(id); };
+    for (const owner of active) if (owner.candidate) retainTree(owner.candidate.task_id);
+    for (const stage of Object.values(document.stages)) if (activeIds.has(stage.workflow_id)) {
+      if (stage.task_id) protectedTasks.add(stage.task_id);
+      if (stage.task_id && stage.sandbox === "workspace-write") protectedTrees.add(stage.task_id);
+      if (stage.candidate) retainTree(stage.candidate.task_id);
+    }
+    for (const intent of Object.values(document.admission_intents)) if (activeIds.has(intent.workflow_id)) protectedTasks.add(intent.task_id);
+    for (const receipt of Object.values(document.review_receipts)) if (activeIds.has(receipt.workflow_id)) retainTree(receipt.candidate.task_id);
+    for (const lineage of Object.values(document.lineages)) if (lineage.workflow_ids.some((id) => activeIds.has(id))) retainTree(lineage.origin_task_id);
+    const issueId = admission?.kind === "issue" || admission?.schema_version === 2 ? admission.issue_id : record.envelope.metadata.issue_id;
+    if (protectedTasks.has(record.envelope.id) || active.some((owner) => owner.id === (admission?.schema_version === 2 ? admission.workflow_id : null)
+      || owner.project_id === record.envelope.project && owner.issue_id === issueId)) {
+      throw new TaskControlError("Active workflow ownership denies this task action; use its current decision or stop the workflow first", 409);
+    }
+    const run = record.envelope.metadata.run as { branch?: string; worktree_path?: string } | undefined;
+    if (!run?.branch && !run?.worktree_path) return;
+    for (const id of protectedTrees) {
+      const task = readTask(id);
+      if (!task) throw new TaskControlError("Workflow tree ownership cannot be proven; retained facts require review", 409);
+      const owned = task.envelope.metadata.run as { branch?: string; worktree_path?: string } | undefined;
+      if (run?.worktree_path && owned?.worktree_path && canonicalPath(expandHome(run.worktree_path)) === canonicalPath(expandHome(owned.worktree_path))
+        || run?.branch && run.branch === owned?.branch && canonicalPath(expandHome(record.envelope.repo_path)) === canonicalPath(expandHome(task.envelope.repo_path))) {
+        throw new TaskControlError("An active workflow retains this managed tree; publication, retry and cleanup are denied", 409);
+      }
+    }
+  } catch (error) {
+    if (error instanceof TaskControlError) throw error;
+    throw new TaskControlError("Workflow ownership is unavailable; task action denied without effects", 409);
   }
 }
 
@@ -151,8 +202,9 @@ export class TaskOrchestrator implements TaskControl {
     const at = this.now().toISOString();
     const updated = updateTask(taskId, (record) => {
       found = true;
-      const orchestration = ensureTaskOrchestration(record);
       if (record.envelope.context_admission?.schema_version === 2) throw new TaskControlError("Workflow task retry requires its current controller; manual retry is denied", 409);
+      assertTaskOutsideActiveWorkflow(record);
+      const orchestration = ensureTaskOrchestration(record);
       if (typeof record.envelope.metadata.issue_id === "string") {
         throw new TaskControlError(`issue-linked tasks must be resumed through the local issue workflow: ${record.envelope.metadata.issue_id}`, 409);
       }
@@ -188,12 +240,16 @@ export class TaskOrchestrator implements TaskControl {
       if (snapshot.lifecycle !== "running") continue;
       const expiry = snapshot.orchestration?.lease?.expires_at;
       if (expiry && Date.parse(expiry) > now.getTime()) continue;
-      if (snapshot.envelope.context_admission?.schema_version === 2 && this.workflows) { if (this.workflows.recoverExpired(snapshot)) recovered++; continue; }
+      if (snapshot.envelope.context_admission?.schema_version === 2) {
+        if (this.workflows?.recoverExpired(snapshot)) recovered++;
+        continue;
+      }
       let disposition: "retry" | "failed" | "cancelled" | null = null;
       let previousRunId: string | null = null;
       try {
         const updated = updateTask(snapshot.envelope.id, (record) => {
           if (record.lifecycle !== "running") return false;
+          assertTaskOutsideActiveWorkflow(record);
           const orchestration = ensureTaskOrchestration(record);
           if (orchestration.lease && Date.parse(orchestration.lease.expires_at) > now.getTime()) return false;
           previousRunId = orchestration.lease?.run_id ?? "legacy-run";
@@ -232,7 +288,7 @@ export class TaskOrchestrator implements TaskControl {
         if (disposition === "cancelled") appendTaskEvent({ task_id: snapshot.envelope.id, type: "cancelled", revision: updated.revision!, run_id: previousRunId, attempt: updated.orchestration?.attempts || null, payload: { reason: "cancelled while worker was unavailable" }, at: now.toISOString() });
         if (disposition === "failed") appendTaskEvent({ task_id: snapshot.envelope.id, type: "failed", revision: updated.revision!, run_id: previousRunId, attempt: updated.orchestration?.attempts || null, payload: { reason: "retry budget exhausted" }, at: now.toISOString() });
       } catch (error) {
-        if (!(error instanceof StateLockConflictError)) throw error;
+        if (!(error instanceof StateLockConflictError) && !(error instanceof TaskControlError)) throw error;
       }
     }
     return recovered;
@@ -267,7 +323,8 @@ export class TaskOrchestrator implements TaskControl {
             const orchestration = snapshot.orchestration;
             if (orchestration?.retry_at && Date.parse(orchestration.retry_at) > now.getTime()) continue;
             if (snapshot.envelope.sandbox === "workspace-write" && writeProjects.has(snapshot.envelope.project)) continue;
-            if (snapshot.envelope.context_admission?.schema_version === 2 && this.workflows) {
+            if (snapshot.envelope.context_admission?.schema_version === 2) {
+              if (!this.workflows) continue;
               try { if (!this.workflows.canClaim(snapshot)) continue; }
               catch { denied.push(snapshot.envelope.context_admission.workflow_id); continue; }
             }
@@ -279,7 +336,7 @@ export class TaskOrchestrator implements TaskControl {
               if (claim.envelope.sandbox === "workspace-write") writeProjects.add(claim.envelope.project);
               launches.push(claim);
             } catch (error) {
-              if (!(error instanceof StateLockConflictError)) throw error;
+              if (!(error instanceof StateLockConflictError) && !(error instanceof TaskControlError)) throw error;
             }
           }
           return claimed;
@@ -301,6 +358,9 @@ export class TaskOrchestrator implements TaskControl {
     let claimed = false;
     const updated = updateTask(taskId, (record) => {
       if (record.lifecycle !== "queued") return false;
+      if (record.envelope.context_admission?.schema_version === 2) {
+        if (!this.workflows) return false;
+      } else assertTaskOutsideActiveWorkflow(record);
       const orchestration = ensureTaskOrchestration(record);
       if (orchestration.cancel_requested_at) return false;
       if (orchestration.retry_at && Date.parse(orchestration.retry_at) > now.getTime()) return false;
@@ -424,6 +484,8 @@ export class TaskOrchestrator implements TaskControl {
     const now = this.now();
     let retryAt = now.toISOString();
     const updated = updateTask(taskId, (record) => {
+      if (record.envelope.context_admission?.schema_version === 2) return false;
+      assertTaskOutsideActiveWorkflow(record);
       const orchestration = ensureTaskOrchestration(record);
       if (record.lifecycle !== "finished" || record.outcome !== "failed") return false;
       if (orchestration.last_failure?.kind !== "transient" || orchestration.last_failure.run_id !== runId) return false;
@@ -447,7 +509,7 @@ export class TaskOrchestrator implements TaskControl {
     try {
       this.scheduleRetry(taskId, runId, reason);
     } catch (error) {
-      if (!(error instanceof StateLockConflictError)) console.error(`[orchestrator] failed to schedule retry for ${taskId}:`, error);
+      if (!(error instanceof StateLockConflictError) && !(error instanceof TaskControlError)) console.error(`[orchestrator] failed to schedule retry for ${taskId}:`, error);
     }
   }
 
@@ -455,7 +517,7 @@ export class TaskOrchestrator implements TaskControl {
     for (const record of listTasks()) {
       const failure = record.orchestration?.last_failure;
       if (record.lifecycle !== "finished" || record.outcome !== "failed" || failure?.kind !== "transient") continue;
-      this.scheduleRetry(record.envelope.id, failure.run_id, failure.message);
+      this.tryScheduleRetry(record.envelope.id, failure.run_id, failure.message);
     }
   }
 

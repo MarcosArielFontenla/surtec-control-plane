@@ -1,16 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SandboxMode, TaskRecord } from "../lib/state/types";
 import { defaultTaskOrchestration } from "../lib/state/orchestration";
 import { readTask, updateTask, writeTask } from "../lib/state/store";
 import { readTaskEvents } from "../lib/state/events";
-import { TaskControlError, TaskOrchestrator } from "./task-orchestrator";
+import { assertTaskOutsideActiveWorkflow, TaskControlError, TaskOrchestrator } from "./task-orchestrator";
 import type { TaskRunCompletion, TaskRunOptions } from "./run-task";
 import type { AgentExecutor } from "./agent-executor";
 import { assembleContext, contextHash } from "../lib/context/assemble";
 import { WorkflowOrchestrator } from "./workflow-orchestrator";
+import { mutateWorkflowDocument } from "../lib/state/workflows";
 
 function record(id: string, sandbox: SandboxMode = "read-only", project = "p", order = 0): TaskRecord {
   return {
@@ -24,6 +25,31 @@ function record(id: string, sandbox: SandboxMode = "read-only", project = "p", o
     updated_at: `2026-09-21T10:00:0${order}Z`, finished_at: null,
     result: null, logs_path: null, revision: 1, orchestration: defaultTaskOrchestration(),
   };
+}
+
+function admittedRecord(id: string, workflow = false): TaskRecord {
+  const task = record(id), budget = task.orchestration!;
+  task.envelope.context_manifest = assembleContext({ schema_version: 1, project_id: "p", agent_id: "agent", role_id: "planner", task_kind: "analysis", sandbox: "read-only", tools: ["inspect"], approval_rules: [],
+    budget: { max_attempts: budget.max_attempts, max_runtime_ms: budget.max_runtime_ms, max_total_tokens: budget.max_total_tokens }, limits: { max_lines: 500, max_bytes: 60000, max_sources: 64 }, selected_categories: [], excluded_categories: [], omitted_sources: [],
+    routing: { work_scale: "bounded", action: "direct", review_depth: "focused", qa_required: false, reasons: ["Synthetic fixture"], delegation: { admitted: false, executable: false, reasons: ["Unavailable"] } },
+    testing: { mode: "functional", minimum_review_depth: "focused", runner_ids: [], commands: [], reasons: ["Functional fixture"], requires_red_evidence: false } },
+  [{ id: "runtime/safety", layer: "runtime-safety", source_type: "policy", text: "Synthetic safety", reason: "Fixture", sensitivity: "public" }]).manifest;
+  const binding = { manifest_fingerprint: task.envelope.context_manifest.fingerprint, instructions_length: 4, instructions_hash: contextHash("work") };
+  task.envelope.context_admission = workflow ? { ...binding, schema_version: 2, kind: "workflow-stage", workflow_id: "workflow-1", stage_id: "stage-1", stage_generation: 1, stage_kind: "analysis", task_id: id, template_id: "analysis", template_version: 1,
+    grant_id: "grant-1", authority_revision: 1, role_id: "planner", issue_id: "issue-1", issue_revision: 1, scope_revision: 1, scope_fingerprint: "a".repeat(64), approved_plan: null, predecessor_stage_id: null, handoff_id: null, candidate: null }
+    : { ...binding, schema_version: 1, kind: "analysis" };
+  return task;
+}
+
+function retainTask(taskId: string): void {
+  const at = "2026-10-04T00:00:00Z", hash = "a".repeat(64), budget = { max_tasks: 7, max_attempts: 10, max_runtime_ms: 900000, max_total_tokens: 100000 };
+  mutateWorkflowDocument((d) => {
+    d.grants["grant-1"] = { schema_version: 1, id: "grant-1", workflow_id: "workflow-1", project_id: "p", issue_id: "issue-1", issue_revision: 1, scope_revision: 1, authority_revision: 1, template_id: "analysis", template_version: 1,
+      authorized_scope: { expected_outcome: "Inspect synthetic evidence", acceptance_criteria: ["Evidence retained"], allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["code"], explicit_exclusions: [] }, role_assignments: [{ role_id: "planner", agent_id: "agent", sandbox: "read-only", client_context_categories: [] }], permitted_stage_kinds: ["analysis"], source_fingerprints: [{ id: "safety", fingerprint: hash }], policy_fingerprint: hash, preview_fingerprint: hash, testing_policy_fingerprint: hash, minimum_review_depth: "focused", testing_mode: "functional", budget, correction: { enabled: false, max_corrections: 0, budget: null }, approved_by: "human", approval_id: "synthetic-only", approved_at: at };
+    d.workflows["workflow-1"] = { schema_version: 1, id: "workflow-1", revision: 1, project_id: "p", issue_id: "issue-1", scope_revision: 1, template_id: "analysis", template_version: 1, status: "running", work_scale: "bounded", current_grant_id: "grant-1", authority_revision: 1, stage_ids: ["stage-1"], current_stage_id: "stage-1", pending_decision_id: null, lineage_id: null, candidate: null, approved_plan: null, review_policy: null, budget, counters: { tasks: 1, attempts: 0, runtime_ms: 0, total_tokens: 0, accounting_complete: true }, blocked_reason: null, recovery_state: "none", next_action: "Inspect retained evidence", stop_requested_at: null, created_at: at, updated_at: at, completed_at: null };
+    d.stages["stage-1"] = { schema_version: 1, id: "stage-1", workflow_id: "workflow-1", grant_id: "grant-1", authority_revision: 1, generation: 1, ordinal: 1, kind: "analysis", role_id: "planner", agent_id: "agent", sandbox: "read-only", status: "reserved", phase: "execution", task_id: taskId, execution_id: null, predecessor_stage_id: null, supersedes_stage_id: null, handoff_id: null, output: null, output_fingerprint: null, candidate: null, context_fingerprint: hash, created_at: at, updated_at: at };
+    d.admission_intents["intent-1"] = { schema_version: 1, id: "intent-1", workflow_id: "workflow-1", stage_id: "stage-1", grant_id: "grant-1", authority_revision: 1, task_id: taskId, status: "reserved", expected_issue_revision: 1, expected_workflow_revision: 1, context_fingerprint: hash, blocked_reason: null, created_at: at, updated_at: at };
+  });
 }
 
 interface PendingRun {
@@ -260,6 +286,35 @@ describe("TaskOrchestrator", () => {
 
     expect(() => worker.retry("I-TASK-1")).toThrow(/resumed through the local issue workflow/i);
     expect(readTask("I-TASK-1")).toMatchObject({ lifecycle: "finished", outcome: "needs-review" });
+  });
+
+  it("denies durable stage ownership despite missing workflow metadata on a v1 task", () => {
+    const task = admittedRecord("OWNED-1"); task.lifecycle = "finished"; task.outcome = "failed"; writeTask(task); retainTask("OWNED-1");
+    const before = readFileSync(join(root, "state/tasks/OWNED-1.json")), worker = new TaskOrchestrator({ runAttempt: controlledRunner().run });
+    expect(() => worker.retry("OWNED-1")).toThrow(/Active workflow/);
+    expect(readFileSync(join(root, "state/tasks/OWNED-1.json"))).toEqual(before); expect(readTaskEvents("OWNED-1")).toEqual([]);
+  });
+  it.each(["queued", "running", "finished"] as const)("cannot claim, recover or manually retry a %s v2 task without a controller", async (lifecycle) => {
+    const task = admittedRecord("V2-1", true); task.lifecycle = lifecycle;
+    if (lifecycle === "finished") task.outcome = "failed";
+    if (lifecycle === "running") { task.orchestration!.attempts = 1; task.orchestration!.lease = { run_id: "run-old", worker_id: "worker-old", acquired_at: "2026-09-21T09:00:00Z", heartbeat_at: "2026-09-21T09:00:00Z", expires_at: "2026-09-21T09:00:30Z" }; }
+    writeTask(task); const before = readFileSync(join(root, "state/tasks/V2-1.json")), run = controlledRunner().run, worker = new TaskOrchestrator({ now: () => new Date(nowMs), runAttempt: run });
+    expect(() => worker.retry("V2-1")).toThrow(/current controller/); expect(worker.recoverExpiredLeases()).toBe(0); expect(await worker.runOnce()).toBe(0);
+    expect(run).not.toHaveBeenCalled(); expect(readFileSync(join(root, "state/tasks/V2-1.json"))).toEqual(before); expect(readTaskEvents("V2-1")).toEqual([]);
+    expect(() => assertTaskOutsideActiveWorkflow(task)).toThrow(/ownership cannot be proven/);
+  });
+  it.each(["queued", "running", "finished"] as const)("does not generically claim/recover/retry retained %s legacy work", async (lifecycle) => {
+    const task = record("OWNED-1"); task.lifecycle = lifecycle;
+    if (lifecycle === "finished") { task.outcome = "failed"; task.orchestration!.last_failure = { kind: "transient", message: "Synthetic failure", at: new Date(nowMs).toISOString(), run_id: "run-old" }; }
+    if (lifecycle === "running") task.orchestration!.lease = { run_id: "run-old", worker_id: "worker-old", acquired_at: "2026-09-21T09:00:00Z", heartbeat_at: "2026-09-21T09:00:00Z", expires_at: "2026-09-21T09:00:30Z" };
+    writeTask(task); retainTask("OWNED-1"); const before = readFileSync(join(root, "state/tasks/OWNED-1.json")), run = controlledRunner().run, worker = new TaskOrchestrator({ now: () => new Date(nowMs), runAttempt: run });
+    expect(await worker.runOnce()).toBe(0); expect(run).not.toHaveBeenCalled(); expect(readFileSync(join(root, "state/tasks/OWNED-1.json"))).toEqual(before); expect(readTaskEvents("OWNED-1")).toEqual([]);
+  });
+  it("fails closed on corrupt ownership before manual retry or scheduler effects", async () => {
+    const task = admittedRecord("FREE-1"); task.lifecycle = "finished"; task.outcome = "failed"; writeTask(task);
+    const path = join(root, "state/workflows/workflows.json"); mkdirSync(join(root, "state/workflows"), { recursive: true }); writeFileSync(path, "{");
+    const run = controlledRunner().run, worker = new TaskOrchestrator({ runAttempt: run });
+    expect(() => worker.retry("FREE-1")).toThrow(/ownership is unavailable/); expect(await worker.runOnce()).toBe(0); expect(run).not.toHaveBeenCalled(); expect(readTaskEvents("FREE-1")).toEqual([]); expect(readFileSync(path, "utf8")).toBe("{");
   });
 
   it("runs a claimed task through the real runner boundary with a fake executor", async () => {

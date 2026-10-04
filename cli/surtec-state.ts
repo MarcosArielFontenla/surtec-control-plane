@@ -10,6 +10,8 @@ import { createIssueService } from "../dashboard/src/server/issue-service";
 import { readTask, writeTask, withStateLock } from "../lib/state/store";
 import { validateTaskRecord } from "../lib/state/validation";
 import { stateDir, fixturesDir, projectsDir } from "../lib/state/paths";
+import { assertTaskOutsideActiveWorkflow } from "../runner/task-orchestrator";
+import { readWorkflowDocument } from "../lib/state/workflows";
 
 function now(): string {
   return new Date().toISOString();
@@ -40,6 +42,7 @@ export function runSetStatus(id: string, status: string, resultFile?: string): s
   return withStateLock(id, () => {
     const rec = readTask(id);
     if (!rec) throw new Error(`task not found: ${id}`);
+    assertTaskOutsideActiveWorkflow(rec);
     if (rec.envelope.context_manifest) throw new Error("Governed task status belongs to the leased worker; set-status cannot replace its evidence");
     if (rec.orchestration?.lease) throw new Error("Task has worker ownership; set-status cannot replace its evidence");
     const ts = now();
@@ -80,13 +83,31 @@ export function runSeed(): { tasks: number; projects: number } {
     if (!name.endsWith(".json")) continue;
     const record: unknown = JSON.parse(readFileSync(join(source, name), "utf8"));
     if (!validateTaskRecord(record) || record.lifecycle !== "finished" || record.orchestration?.lease) throw new Error("Seed accepts only valid terminal task history; dispatch new work through confirmed context admission");
+    if (record.envelope.context_admission?.schema_version === 2) throw new Error("Seed cannot import workflow authority or evidence; use its current workflow");
+    assertTaskOutsideActiveWorkflow(record);
     if (readTask(record.envelope.id)) throw new Error("Seed cannot replace an existing task");
     records.push(record);
   }
+  const assertProjectImports = () => {
+    const source = join(fixturesDir(), "projects"), active = Object.values(readWorkflowDocument().workflows).filter((owner) => !["completed", "cancelled"].includes(owner.status));
+    for (const name of existsSync(source) ? readdirSync(source) : []) {
+      if (!name.endsWith(".json")) continue;
+      let value: unknown;
+      try { value = JSON.parse(readFileSync(join(source, name), "utf8")); }
+      catch { throw new Error("Seed project context cannot be inspected; import is denied"); }
+      const id = value && typeof value === "object" && !Array.isArray(value) ? (value as { id?: unknown }).id : null;
+      if (active.some((owner) => `${owner.project_id}.json` === name || owner.project_id === id)) {
+        throw new Error("Seed cannot replace project context retained by an active workflow; stop it first");
+      }
+    }
+  };
+  assertProjectImports();
   for (const record of records) withStateLock(record.envelope.id, () => {
+    assertTaskOutsideActiveWorkflow(record);
     if (readTask(record.envelope.id)) throw new Error("Seed cannot replace an existing task");
     writeTask(record);
   });
+  assertProjectImports();
   return {
     tasks: records.length,
     projects: copyJsonDir(join(fixturesDir(), "projects"), projectsDir()),

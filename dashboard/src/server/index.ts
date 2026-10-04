@@ -14,7 +14,7 @@ import { createGitStatusCache } from "../../../lib/git-status-cache";
 import { assemblePortfolio } from "../../../lib/portfolio";
 import { loadProjectConfig } from "./portfolio-config";
 import { createTask, ValidationError } from "./dispatch";
-import { approveTask, rejectTask, ReviewError, TaskNotFoundError } from "./review";
+import { approveTask, rejectTask, ReviewError, ReviewConflictError, TaskNotFoundError } from "./review";
 import { openProject, OpenError } from "./open-project";
 import { runGitSync, GitSyncError } from "./git-sync";
 import { validateBranchName, listBranches, switchBranch, createBranch, BranchError } from "./git-branch";
@@ -28,7 +28,7 @@ import { isSafeId, listNotes, addNote, toggleNote, deleteNote } from "../../../l
 import { listProjectProfilesWithMigration, upsertProjectProfile, UnsupportedPortfolioSchemaVersionError } from "../../../lib/state/portfolio-profiles";
 import type { ProjectProfile } from "../../../lib/portfolio-profile";
 import { validateProjectProfile, describeValidation, validateWorkSessionAction, validateWorkSessionStart } from "../../../lib/state/validation";
-import { TaskControlError, type TaskControl } from "../../../runner/task-orchestrator";
+import { assertTaskOutsideActiveWorkflow, TaskControlError, type TaskControl } from "../../../runner/task-orchestrator";
 import { loadProjectCommands } from "../../../runner/project-commands";
 import { processManager, SlotBusyError, type ProcessManager } from "../../../runner/process-manager";
 import { createHttpSecurity, type HttpSecurity } from "./http-security";
@@ -587,6 +587,9 @@ export function createApp(
   app.post("/api/tasks/:id/cancel", (c) => {
     if (!taskControl) return c.json({ error: "task worker is unavailable" }, 503);
     try {
+      const task = readTask(c.req.param("id"));
+      if (!task) return c.json({ error: "not found" }, 404);
+      assertTaskOutsideActiveWorkflow(task);
       return c.json({ task: taskControl.cancel(c.req.param("id")) });
     } catch (err) {
       if (err instanceof TaskControlError) return c.json({ error: err.message }, err.status);
@@ -597,6 +600,10 @@ export function createApp(
   app.post("/api/tasks/:id/retry", (c) => {
     if (!taskControl) return c.json({ error: "task worker is unavailable" }, 503);
     try {
+      const task = readTask(c.req.param("id"));
+      if (!task) return c.json({ error: "not found" }, 404);
+      if (task.envelope.context_admission?.schema_version === 2) throw new TaskControlError("Workflow task retry requires its current controller; manual retry is denied", 409);
+      assertTaskOutsideActiveWorkflow(task);
       return c.json({ task: taskControl.retry(c.req.param("id")) });
     } catch (err) {
       if (err instanceof TaskControlError) return c.json({ error: err.message }, err.status);
@@ -610,6 +617,7 @@ export function createApp(
     } catch (err) {
       // TaskNotFoundError extends ReviewError — check the subclass first (404 vs 400).
       if (err instanceof TaskNotFoundError) return c.json({ error: err.message }, 404);
+      if (err instanceof ReviewConflictError) return c.json({ error: err.message }, 409);
       if (err instanceof ReviewError) return c.json({ error: err.message }, 400);
       return c.json({ error: (err as Error).message }, 500);
     }
@@ -621,6 +629,7 @@ export function createApp(
     } catch (err) {
       // TaskNotFoundError extends ReviewError — check the subclass first (404 vs 400).
       if (err instanceof TaskNotFoundError) return c.json({ error: err.message }, 404);
+      if (err instanceof ReviewConflictError) return c.json({ error: err.message }, 409);
       if (err instanceof ReviewError) return c.json({ error: err.message }, 400);
       return c.json({ error: (err as Error).message }, 500);
     }

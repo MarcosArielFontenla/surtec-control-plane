@@ -79,6 +79,10 @@ designContract:
   checksWaiver: null
 clarifications:
   - date: "2026-10-04"
+    question: Add runner/run-task.test.ts to T011 to align its single expired-v2-lease case with controller-required recovery?
+    answer: The human explicitly approved adding this test in this task conversation before editing it.
+    affects: Preserve the exact task bytes and admission when no controller exists; assert denied retry/claim and stale standalone execution with zero model/worktree/commit/verification effects. No runtime, schema, permission or timeout change is included; original approval metadata is unchanged.
+  - date: "2026-10-04"
     question: Add lib/workflows/validation.ts and lib/workflows/validation.test.ts to T010 for an exact running-to-completed correction candidate seal?
     answer: The human explicitly approved this adjustment in this task conversation before editing those files.
     affects: Permit only the consumed current correction stage to seal its newly verified candidate against the exact prior candidate base, same authority and task/run. Preserve immutable admitted input, completed stages, receipts, counters and lineage history; no schema, lifecycle or execution-permission change. Original approval metadata remains unchanged.

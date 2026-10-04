@@ -5,9 +5,19 @@ import { expandHome } from "../../../lib/expand-home";
 import { pushBranch, removeWorktree } from "../../../runner/worktree";
 import { ensurePullRequest, buildPrBody } from "../../../runner/github";
 import { PolicyService } from "../../../lib/policy/service";
+import { assertTaskOutsideActiveWorkflow, TaskControlError } from "../../../runner/task-orchestrator";
 
 export class ReviewError extends Error {}
 export class TaskNotFoundError extends ReviewError {}
+export class ReviewConflictError extends ReviewError {}
+
+function assertReviewOwnership(rec: TaskRecord): void {
+  try { assertTaskOutsideActiveWorkflow(rec); }
+  catch (error) {
+    if (error instanceof TaskControlError) throw new ReviewConflictError(error.message);
+    throw error;
+  }
+}
 
 interface RunInfo {
   branch?: string;
@@ -24,6 +34,7 @@ type ReviewAction = "approve" | "reject";
 
 function persistDecision(rec: TaskRecord, decision: ReviewDecision): ReviewDecision {
   const updated = updateTask(rec.envelope.id, (current) => {
+    assertReviewOwnership(current);
     current.decision = { ...decision };
     current.updated_at = decision.at;
   });
@@ -60,6 +71,7 @@ function appendReviewEvent(rec: TaskRecord, type: "policy-evaluated" | "cleanup"
 function beginDecision(taskId: string, action: ReviewAction, repoRoot: string): { rec: TaskRecord; done: boolean; defaultBranch: string } {
   const rec = readTask(taskId);
   if (!rec) throw new TaskNotFoundError(`task not found: ${taskId}`);
+  assertReviewOwnership(rec);
   if (rec.lifecycle !== "finished") throw new ReviewError(`task ${taskId} is not finished`);
   const pending = action === "approve" ? "approving" : "rejecting";
   const complete = action === "approve" ? "approved" : "rejected";
@@ -98,6 +110,7 @@ export function approveTask(taskId: string, repoRoot: string = process.cwd()): R
     persistDecision(rec, decision);
 
     if (decision.pushed !== true) {
+      assertReviewOwnership(rec);
       const pushed = pushBranch(repoPath, branch);
       decision.pushed = pushed.pushed;
       if (!pushed.pushed) {
@@ -111,6 +124,7 @@ export function approveTask(taskId: string, repoRoot: string = process.cwd()): R
     }
 
     if (!decision.pr_url) {
+      assertReviewOwnership(rec);
       const pr = ensurePullRequest(repoPath, branch, defaultBranch, rec.envelope.title, buildPrBody(rec.envelope, rec.result));
       if (!pr.url) {
         decision.error = pr.error;
@@ -138,6 +152,7 @@ export function rejectTask(taskId: string, repoRoot: string = process.cwd()): Re
   if (rec.envelope.sandbox === "workspace-write" && branch && worktreePath && decision.cleanup_completed !== true) {
     decision.branch = branch;
     persistDecision(rec, decision);
+    assertReviewOwnership(rec);
     try {
       removeWorktree(expandHome(rec.envelope.repo_path), worktreePath, branch);
     } catch (e) {
