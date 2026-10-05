@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/budget-policy.schema.json",
+  "$comment": "Strict v1 data only. Source provenance, current policy, human approval and execution authority are not established by schema validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "revision", "rules", "pricing"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "revision": { "$ref": "#/$defs/positiveInteger" },
+    "rules": { "type": "array", "minItems": 1, "maxItems": 10000, "items": { "$ref": "#/$defs/rule" } },
+    "pricing": {
+      "type": "object", "additionalProperties": false, "required": ["status", "reason"],
+      "properties": {
+        "status": { "type": "string", "const": "unavailable" },
+        "reason": { "type": "string", "const": "no-versioned-source" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^(?!(?:constructor|__proto__|prototype)$)(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "nullableId": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+    "fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "nullableFingerprint": { "anyOf": [{ "$ref": "#/$defs/fingerprint" }, { "type": "null" }] },
+    "integer": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "positiveInteger": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "timestamp": { "type": "string", "format": "date-time", "maxLength": 24, "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?Z$" },
+    "scope": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["company", "objective", "project", "issue", "role", "execution"] },
+        "id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "period": { "type": "string", "enum": ["none", "utc-day", "utc-month"] },
+    "limit": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "type": "string", "const": "unconfigured" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "hard_cap"], "properties": { "status": { "type": "string", "const": "configured" }, "hard_cap": { "$ref": "#/$defs/integer" } } }
+      ]
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["attempts", "runtime_ms", "total_tokens", "concurrent_reads", "concurrent_writes", "review_attempts", "review_runtime_ms", "review_total_tokens", "corrections"],
+      "properties": {
+        "attempts": { "$ref": "#/$defs/limit" }, "runtime_ms": { "$ref": "#/$defs/limit" }, "total_tokens": { "$ref": "#/$defs/limit" },
+        "concurrent_reads": { "$ref": "#/$defs/limit" }, "concurrent_writes": { "$ref": "#/$defs/limit" },
+        "review_attempts": { "$ref": "#/$defs/limit" }, "review_runtime_ms": { "$ref": "#/$defs/limit" }, "review_total_tokens": { "$ref": "#/$defs/limit" },
+        "corrections": { "$ref": "#/$defs/limit" }
+      }
+    },
+    "amounts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["attempts", "runtime_ms", "total_tokens", "concurrent_reads", "concurrent_writes", "review_attempts", "review_runtime_ms", "review_total_tokens", "corrections"],
+      "properties": {
+        "attempts": { "$ref": "#/$defs/integer" }, "runtime_ms": { "$ref": "#/$defs/integer" }, "total_tokens": { "$ref": "#/$defs/integer" },
+        "concurrent_reads": { "$ref": "#/$defs/integer" }, "concurrent_writes": { "$ref": "#/$defs/integer" },
+        "review_attempts": { "$ref": "#/$defs/integer" }, "review_runtime_ms": { "$ref": "#/$defs/integer" }, "review_total_tokens": { "$ref": "#/$defs/integer" },
+        "corrections": { "$ref": "#/$defs/integer" }
+      }
+    },
+    "attribution": {
+      "type": "object", "additionalProperties": false,
+      "required": ["company_id", "objective_ids", "project_ids", "issue_id", "role_id", "execution_id"],
+      "properties": {
+        "company_id": { "type": "string", "const": "surtec" },
+        "objective_ids": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "project_ids": { "type": "array", "maxItems": 25, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "issue_id": { "$ref": "#/$defs/nullableId" }, "role_id": { "$ref": "#/$defs/nullableId" }, "execution_id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "workflow": {
+      "type": "object", "additionalProperties": false, "required": ["workflow_id", "stage_id", "stage_generation", "grant_id"],
+      "properties": {
+        "workflow_id": { "$ref": "#/$defs/id" }, "stage_id": { "$ref": "#/$defs/id" },
+        "stage_generation": { "$ref": "#/$defs/positiveInteger" }, "grant_id": { "$ref": "#/$defs/id" }
+      }
+    },
+    "nullableWorkflow": { "anyOf": [{ "$ref": "#/$defs/workflow" }, { "type": "null" }] },
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policy_id", "policy_revision", "policy_fingerprint", "scope", "period", "bucket", "limits"],
+      "properties": {
+        "policy_id": { "$ref": "#/$defs/id" }, "policy_revision": { "$ref": "#/$defs/positiveInteger" }, "policy_fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "scope": { "$ref": "#/$defs/scope" }, "period": { "$ref": "#/$defs/period" },
+        "bucket": { "type": "string", "minLength": 4, "maxLength": 10 }, "limits": { "$ref": "#/$defs/limits" }
+      }
+    },
+    "bindings": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/binding" } },
+    "rule": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "revision", "scope", "period", "warning_percent", "limits"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" }, "revision": { "$ref": "#/$defs/positiveInteger" }, "scope": { "$ref": "#/$defs/scope" },
+        "period": { "$ref": "#/$defs/period" }, "warning_percent": { "type": "integer", "minimum": 1, "maximum": 100 }, "limits": { "$ref": "#/$defs/limits" }
+      }
+    }
+  }
+}

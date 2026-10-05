@@ -1,15 +1,15 @@
 ---
 spec: .agents/specs/operational-continuity.spec.yaml
 feature: phase-p-operational-continuity
-status: draft
+status: in_progress
 createdAt: "2026-10-05"
-reviewedBy: null
-approvedAt: null
+reviewedBy: repository-owner
+approvedAt: "2026-10-05T21:25:15Z"
 ---
 
-# Phase P - prospective ordered tasks
+# Phase P - approved ordered tasks
 
-Draft task candidates requested by the owner, not approved implementation, completed work or invocation of an approved-work workflow. Read the accompanying product design and this exact spec before review. All proposed defaults, paths, dependencies and checks require actual human approval. Historical phases/tasks remain unchanged. Stop at P; do not start later phases, publish or run paid calls. Each slice reads its routed instructions/evidence completely and decomposes context rather than raising the 500-line ceiling.
+The repository owner approved the exact design/spec/T001-T026 on 2026-10-05. Approval permits implementation, not a claim of acceptance. This checkpoint executes T001 only; later tasks remain pending. Historical phases/tasks remain unchanged. Stop at P; publication and paid calls need separate authority. Each slice reads its routed instructions/evidence completely and decomposes context rather than raising the 500-line ceiling.
 
 Tests precede or accompany behavior. New budget/routine/restore effects remain disabled until their enforcement dependencies exist. T005/T006 are scaffolding/fixtures: production P admission cutover is blocked until T015-T017 prove the complete cooperative boundary and the operator confirms the exact procedure; caller/task/environment metadata cannot activate it. Each checkpoint records focused outcomes, security/compatibility impact, local commit and next validation. No parallel marker or document metadata grants authority.
 
@@ -18,7 +18,7 @@ The draft was split into T001-T026 before human approval so API/UI, maintenance 
 ## Phase 1 - budget contracts and deterministic policy
 
 <!-- maps to: ac-behavior,ac-schemas,ac-types -->
-- [ ] T001 Define bounded strict policy/ledger/task/occurrence/reservation/run-charge/admission contracts and invalid/future fixtures, preserving independent context versions -> lib/budgets/types.ts, lib/budgets/validation.ts, lib/budgets/validation.test.ts, schemas/budget-policy.schema.json, schemas/budget-ledger.schema.json, schemas/budget-admission.schema.json
+- [x] T001 Define bounded strict policy/ledger/task/occurrence/reservation/run-charge/admission contracts and invalid/future fixtures, preserving independent context versions -> lib/budgets/types.ts, lib/budgets/validation.ts, lib/budgets/validation.test.ts, schemas/budget-policy.schema.json, schemas/budget-ledger.schema.json, schemas/budget-admission.schema.json
 - [ ] T002 (depends: T001) Resolve six scopes, frozen objective attribution, UTC buckets, restrictive dimensions/warnings/provenance and unavailable pricing without increasing current caps -> lib/budgets/policy.ts, lib/budgets/policy.test.ts, registry/budget-policy.yml
 - [ ] T003 (depends: T002) Implement bounded ledger with private no-age-steal locking, atomic holds, one-slot/attempt/runtime top-ups, cumulative tokens, canonical charges and conservative crash/unknown/rollover cases -> lib/state/budgets.ts, lib/state/budgets.test.ts, lib/state/paths.ts, lib/budgets/reservations.ts, lib/budgets/reservations.test.ts
 - [ ] T004 (depends: T003) Add no-effect budget previews/read models and stable policy/cap binding without mutable balances in instruction fingerprints or self-reservation invalidation -> dashboard/src/server/budget-service.ts, dashboard/src/server/budget-service.test.ts, dashboard/src/server/context-service.ts, dashboard/src/server/context-service.test.ts, dashboard/src/server/workflow-context-service.ts, dashboard/src/server/workflow-context-service.test.ts
@@ -77,4 +77,18 @@ After exact human approval and completed implementation only:
 
 Keep the four proposed checks, fixed Harness command catalog, 120-second default and explicit 900-second ceiling unchanged. Run complementary CI/audit, two isolated browser campaigns, both existing workflow browser opt-ins and the focused P continuity faults separately as described in the design. No waiver is proposed; skipped/unavailable/failed checks are not passes. Tests never use normal state, paid runtime, real providers or sibling mutations. Report exact commands/counts/effect counters/cleanup and platform limitations in the final runbook. Publishing, live calls, retention deletion and the next phase need separate explicit authority.
 
-The repair-only baseline is historical local evidence, not acceptance of this unimplemented proposal. No task is complete and approval metadata stays null until actual review.
+The repair-only baseline is historical evidence, not Phase P acceptance. Actual approval is recorded above; each task remains unchecked until its own implementation and verification finish.
+
+## T001 checkpoint - 2026-10-05
+
+Completed the six exact contract/schema/test targets only, plus actual approval/checkpoint metadata in this plan, its spec and the design. No existing task/context schema, runtime, registry policy, store, API, UI, migration or normal state changed. Validators are pure; data validity does not grant execution authority. The state/runtime skills guided strict independent versions, bounded plain JSON, frozen attribution and conservative unknown accounting rather than permissive defaults or repair.
+
+Observed focused acceptance: `pnpm exec vitest run lib/budgets/validation.test.ts --maxWorkers=1` passed 200/200 (1.09 s). `pnpm schemas:check` compiled 58 schemas; typecheck passed. Independent static review closed premature charges, incomplete first holds, duplicate open reservations and equivalent UTC slot identity, with corresponding regressions. No new test uses real state/providers or paid calls.
+
+The first full `pnpm ci:check` failed with two unchanged historical timeouts: synchronous context testing evidence (178749 ms, 5000 ms limit) and exhausted correction recovery (214498 ms, 90000 ms limit). The host also delayed a requested 45-second poll to 199.5 seconds. This is consistent with a host stall, not proof of its cause or a pass. No code/assertion/timeout was adjusted. Isolated revalidation of both files passed 72/72 (519.07 s); evidence alone passed 27/27 (703 ms total, 21 ms tests). Separate typecheck/build/audit passed, with no known vulnerabilities.
+
+A fresh unmodified `pnpm ci:check` then exited 0: 124 files, 2020 tests passed/one existing browser opt-in skipped (2021 total, Vitest 584.20 s), 58 schemas, repository/Harness/secret/evaluation checks, typecheck and build (1922 modules, 3.09 s). Four specs/plans and the existing route caps/snapshots remained structurally valid; zero guarded P feature checks were executed. Full P/browser/fault acceptance, production activation, paid runtime and normal-state operations remain pending. The opt-in browser skip is not counted as a pass.
+
+Local commit: `feat(budgets): define strict v1 contracts` (exact SHA reported in the delivery conversation). No P push or merge. The separate repair-only draft PR #1 passed Ubuntu CI and remains unmerged. Private prompts and the unrelated untracked directory are excluded.
+
+Optional reproduction, not delegated manual acceptance: first run `pnpm exec vitest run lib/budgets/validation.test.ts --maxWorkers=1` (expect 200 passed), then `pnpm ci:check` (expect exit 0 and the counts above at this checkpoint). Share the exact command, failing test, assertion/timeout stack and final summary if it fails, with no private state or credentials. No browser steps apply to these unused pure contracts. Next: T002 policy resolution/default registry; T002-T026 are unchecked and not executed by this checkpoint.

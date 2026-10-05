@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/budget-admission.schema.json",
+  "$comment": "Independent immutable v1 task budget data. Context v1/v2 is a separate version. Validation never proves committed intent, policy, approval or private execution ownership.",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "id", "subject_id", "task_id", "project_id", "role_id", "agent_id", "issue_id", "scope_revision", "scope_fingerprint", "context_admission_version", "workflow", "attribution", "execution_mode", "manifest_fingerprint", "admitted_cap_fingerprint", "reservation_id", "intent_id", "created_at", "policy_bindings", "caps"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "subject_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+    "task_id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "project_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+    "role_id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "agent_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+    "issue_id": { "$ref": "budget-policy.schema.json#/$defs/nullableId" },
+    "scope_revision": { "anyOf": [{ "$ref": "budget-policy.schema.json#/$defs/positiveInteger" }, { "type": "null" }] },
+    "scope_fingerprint": { "$ref": "budget-policy.schema.json#/$defs/nullableFingerprint" },
+    "context_admission_version": { "type": "integer", "enum": [1, 2] },
+    "workflow": { "$ref": "budget-policy.schema.json#/$defs/nullableWorkflow" },
+    "attribution": { "$ref": "budget-policy.schema.json#/$defs/attribution" },
+    "execution_mode": { "type": "string", "enum": ["read", "write"] },
+    "manifest_fingerprint": { "$ref": "budget-policy.schema.json#/$defs/fingerprint" },
+    "admitted_cap_fingerprint": { "$ref": "budget-policy.schema.json#/$defs/fingerprint" },
+    "reservation_id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "intent_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+    "created_at": { "$ref": "budget-policy.schema.json#/$defs/timestamp" },
+    "policy_bindings": { "$ref": "budget-policy.schema.json#/$defs/bindings" }, "caps": { "$ref": "budget-policy.schema.json#/$defs/amounts" }
+  }
+}

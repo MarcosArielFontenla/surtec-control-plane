@@ -72,9 +72,9 @@ nonGoals:
   - Bulk history migration, automatic old-admission upgrades, restoration of project source/worktrees or revival of stored execution authority.
   - Encryption/authentication guarantees against a malicious same-user writer or universal operating-system ACL enforcement.
 designContract:
-  status: proposed
-  reviewedBy: null
-  approvedAt: null
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-10-05T21:25:15Z"
   acceptanceChecks:
     - id: ac-behavior
       requirementIds: [req-hierarchy, req-budget-state, req-budget-contracts, req-reservation, req-enforcement, req-accounting, req-review-correction, req-pricing, req-compatibility, req-routine-contract, req-routine-once, req-routine-safety, req-refresh-safety, req-routine-receipts, req-today, req-host-lifecycle, req-quiescence, req-snapshot-catalog, req-backup, req-restore-plan, req-restore-journal, req-recovery-authority, req-recovery-operation, req-acceptance]

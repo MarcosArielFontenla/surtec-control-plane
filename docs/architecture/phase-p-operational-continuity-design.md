@@ -1,8 +1,8 @@
 # Phase P - hierarchical budgets, safe routines and local continuity
 
-Status: proposed on 2026-10-05; human review pending. This is a prospective delta after Phase O, not implementation evidence or authorization. The working branch is `codex/phase-p-budgets-routines-continuity`. The separate local CI repair is `d836f0f`; Windows checks passed, but Ubuntu/remote verification remains pending. The owner's private roadmap and portfolio prompts remain excluded from commits/publication.
+Status: approved by the repository owner on 2026-10-05 at 21:25:15 UTC; T001 is implemented and validated, T002-T026 remain pending. Approval of this prospective delta after Phase O is not implementation/acceptance evidence. The working branch is `codex/phase-p-budgets-routines-continuity`. The separate CI repair is `d836f0f`; Windows checks passed and Ubuntu verification passed in repair-only draft PR #1, without merge. The owner's private roadmap and portfolio prompts remain excluded from commits/publication.
 
-Read with the [spec](../../.agents/specs/operational-continuity.spec.yaml) and [draft tasks](../../.agents/specs/tasks/phase-p-operational-continuity.tasks.md). Approval must cover this exact design, spec, tasks, proposed defaults and prospective compatibility boundary. No product source, schema, registry policy or normal state is changed by this proposal. Drafting task candidates at the owner's request does not execute the approved-work task workflow.
+Read with the [spec](../../.agents/specs/operational-continuity.spec.yaml) and [approved tasks](../../.agents/specs/tasks/phase-p-operational-continuity.tasks.md). The owner approved this exact design, spec, tasks, defaults and prospective compatibility boundary. Implementation proceeds in individually validated tasks; no registry activation or normal-state change is part of T001. The original proposal checkpoint below is historical, not an acceptance receipt.
 
 ## Scope and evidence
 
@@ -14,7 +14,7 @@ Existing constraints are normative: `lib/context/types.ts`, `registry/context-po
 
 Three implementation slices require sequential context loads: budget/runtime, routine/dashboard, then state continuity. Read each routed skill/document completely; the union plus these artifacts exceeds 500 physical lines. Do not raise route limits, refresh snapshots, edit skill versions or invent historical approvals.
 
-## Proposed contracts and defaults
+## Approved contracts and defaults
 
 | Contract | Ownership and persistence |
 | --- | --- |
@@ -25,7 +25,7 @@ Three implementation slices require sequential context loads: budget/runtime, ro
 | BackupManifest v1 | Explicit local snapshot directory, closed catalog and raw-file presence/version/size/SHA-256, creation time, reference assessment and exclusions. Not a signed trust statement. |
 | Maintenance/recovery controls v1 | Durable hold, journal, revoked authority IDs and accounting high-water outside the replaceable snapshot payload. A hold is not a product lifecycle status. |
 
-Defaults offered for human review, not previously answered clarifications:
+Defaults approved with the design, not fabricated clarification answers:
 
 - No new aggregate resource numbers are guessed from business goals. Unconfigured dimensions are explicitly `unconfigured`, never zero/infinite JSON values; finite existing leaf/workflow caps still apply. Trusted configured hard caps may only restrict them.
 - Warnings default to 80% of a configured hard cap; they never permit execution. Period is `none` unless explicitly `utc-day` or `utc-month`. Concurrency includes reservations across periods; rollover does not release unresolved holds.
@@ -155,4 +155,18 @@ Each TXXX checkpoint records target diff, focused commands/observed outcomes, co
 
 Three independent read-only reviews informed this draft: routine authority/slot/proposal quarantine across restore, whole read-modify-write ownership including notes, cutover after T015-T017, restored future leases not presented as live, explicit occurrence budget subjects, per-attempt runtime/top-ups, asynchronous dispatch without tick starvation, strict unknown adapter usage and the code-owned report destination. Large slices were split into T001-T026 before approval. These are prospective design changes, not implemented fixes or human clarification answers.
 
-Observed proposal validation: native Harness structure exit 0 (four specs/task plans; zero feature checks executed), source/context/spec-contract suites 54 passed/four files (3.47 seconds), repository consistency exit 0 and final secret scan exit 0 (1162 files). An earlier scan rejected a non-secret compound phrase in T001; it was reworded without an exception, scanner change or skip. The unchanged native validator suite also passed 39/39 after the initial draft (85.19 seconds); subsequent document refinements received fresh structural/secret checks. The repair-only full CI/audit evidence is recorded separately in the Harness runbook, not claimed as P acceptance. The four guarded P checks, P browser/fault campaign and normal-state operations were not run. Approval remains null; all 26 tasks are unchecked, and Ubuntu/remote verification of the repair remains pending.
+Observed proposal validation: native Harness structure exit 0 (four specs/task plans; zero feature checks executed), source/context/spec-contract suites 54 passed/four files (3.47 seconds), repository consistency exit 0 and final secret scan exit 0 (1162 files). An earlier scan rejected a non-secret compound phrase in T001; it was reworded without an exception, scanner change or skip. The unchanged native validator suite also passed 39/39 after the initial draft (85.19 seconds); subsequent document refinements received fresh structural/secret checks. The repair-only full CI/audit evidence is recorded separately in the Harness runbook, not claimed as P acceptance. At proposal validation time the four guarded P checks, P browser/fault campaign and normal-state operations were not run, approval was null, all 26 tasks were unchecked and Ubuntu/remote verification of the repair was pending.
+
+## Approval and repair verification - 2026-10-05
+
+Actual owner approval is recorded in the conversation and spec/tasks at 21:25:15 UTC; it is not inferred from validators. This implementation checkpoint stops at T001. T002-T026, production activation, real-state operations, full P acceptance, paid calls and merge remain unexecuted.
+
+Separate publication authorization covered only repair SHA `d836f0faf1b4f118ce6289fd6bb3fc6cac91247b`, pushed to `codex/fix-harness-hidden-paths`. [Draft PR #1](https://github.com/MarcosArielFontenla/surtec-control-plane/pull/1) remains unmerged; no P proposal/source or private prompt was published. [Ubuntu CI run 37375781328](https://github.com/MarcosArielFontenla/surtec-control-plane/actions/runs/37375781328) passed on Ubuntu 24.04 in 3 minutes 10 seconds: 123 test files, 1820 tests passed/one browser opt-in skipped, 55 schemas, 39 native validator tests, secret scan, deterministic evaluations, typecheck, build (1922 modules) and audit (no known vulnerabilities). That run tested the repair only, not T001; Windows-specific ACL/junction behavior, browser opt-ins and paid runtime were not proven by Ubuntu.
+
+## T001 implementation boundary - 2026-10-05
+
+The six exact task targets now define BudgetPolicy, BudgetLedger and BudgetAdmission v1 with pure strict validators and 200 synthetic tests. Independent context v1/v2 remains unchanged, inspected directly by the tests; this slice does not claim a new legacy migration or browser round-trip. Frozen attribution, policy/source fingerprints and original UTC buckets are data bindings, not controller/lease/approval proofs. One canonical charge carries overlapping review/correction labels, preserves unknown versus proven zero, permits observed excess without clipping and rejects contradictory settlement. Occurrences have separate subjects, known-zero model resources and no invented role/issue/task authority. Equivalent UTC slots are compared by epoch without rewriting bytes.
+
+Contracts enforce 16 MiB documents, 10000 records per collection, at most 25 projects/eight objective IDs/64 policy bindings, 160-character safe IDs and nesting depth 32. Oversized/unsafe/inherited/hooked/future/contradictory data fails rather than being trimmed, coerced, migrated or replaced with empty state. No registry policy, state store, API, UI, model setting, sandbox, worker or cutover was enabled or changed.
+
+The [T001 task checkpoint](../../.agents/specs/tasks/phase-p-operational-continuity.tasks.md#t001-checkpoint---2026-10-05) records focused 200/200, 58 schemas, fresh full CI exit 0 (124 files, 2020 passed/one opt-in skipped), typecheck/build/audit, the earlier two historical host timeouts and their unchanged 72/72 revalidation, plus reproduction/failure evidence. The state/runtime skills informed bounded data and conservative accounting; passing shapes never grants execution. No browser/manual acceptance is needed for these unused pure contracts; the mandatory isolated P acceptance campaigns remain later work. Stop at T001; next is T002, not production activation or P completion.

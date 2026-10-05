@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/budget-ledger.schema.json",
+  "$comment": "Bounded canonical v1 accounting data, not execution authority. Cross-record identity, ownership and uncertainty invariants are also enforced by the pure runtime validator.",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "revision", "created_at", "updated_at", "subjects", "reservations", "admission_intents", "charges"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 }, "revision": { "$ref": "budget-policy.schema.json#/$defs/positiveInteger" },
+    "created_at": { "$ref": "budget-policy.schema.json#/$defs/timestamp" }, "updated_at": { "$ref": "budget-policy.schema.json#/$defs/timestamp" },
+    "subjects": { "type": "object", "maxProperties": 10000, "propertyNames": { "$ref": "budget-policy.schema.json#/$defs/id" }, "additionalProperties": { "$ref": "#/$defs/subject" } },
+    "reservations": { "type": "object", "maxProperties": 10000, "propertyNames": { "$ref": "budget-policy.schema.json#/$defs/id" }, "additionalProperties": { "$ref": "#/$defs/reservation" } },
+    "admission_intents": { "type": "object", "maxProperties": 10000, "propertyNames": { "$ref": "budget-policy.schema.json#/$defs/id" }, "additionalProperties": { "$ref": "#/$defs/intent" } },
+    "charges": { "type": "object", "maxProperties": 10000, "propertyNames": { "$ref": "budget-policy.schema.json#/$defs/id" }, "additionalProperties": { "$ref": "#/$defs/charge" } }
+  },
+  "$defs": {
+    "subject": { "oneOf": [{ "$ref": "#/$defs/taskSubject" }, { "$ref": "#/$defs/occurrenceSubject" }] },
+    "taskSubject": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "task_id", "project_id", "role_id", "agent_id", "issue_id", "workflow", "attribution"],
+      "properties": {
+        "id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "kind": { "type": "string", "const": "task" },
+        "task_id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "project_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+        "role_id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "agent_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+        "issue_id": { "$ref": "budget-policy.schema.json#/$defs/nullableId" }, "workflow": { "$ref": "budget-policy.schema.json#/$defs/nullableWorkflow" },
+        "attribution": { "$ref": "budget-policy.schema.json#/$defs/attribution" }
+      }
+    },
+    "occurrenceSubject": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "occurrence_id", "routine_id", "routine_revision", "slot", "project_ids", "attribution"],
+      "properties": {
+        "id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "kind": { "type": "string", "const": "occurrence" },
+        "occurrence_id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "routine_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+        "routine_revision": { "$ref": "budget-policy.schema.json#/$defs/positiveInteger" }, "slot": { "$ref": "budget-policy.schema.json#/$defs/timestamp" },
+        "project_ids": { "type": "array", "maxItems": 25, "uniqueItems": true, "items": { "$ref": "budget-policy.schema.json#/$defs/id" } },
+        "attribution": { "$ref": "budget-policy.schema.json#/$defs/attribution" }
+      }
+    },
+    "intent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "subject_id", "reservation_id", "admission_id", "status", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "subject_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+        "reservation_id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "admission_id": { "$ref": "budget-policy.schema.json#/$defs/nullableId" },
+        "status": { "type": "string", "enum": ["pending", "committed", "unknown"] },
+        "created_at": { "$ref": "budget-policy.schema.json#/$defs/timestamp" }, "updated_at": { "$ref": "budget-policy.schema.json#/$defs/timestamp" }
+      }
+    },
+    "reservation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "revision", "subject_id", "intent_id", "status", "policy_bindings", "held", "uncertain_dimensions", "run_ids", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "revision": { "$ref": "budget-policy.schema.json#/$defs/positiveInteger" },
+        "subject_id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "intent_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+        "status": { "type": "string", "enum": ["pending", "committed", "active", "settled", "unknown"] },
+        "policy_bindings": { "$ref": "budget-policy.schema.json#/$defs/bindings" }, "held": { "$ref": "budget-policy.schema.json#/$defs/amounts" },
+        "uncertain_dimensions": { "type": "array", "maxItems": 9, "uniqueItems": true, "items": { "type": "string", "enum": ["attempts", "runtime_ms", "total_tokens", "concurrent_reads", "concurrent_writes", "review_attempts", "review_runtime_ms", "review_total_tokens", "corrections"] } },
+        "run_ids": { "type": "array", "maxItems": 10000, "uniqueItems": true, "items": { "$ref": "budget-policy.schema.json#/$defs/id" } },
+        "created_at": { "$ref": "budget-policy.schema.json#/$defs/timestamp" }, "updated_at": { "$ref": "budget-policy.schema.json#/$defs/timestamp" }
+      }
+    },
+    "charge": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "subject_id", "reservation_id", "run_id", "attempts", "runtime_ms", "observed_total_tokens", "runtime_state", "usage_state", "status", "review", "correction", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "subject_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+        "reservation_id": { "$ref": "budget-policy.schema.json#/$defs/id" }, "run_id": { "$ref": "budget-policy.schema.json#/$defs/id" },
+        "attempts": { "type": "integer", "const": 1 }, "runtime_ms": { "$ref": "budget-policy.schema.json#/$defs/integer" },
+        "observed_total_tokens": { "anyOf": [{ "$ref": "budget-policy.schema.json#/$defs/integer" }, { "type": "null" }] },
+        "runtime_state": { "type": "string", "enum": ["complete", "unknown"] }, "usage_state": { "type": "string", "enum": ["complete", "unknown"] },
+        "status": { "type": "string", "enum": ["running", "terminal"] }, "review": { "type": "boolean" }, "correction": { "type": "boolean" },
+        "created_at": { "$ref": "budget-policy.schema.json#/$defs/timestamp" }, "updated_at": { "$ref": "budget-policy.schema.json#/$defs/timestamp" }
+      }
+    }
+  }
+}
