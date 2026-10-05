@@ -266,7 +266,7 @@ export function createWorkflowContextService(repoRoot: string, dependencies: Wor
       const cap = grant.correction.budget!;
       const branchTasks = Object.values(document.stages).filter((entry) => entry.workflow_id === workflow!.id && entry.ordinal > current.preview.plan.stages.length && !!entry.task_id && entry.id !== stage!.id);
       requireCurrent(branchTasks.length < cap.max_tasks, "Correction branch task budget is exhausted");
-      const branch = Object.values(document.accounting).filter((entry) => document.stages[entry.stage_id]!.ordinal > current.preview.plan.stages.length && entry.stage_id !== stage!.id);
+      const branch = Object.values(document.accounting).filter((entry) => entry.workflow_id === workflow!.id && document.stages[entry.stage_id]!.ordinal > current.preview.plan.stages.length && entry.stage_id !== stage!.id);
       budget = { max_attempts: Math.min(budget.max_attempts, cap.max_attempts - branch.length), max_runtime_ms: Math.min(budget.max_runtime_ms, cap.max_runtime_ms - branch.reduce((sum, entry) => sum + entry.active_runtime_ms, 0)), max_total_tokens: Math.min(budget.max_total_tokens, cap.max_total_tokens - branch.reduce((sum, entry) => sum + entry.observed_tokens, 0)) };
       requireCurrent(budget.max_attempts > 0 && budget.max_runtime_ms > 0 && budget.max_total_tokens > 0, "Correction branch budget is exhausted");
     }

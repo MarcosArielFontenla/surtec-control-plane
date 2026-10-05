@@ -176,6 +176,36 @@ describe("native Harness validators", () => {
 });
 
 describe("isolated browser smoke failure safety", () => {
+  function workflowCleanupFixture() {
+    const root = mkdtempSync(join(tmpdir(), "surtec-local-dashboard-")); owned.push(root);
+    const outside = mkdtempSync(join(tmpdir(), "surtec-harness-test-")); owned.push(outside);
+    // Cleanup canaries only: these bytes are never read as product records or authority.
+    const evidence = new Map([
+      ["state/workflows/workflows.json", '{"schema_version":1,"workflow_id":"synthetic-workflow","corrections_consumed":1}\n'],
+      ["state/issues/issues.json", '{"schema_version":1,"candidate_id":"synthetic-candidate","status":"checking"}\n'],
+      ["state/tasks/synthetic-task.json", '{"schema_version":2,"workflow_id":"synthetic-workflow","task_id":"synthetic-task"}\n'],
+      ["projects/surtec-worktrees/synthetic-candidate/src/value.txt", "Synthetic retained candidate content.\n"],
+      ["executor-effects.jsonl", '{"stage_id":"synthetic-stage","mode":"workspace-write-verify"}\n'],
+    ]);
+    for (const [path, bytes] of evidence) {
+      mkdirSync(dirname(join(root, path)), { recursive: true }); writeFileSync(join(root, path), bytes);
+    }
+    const sentinels: ReadonlyArray<readonly [string, string]> = [
+      ["normal-state/sentinel.json", "Synthetic unrelated state must remain unchanged.\n"],
+      ["sibling/src/value.txt", "Synthetic unrelated project must remain unchanged.\n"],
+      ["dependencies/sentinel.txt", "Synthetic linked dependency must remain unchanged.\n"],
+    ];
+    for (const [path, bytes] of sentinels) {
+      mkdirSync(dirname(join(outside, path)), { recursive: true }); writeFileSync(join(outside, path), bytes);
+    }
+    mkdirSync(join(root, "runtime"));
+    symlinkSync(join(outside, "dependencies"), join(root, "runtime/node_modules"), process.platform === "win32" ? "junction" : "dir");
+    const assertEvidenceRetained = () => {
+      for (const [path, bytes] of evidence) expect(readFileSync(join(root, path))).toEqual(Buffer.from(bytes));
+    };
+    return { root, outside, evidence, assertEvidenceRetained };
+  }
+
   it("excludes only the idle scheduling lock, never task/evidence records or unrelated locks", async () => {
     const root = mkdtempSync(join(tmpdir(), "surtec-harness-test-")); owned.push(root);
     mkdirSync(join(root, "locks")); mkdirSync(join(root, "tasks")); mkdirSync(join(root, "events"));
@@ -217,6 +247,31 @@ describe("isolated browser smoke failure safety", () => {
     const result = await cleanupSmoke({ root, api: async () => true });
     expect(result).toMatchObject({ workspace_removed: true, api_stopped: true, failures: [] });
     expect(existsSync(root)).toBe(false); expect(readFileSync(join(dependency, "preserved.txt"), "utf8")).toBe("Synthetic dependency remains untouched");
+  });
+
+  it("removes workflow, candidate and effect evidence only after all owned resources close, preserving outside sentinels", async () => {
+    const f = workflowCleanupFixture(), outsideBefore = await harnessTreeHash(f.outside), closed: string[] = [];
+    const close = async (resource: string) => { f.assertEvidenceRetained(); closed.push(resource); };
+    const result = await cleanupSmoke({ root: f.root, browser: () => close("browser"), vite: () => close("vite"), api: async () => { await close("api"); return true; } });
+    expect(closed).toEqual(["browser", "vite", "api"]);
+    expect(result).toEqual({ browser_closed: true, vite_closed: true, api_stopped: true, workspace_removed: true, failures: [] });
+    expect(existsSync(f.root)).toBe(false);
+    for (const path of f.evidence.keys()) expect(existsSync(join(f.root, path))).toBe(false);
+    expect(await harnessTreeHash(f.outside)).toBe(outsideBefore);
+  });
+
+  it.each(["browser", "vite", "api"] as const)("retains exact workflow, candidate and effect bytes after %s close failure", async (failed) => {
+    const f = workflowCleanupFixture(), outsideBefore = await harnessTreeHash(f.outside), closed: string[] = [];
+    const close = async (resource: string) => {
+      f.assertEvidenceRetained(); closed.push(resource);
+      if (resource === failed) throw new Error("Synthetic owned resource close failure");
+    };
+    const result = await cleanupSmoke({ root: f.root, browser: () => close("browser"), vite: () => close("vite"), api: async () => { await close("api"); return true; } });
+    expect(closed).toEqual(["browser", "vite", "api"]);
+    expect(result).toEqual({ browser_closed: failed !== "browser", vite_closed: failed !== "vite", api_stopped: failed !== "api", workspace_removed: false, failures: [failed] });
+    f.assertEvidenceRetained();
+    expect(existsSync(join(f.root, "runtime/node_modules/sentinel.txt"))).toBe(true);
+    expect(await harnessTreeHash(f.outside)).toBe(outsideBefore);
   });
 
   it("refuses broad/foreign roots and never deletes state while its API is still running", async () => {

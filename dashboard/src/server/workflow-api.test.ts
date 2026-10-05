@@ -30,7 +30,7 @@ beforeEach(() => {
   for (const name of ["agents.yml", "agent-roles.yml", "context-policy.yml", "workflow-policy.yml"]) cpSync(`registry/${name}`, join(root, "registry", name));
   const roles = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
   for (const path of new Set(roles.roles.flatMap((role) => role.required_evaluation_ids))) { mkdirSync(join(root, ...path.split("/").slice(0, -1)), { recursive: true }); cpSync(path, join(root, path)); }
-  writeFileSync(join(root, "registry/projects.yml"), "projects:\n  alpha:\n    allowed_agents: [product-manager, backend-engineer, tech-lead, reality-checker, qa-reviewer]\n    sandbox: { default: workspace-write }\n    verify: ['node verify.mjs']\n");
+  writeFileSync(join(root, "registry/projects.yml"), "projects:\n  alpha:\n    allowed_agents: [product-manager, backend-engineer, tech-lead, reality-checker, qa-reviewer, devops-engineer]\n    sandbox: { default: workspace-write }\n    verify: ['node verify.mjs']\n");
   writeFileSync(join(root, "projects/alpha/AGENTS.md"), "Synthetic private source body");
   vi.stubEnv("SURTEC_STATE_DIR", state); vi.stubEnv("SURTEC_PROJECTS_ROOT", join(root, "projects"));
   const issues = createIssueService(root, { projectIds: () => ["alpha"] }), proposed = issues.create({ project_id: "alpha", title: "Synthetic advisory issue", expected_outcome: "Inspect synthetic work", acceptance_criteria: ["Observable result"], assigned_role_id: "backend-engineer",
@@ -92,6 +92,22 @@ describe("protected strict workflow API", () => {
     expect((await restarted.request("/api/workflows/start", { method: "POST", headers: { "X-Surtec-Session": token }, body: JSON.stringify(payload) })).status).toBe(403);
     expect((await post(restarted, "/api/workflows/start", payload)).status).toBe(409);
     expect(listTasks()).toEqual([]); expect(existsSync(join(state, "workflows"))).toBe(false);
+  });
+  it.each(["project-instructions", "current-agent-policy", "issue-authority"] as const)("denies an issued root after %s drift with unchanged post-drift state and zero scheduling effects", async (changed) => {
+    const notify = vi.fn(), cancelTask = vi.fn(), workflows = createWorkflowService(root, { execution: { available: () => true, notify, cancelTask } });
+    const app = createApp(root, undefined, undefined, undefined, { workflows }), input = request();
+    const previewResponse = await post(app, "/api/workflows/preview", input); expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json(); expect(preview.allowed).toBe(true); expect(preview.roles[0].manifest.selected_categories).toEqual([]);
+    if (changed === "project-instructions") writeFileSync(join(root, "projects/alpha/AGENTS.md"), "Changed synthetic instructions after preview");
+    else if (changed === "current-agent-policy") {
+      const policyPath = join(root, "registry/projects.yml"); writeFileSync(policyPath, readFileSync(policyPath, "utf8").replace("product-manager, ", ""));
+    } else createIssueService(root).authorize(issueId, input.expected_revision, "synthetic-current-authority-human");
+    const issueBytes = readFileSync(join(state, "issues/issues.json")), currentIssue = readIssueDocument().issues[issueId]!;
+    const denied = await post(app, "/api/workflows/start", { request: input, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-stale-root-human" });
+    expect(denied.status).toBe(409); expect(await denied.text()).not.toContain("Synthetic private source body");
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes); expect(readIssueDocument().issues[issueId]).toEqual(currentIssue);
+    expect(listTasks()).toEqual([]); expect(existsSync(join(state, "workflows"))).toBe(false); expect(existsSync(join(root, "projects/surtec-worktrees"))).toBe(false);
+    expect(notify).not.toHaveBeenCalled(); expect(cancelTask).not.toHaveBeenCalled();
   });
   it("records the exact pending plan through the protected decision route without issue edits or a writer", async () => {
     const issues = createIssueService(root), initial = readIssueDocument().issues[issueId]!; issues.authorize(issueId, initial.revision, "synthetic-scope-human");
@@ -181,17 +197,17 @@ describe("protected strict workflow API", () => {
       expect(dispatch).not.toHaveBeenCalled(); expect(listTasks()).toHaveLength(1); expect(listTasks()[0]!.orchestration!.attempts).toBe(0);
     } finally { try { await browser?.close(); } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); } }
   }, 30_000);
-  it("seals Planner, verified candidate, Reviewer and QA before exact human acceptance through the real API/browser", async () => {
+  it.each(["implementation", "trivial-change"] as const)("seals %s and current quality review before exact human acceptance through the real API/browser", async (template) => {
     const repo = join(root, "projects/alpha");
     const git = (...args: string[]) => execFileSync("git", managedGitArgs(["-C", repo, ...args], root), { env: localGitEnvironment(), windowsHide: true, stdio: "pipe" }).toString();
     git("init", "-b", "main"); git("config", "user.email", "fixture@example.invalid"); git("config", "user.name", "Synthetic fixture");
     mkdirSync(join(repo, "src")); writeFileSync(join(repo, "src/value.txt"), "base\n"); writeFileSync(join(repo, "verify.mjs"), "process.exit(0)\n");
     git("add", "-A"); git("commit", "-m", "synthetic workflow base");
-    const issues = createIssueService(root), proposed = issues.create({ project_id: "alpha", title: "Synthetic substantial workflow", expected_outcome: "Verify the bounded migration result",
-      acceptance_criteria: ["Observable result", "No changes outside the approved path"], criticality: "high", classification_inputs: { requires_migration: true },
+    const issues = createIssueService(root), proposed = issues.create({ project_id: "alpha", title: `Synthetic ${template} workflow`, expected_outcome: "Verify the bounded result",
+      acceptance_criteria: ["Observable result", "No changes outside the approved path"], ...(template === "implementation" ? { criticality: "high" as const, classification_inputs: { requires_migration: true } } : {}),
       assigned_role_id: "backend-engineer", plan: ["Change the synthetic value", "Run its configured verification"], next_action: "Review the exact candidate",
-      authorized_scope: { expected_outcome: "Verify the bounded migration result", acceptance_criteria: ["Observable result", "No changes outside the approved path"],
-        allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["implementation", "migration"], explicit_exclusions: [] } });
+      authorized_scope: { expected_outcome: "Verify the bounded result", acceptance_criteria: ["Observable result", "No changes outside the approved path"],
+        allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: template === "implementation" ? ["implementation", "migration"] : ["documentation"], explicit_exclusions: [] } });
     const issue = issues.authorize(proposed.id, proposed.revision, "synthetic-exact-scope-human");
     let workflowId = "";
     const usage = { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 3 };
@@ -208,6 +224,7 @@ describe("protected strict workflow API", () => {
         structuredOutput = { status: "completed", summary: "Synthetic bounded implementation", commands_run: [], tests_run: [], risks: [], blockers: [], next_steps: [], artifacts: [] };
       } else if (stage.kind === "review") {
         expect(input.mode).toBe("read-only"); expect(input.verifyCommands).toEqual([]);
+        expect(input.cwd).not.toBe(repo); expect(readFileSync(join(input.cwd, "src/value.txt"), "utf8")).toBe("verified candidate\n");
         const issueFacts = readIssueDocument(), candidateId = owner!.candidate!.candidate_id;
         const verificationEvidence = issueFacts.issues[issue.id]!.evidence_ids.map((id) => issueFacts.evidence[id]!).find((entry) => entry.kind === "verification" && entry.status === "passed" && entry.candidate_id === candidateId);
         expect(verificationEvidence).toBeDefined();
@@ -215,6 +232,7 @@ describe("protected strict workflow API", () => {
           path: null, evidence_ids: [verificationEvidence!.id], scope_change_required: false }] };
       } else if (stage.kind === "qa") {
         expect(input.mode).toBe("read-only"); expect(input.verifyCommands).toEqual([]);
+        expect(input.cwd).not.toBe(repo); expect(readFileSync(join(input.cwd, "src/value.txt"), "utf8")).toBe("verified candidate\n");
         const issueFacts = readIssueDocument(), candidateId = owner!.candidate!.candidate_id;
         const verificationEvidence = issueFacts.issues[issue.id]!.evidence_ids.map((id) => issueFacts.evidence[id]!).find((entry) => entry.kind === "verification" && entry.status === "passed" && entry.candidate_id === candidateId);
         const diffEvidence = issueFacts.issues[issue.id]!.evidence_ids.map((id) => issueFacts.evidence[id]!).find((entry) => entry.kind === "diff" && entry.candidate_id === candidateId);
@@ -258,14 +276,16 @@ describe("protected strict workflow API", () => {
         catch (error) { if (process.platform !== "win32" || !(error instanceof Error) || !error.message.includes("Executable doesn't exist")) throw error; browser = await chromium.launch({ headless: true, channel: "msedge" }); }
         page = await browser.newPage(); page.on("pageerror", (error) => pageErrors.push(error.message)); await page.goto(`${base}/api/session`);
       }
-      const input = { template_id: "implementation", template_version: 1, project_id: "alpha", issue_id: issue.id, expected_revision: issue.revision,
-        selected_agents: { planner: "tech-lead", "software-engineer": "backend-engineer", reviewer: "reality-checker", "qa-evaluator": "qa-reviewer" } };
+      const input = { template_id: template, template_version: 1, project_id: "alpha", issue_id: issue.id, expected_revision: issue.revision,
+        selected_agents: template === "implementation" ? { planner: "tech-lead", "software-engineer": "backend-engineer", reviewer: "reality-checker", "qa-evaluator": "qa-reviewer" }
+          : { "software-engineer": "backend-engineer", reviewer: "reality-checker" } };
       const preview = await post("/api/workflows/preview", input);
-      expect(preview.status).toBe(200); expect(preview.result.allowed).toBe(true); expect(preview.result.review_policy.qa_required).toBe(true);
-      expect(preview.result.plan.stages.map((stage: { kind: string }) => stage.kind)).toEqual(["planning", "implementation", "review", "qa"]);
+      expect(preview.status).toBe(200); expect(preview.result.allowed).toBe(true); expect(preview.result.review_policy.qa_required).toBe(template === "implementation");
+      expect(preview.result.plan.stages.map((stage: { kind: string }) => stage.kind)).toEqual(template === "implementation" ? ["planning", "implementation", "review", "qa"] : ["implementation", "review"]);
+      expect(preview.result.review_policy.effective_depth).toMatch(/focused|full/); expect(executor.run).not.toHaveBeenCalled();
       const started = await post("/api/workflows/start", { request: input, preview_fingerprint: preview.result.fingerprint, confirm: true, approval_id: "synthetic-workflow-root-human" });
       expect(started.status).toBe(201); workflowId = started.result.workflow.id;
-      const path = `/api/workflows/${workflowId}`;
+      let path = `/api/workflows/${workflowId}`;
       const runOne = async (kind: string) => {
         expect(await worker.runOnce()).toBe(1);
         const owner = readWorkflowDocument().workflows[workflowId]!, stage = readWorkflowDocument().stages[owner.current_stage_id!]!;
@@ -275,14 +295,18 @@ describe("protected strict workflow API", () => {
         if (page) await page.reload();
         return get(path);
       };
-      let detail = await runOne("planning");
-      expect(detail.workflow.status).toBe("waiting-human"); expect(detail.decisions[0].kind).toBe("plan-approval");
-      const planDecision = detail.decisions[0];
-      const planApproval = await post(path + "/decision", { expected_revision: detail.workflow.revision, expected_issue_revision: planDecision.expected_issue_revision,
-        decision_id: planDecision.id, resource_fingerprint: planDecision.resource_fingerprint, decision: "approve", confirm: true,
-        approval_id: "synthetic-planner-approval", rationale: "Approved exact bounded plan" });
-      expect(planApproval.status).toBe(200); expect(planApproval.result.workflow.approved_plan.stage_id).toBe(detail.stages[0].id);
-      if (page) await page.reload(); expect((await get(path)).workflow.status).toBe("running");
+      let detail = started.result;
+      if (template === "implementation") {
+        detail = await runOne("planning");
+        expect(detail.workflow.status).toBe("waiting-human"); expect(detail.decisions[0].kind).toBe("plan-approval");
+        expect(await worker.runOnce()).toBe(0); expect(executor.run).toHaveBeenCalledOnce(); expect(existsSync(join(root, "projects/surtec-worktrees"))).toBe(false);
+        const planDecision = detail.decisions[0];
+        const planApproval = await post(path + "/decision", { expected_revision: detail.workflow.revision, expected_issue_revision: planDecision.expected_issue_revision,
+          decision_id: planDecision.id, resource_fingerprint: planDecision.resource_fingerprint, decision: "approve", confirm: true,
+          approval_id: "synthetic-planner-approval", rationale: "Approved exact bounded plan" });
+        expect(planApproval.status).toBe(200); expect(planApproval.result.workflow.approved_plan.stage_id).toBe(detail.stages[0].id);
+        if (page) await page.reload(); expect((await get(path)).workflow.status).toBe("running");
+      }
 
       detail = await runOne("implementation");
       expect(detail.workflow.status, detail.workflow.blocked_reason ?? undefined).toBe("running");
@@ -292,8 +316,28 @@ describe("protected strict workflow API", () => {
       expect(detail.lineage.candidate_ids).toContain(detail.workflow.candidate.candidate_id); expect(detail.lineage.corrections_consumed).toBe(0);
 
       detail = await runOne("review");
-      expect(detail.workflow.status).toBe("running"); expect(detail.stages.at(-1).kind).toBe("qa"); expect(detail.review_receipts.map((entry: { role_id: string }) => entry.role_id)).toEqual(["reviewer"]);
-      expect(readIssueDocument().issues[issue.id]!.status).toBe("checking");
+      expect(detail.review_receipts.map((entry: { role_id: string }) => entry.role_id)).toEqual(["reviewer"]);
+      if (template === "trivial-change") {
+        expect(detail.workflow.status).toBe("waiting-human"); expect(detail.decisions.at(-1).kind).toBe("risk-acknowledgement");
+        expect(detail.stages.some((stage: { kind: string }) => stage.kind === "planning")).toBe(false);
+        expect(readIssueDocument().issues[issue.id]!.status).toBe("ready-for-review"); expect(executor.run).toHaveBeenCalledTimes(2);
+        const candidateId = detail.workflow.candidate.candidate_id, issueBeforeStop = readIssueDocument();
+        const stopped = await post(path + "/cancel", { expected_revision: detail.workflow.revision, expected_issue_revision: issueBeforeStop.issues[issue.id]!.revision });
+        expect(stopped.status).toBe(200); controller.reconcile(); expect((await get(path)).workflow.status).toBe("cancelled");
+        expect(readIssueDocument()).toEqual(issueBeforeStop); expect(await worker.runOnce()).toBe(0);
+        const quality = { template_id: "quality-review", template_version: 1, project_id: "alpha", issue_id: issue.id, expected_revision: issueBeforeStop.issues[issue.id]!.revision,
+          candidate_id: candidateId, selected_agents: { reviewer: "reality-checker", "qa-evaluator": "qa-reviewer" } };
+        const qualityPreview = await post("/api/workflows/preview", quality);
+        expect(qualityPreview.status).toBe(200); expect(qualityPreview.result.allowed).toBe(true); expect(qualityPreview.result.candidate.candidate_id).toBe(candidateId);
+        expect(qualityPreview.result.plan.stages.map((stage: { kind: string }) => stage.kind)).toEqual(["review", "qa"]);
+        expect(qualityPreview.result.correction).toMatchObject({ enabled: false, max_corrections: 0 }); expect(executor.run).toHaveBeenCalledTimes(2);
+        const qualityStart = await post("/api/workflows/start", { request: quality, preview_fingerprint: qualityPreview.result.fingerprint, confirm: true, approval_id: "synthetic-quality-root-human" });
+        expect(qualityStart.status).toBe(201); workflowId = qualityStart.result.workflow.id; path = `/api/workflows/${workflowId}`;
+        expect(readIssueDocument().issues[issue.id]!.status).toBe("ready-for-review"); detail = await runOne("review");
+        expect(detail.review_receipts).toHaveLength(1); expect(detail.review_receipts[0].candidate.candidate_id).toBe(candidateId);
+        expect(readIssueDocument().issues[issue.id]!.status).toBe("ready-for-review");
+      } else expect(readIssueDocument().issues[issue.id]!.status).toBe("checking");
+      expect(detail.workflow.status).toBe("running"); expect(detail.stages.at(-1).kind).toBe("qa");
 
       detail = await runOne("qa");
       expect(detail.workflow.status).toBe("waiting-human"); expect(detail.decisions.at(-1).kind).toBe("risk-acknowledgement");
@@ -313,9 +357,21 @@ describe("protected strict workflow API", () => {
       controller.reconcile(); if (page) await page.reload(); detail = await get(path);
       expect(detail.workflow.status).toBe("waiting-human"); expect(detail.decisions.at(-1).kind).toBe("candidate-acceptance");
       const acceptance = detail.decisions.at(-1), readyIssue = readIssueDocument().issues[issue.id]!;
-      const accepted = await post(path + "/decision", { expected_revision: detail.workflow.revision, expected_issue_revision: acceptance.expected_issue_revision,
+      const acceptanceBody = { expected_revision: detail.workflow.revision, expected_issue_revision: acceptance.expected_issue_revision,
         decision_id: acceptance.id, resource_fingerprint: acceptance.resource_fingerprint, decision: "approve", confirm: true,
-        approval_id: "synthetic-final-human-acceptance", rationale: "Every current criterion was confirmed", confirmed_criteria: readyIssue.acceptance_criteria });
+        approval_id: "synthetic-final-human-acceptance", rationale: "Every current criterion was confirmed", confirmed_criteria: readyIssue.acceptance_criteria };
+      const beforeDenied = { issues: readFileSync(join(state, "issues/issues.json")), workflows: readFileSync(join(state, "workflows/workflows.json")), tasks: listTasks() };
+      for (const invalid of [{ ...acceptanceBody, expected_revision: detail.workflow.revision - 1 }, { ...acceptanceBody, resource_fingerprint: "a".repeat(64) },
+        { ...acceptanceBody, confirm: false }, { ...acceptanceBody, confirmed_criteria: readyIssue.acceptance_criteria.slice(0, 1) }]) {
+        expect((await post(path + "/decision", invalid)).status).toBe(invalid.confirm === false ? 400 : 409);
+      }
+      const candidateTask = readTask(detail.workflow.candidate.task_id)!, candidateTree = (candidateTask.envelope.metadata.run as { worktree_path: string }).worktree_path;
+      writeFileSync(join(candidateTree, "src/value.txt"), "Changed after sealed read-only reviews\n");
+      expect((await post(path + "/decision", acceptanceBody)).status).toBe(409);
+      expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeDenied.issues); expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(beforeDenied.workflows);
+      expect(listTasks()).toEqual(beforeDenied.tasks); expect(executor.run).toHaveBeenCalledTimes(4);
+      writeFileSync(join(candidateTree, "src/value.txt"), "verified candidate\n");
+      const accepted = await post(path + "/decision", acceptanceBody);
       expect(accepted.status).toBe(200); expect(accepted.result.workflow.status).toBe("completed");
       expect(readIssueDocument().issues[issue.id]!.status).toBe("done"); expect(accepted.result.workflow.next_action).toContain("publication remains separately authorized");
       expect(executor.run).toHaveBeenCalledTimes(4); expect(pageErrors).toEqual([]);
@@ -325,14 +381,19 @@ describe("protected strict workflow API", () => {
       if (page) await page.goto(`${base}/api/session`);
       expect(await get(path)).toEqual(accepted.result); expect(await worker.runOnce()).toBe(0); expect(executor.run).toHaveBeenCalledTimes(4);
       expect(listTasks()).toHaveLength(4); expect(listTasks().every((task) => task.lifecycle === "finished" && task.outcome === "completed")).toBe(true);
+      expect(git("rev-parse", "HEAD").trim()).toBe(detail.workflow.candidate.base_revision); expect(git("remote").trim()).toBe("");
     } finally {
       try { await worker.stop(); } finally { try { await browser?.close(); if (browser) expect(browser.isConnected()).toBe(false); } finally { await closeServer(); } }
     }
   }, 90_000);
-  it("runs the shared read-only worker through real HTTP/browser, reload, stop and fresh-server recovery without replay", async () => {
-    const executor: AgentExecutor = { run: vi.fn(async () => ({ finalText: "Never promote raw fallback", threadId: "synthetic-thread", turnId: "synthetic-turn",
-      structuredOutput: { schema_version: 1, kind: "analysis", status: "completed", summary: "Synthetic bounded proposal", recommendations: ["Inspect the proposal"], evidence_ids: [], unresolved_questions: [], risks: [], recommended_next_action: "Wait for human", requested_decision: null },
-      usage: { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 3 } })) };
+  it.each(["analysis", "planner-analysis", "operations-investigation"] as const)("runs %s through real HTTP/browser, current human gate and fresh-server recovery without replay", async (template) => {
+    const executor: AgentExecutor = { run: vi.fn(async (input) => {
+      expect(input.mode).toBe("read-only"); expect(input.verifyCommands).toEqual([]); expect(input.threadId).toBeUndefined();
+      return { finalText: "Never promote raw fallback", threadId: "synthetic-thread", turnId: "synthetic-turn",
+      structuredOutput: { schema_version: 1, status: "completed", summary: "Synthetic bounded proposal", evidence_ids: [], unresolved_questions: [], risks: [], recommended_next_action: "Wait for human", requested_decision: null,
+        ...(template === "operations-investigation" ? { kind: "operations", proposed_issue: { title: "Synthetic operations proposal", expected_outcome: "Inspect the proposed service action", acceptance_criteria: ["Inspect synthetic evidence"], plan: ["Inspect before changing"], allowed_path_patterns: ["src/**"], next_action: "Wait for explicit human scope approval" } }
+          : { kind: "analysis", recommendations: ["Inspect the proposal"] }) },
+      usage: { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 3 } }; }) };
     let controller = new WorkflowOrchestrator(root), worker = new TaskOrchestrator({ repoRoot: root, workflows: controller, executor, maxConcurrent: 1 });
     let server: ReturnType<typeof serve> | undefined, browser: Awaited<ReturnType<typeof chromium.launch>> | undefined, page: Page | undefined, base = "";
     const pageErrors: string[] = [];
@@ -361,7 +422,9 @@ describe("protected strict workflow API", () => {
         catch (error) { if (process.platform !== "win32" || !(error instanceof Error) || !error.message.includes("Executable doesn't exist")) throw error; browser = await chromium.launch({ headless: true, channel: "msedge" }); }
         page = await browser.newPage(); page.on("pageerror", (error) => pageErrors.push(error.message)); await page.goto(`${base}/api/session`);
       }
-      const input = request(), preview = await remotePost("/api/workflows/preview", input);
+      const input = template === "operations-investigation" ? { ...request(), template_id: template, selected_agents: { "operations-observer": "devops-engineer" } }
+        : template === "planner-analysis" ? { ...request(), analysis_role: "planner", selected_agents: { planner: "tech-lead" } } : request();
+      const preview = await remotePost("/api/workflows/preview", input);
       expect(preview.status).toBe(200); expect(preview.result.allowed).toBe(true); expect(executor.run).not.toHaveBeenCalled();
       const started = await remotePost("/api/workflows/start", { request: input, preview_fingerprint: preview.result.fingerprint, confirm: true, approval_id: "synthetic-controller-human" });
       expect(started.status).toBe(201); expect(started.result.execution_enabled).toBe(true); expect(started.result.execution_boundary).toContain("human gates");
@@ -375,12 +438,27 @@ describe("protected strict workflow API", () => {
       expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(bytes); expect(executor.run).not.toHaveBeenCalled();
       expect(await worker.runOnce()).toBe(1); await vi.waitFor(() => expect(listTasks()[0]!.lifecycle).toBe("finished"), { timeout: 5000 });
       const completed = await get(path); expect(completed.workflow.status).toBe("waiting-human"); expect(completed.stages[0].status).toBe("completed");
+      expect(completed.decisions.at(-1).kind).toBe("proposal-acknowledgement"); expect(await worker.runOnce()).toBe(0);
       expect(completed.workflow.counters).toMatchObject({ tasks: 1, attempts: 1, total_tokens: 3, accounting_complete: true }); expect(completed.accounting[0].usage_complete).toBe(true);
       expect(completed.handoffs).toEqual([]); expect(completed.review_receipts).toEqual([]); expect(completed.stages[0].task_id).toBe(taskId);
       if (page) { await page.reload(); expect(await get(path)).toEqual(completed); }
-      const cancelled = await remotePost(`${path}/cancel`, { expected_revision: completed.workflow.revision, expected_issue_revision: issueBefore.issues[issueId]!.revision });
-      expect(cancelled.status).toBe(200); controller.reconcile(); const stopped = await get(path); expect(stopped.workflow.status).toBe("cancelled");
+      if (template === "analysis") {
+        const cancelled = await remotePost(`${path}/cancel`, { expected_revision: completed.workflow.revision, expected_issue_revision: issueBefore.issues[issueId]!.revision });
+        expect(cancelled.status).toBe(200);
+      } else {
+        const decision = completed.decisions.at(-1), decisionBody = { expected_revision: completed.workflow.revision, expected_issue_revision: decision.expected_issue_revision,
+          decision_id: decision.id, resource_fingerprint: decision.resource_fingerprint, decision: "approve", confirm: true,
+          approval_id: "synthetic-exact-proposal-human", rationale: "Acknowledge only the current bounded proposal" };
+        const workflowBytes = readFileSync(join(state, "workflows/workflows.json"));
+        expect((await remotePost(`${path}/decision`, { ...decisionBody, resource_fingerprint: "a".repeat(64) })).status).toBe(409);
+        expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes); expect(readIssueDocument()).toEqual(issueBefore);
+        const acknowledged = await remotePost(`${path}/decision`, decisionBody); expect(acknowledged.status).toBe(200); expect(acknowledged.result.workflow.status).toBe("completed");
+        expect((await remotePost(`${path}/decision`, decisionBody)).status).toBe(409);
+        expect(acknowledged.result.workflow.next_action).toContain("no issue or provider action");
+      }
+      controller.reconcile(); const stopped = await get(path); expect(stopped.workflow.status).toBe(template === "analysis" ? "cancelled" : "completed");
       expect(stopped.workflow.counters).toEqual(completed.workflow.counters); expect(readIssueDocument()).toEqual(issueBefore);
+      expect(Object.keys(readIssueDocument().issues)).toEqual([issueId]); expect(readIssueDocument().issues[issueId]!.status).toBe("proposed");
       const { token: oldToken } = await (await fetch(`${base}/api/session`)).json();
       await worker.stop(); await closeServer(); controller = new WorkflowOrchestrator(root); worker = new TaskOrchestrator({ repoRoot: root, workflows: controller, executor, maxConcurrent: 1 }); await listen();
       if (page) await page.goto(`${base}/api/session`);

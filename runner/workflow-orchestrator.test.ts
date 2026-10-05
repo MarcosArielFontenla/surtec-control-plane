@@ -15,7 +15,7 @@ import { WorkflowOrchestrator, workflowExecutionOwner } from "./workflow-orchest
 import { TaskOrchestrator } from "./task-orchestrator";
 import { runTask } from "./run-task";
 import { createWorkflowService } from "../dashboard/src/server/workflow-service";
-import { createWorkflowTask } from "../dashboard/src/server/dispatch";
+import { createTask, createWorkflowTask } from "../dashboard/src/server/dispatch";
 import { createContextService } from "../dashboard/src/server/context-service";
 import { createTestingEvidence, sealTestingEvidence } from "../lib/context/testing-evidence";
 import { managedGitArgs } from "../lib/security/managed-git.mjs";
@@ -211,6 +211,47 @@ describe("finite workflow controller integration", () => {
       await vi.waitFor(() => expect(readTask(f.taskId)?.lifecycle).toBe("finished")); expect(await other.runOnce()).toBe(0);
       expect(f.controller.service.detail(f.id).workflow.counters.attempts).toBe(1); expect(f.executor.run).toHaveBeenCalledOnce();
     } finally { await other.stop(); }
+  });
+  it("different workflow issues share one project writer while an independent read-only role uses spare capacity", async () => {
+    const first = fixture("trivial-change"); await worker!.stop();
+    const controller = new WorkflowOrchestrator(root), issues = createIssueService(root);
+    const start = () => {
+      const proposed = issues.create({ project_id: "alpha", title: "Synthetic trivial-change concurrency", expected_outcome: "Observable synthetic result",
+        acceptance_criteria: ["Observable acceptance"], assigned_role_id: "backend-engineer", plan: ["Existing plan"],
+        authorized_scope: { expected_outcome: "Observable synthetic result", acceptance_criteria: ["Observable acceptance"], allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["implementation"], explicit_exclusions: [] } });
+      const issue = issues.authorize(proposed.id, proposed.revision, "synthetic-concurrent-scope-human");
+      const request = { template_id: "trivial-change", template_version: 1, project_id: "alpha", issue_id: issue.id, expected_revision: issue.revision,
+        selected_agents: { "software-engineer": roles["software-engineer"], reviewer: roles.reviewer } };
+      const preview = controller.service.preview(request); expect(preview.allowed, preview.blocked_reasons.join("; ")).toBe(true);
+      return controller.service.start({ request, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-concurrent-root-human" });
+    };
+    const runAttempt = vi.fn(async (taskId: string, options: Parameters<typeof runTask>[3]) => {
+      expect(options?.runId).toBe(readTask(taskId)!.orchestration!.lease!.run_id);
+      if (readTask(taskId)!.envelope.context_admission!.schema_version === 2) expect(workflowExecutionOwner(options?.workflowExecution, taskId, options!.runId!)).not.toBeNull();
+      else expect(options?.workflowExecution).toBeUndefined();
+      return new Promise<null>((resolve) => {
+        if (options!.signal!.aborted) resolve(null);
+        else options!.signal!.addEventListener("abort", () => resolve(null), { once: true });
+      });
+    });
+    worker = new TaskOrchestrator({ repoRoot: root, workflows: controller, executor: first.executor, maxConcurrent: 3, runAttempt });
+    const second = start(), context = createContextService(root), request = { kind: "analysis", project: "alpha", agent: roles["portfolio-analyst"], role_id: "portfolio-analyst", instructions: "Inspect synthetic bounded concurrency." };
+    const preview = context.preview(request), advisory = createTask({ project: request.project, agent: request.agent, role_id: request.role_id, instructions: request.instructions, preview_fingerprint: preview.fingerprint }, root, undefined, { context });
+    const other = new TaskOrchestrator({ repoRoot: root, workflows: new WorkflowOrchestrator(root), executor: first.executor, maxConcurrent: 3, runAttempt });
+    try {
+      expect(await worker.runOnce()).toBe(2); await vi.waitFor(() => expect(runAttempt).toHaveBeenCalledTimes(2));
+      const running = listTasks().filter((task) => task.lifecycle === "running"), waiting = listTasks().filter((task) => task.lifecycle === "queued");
+      expect(running.filter((task) => task.envelope.sandbox === "workspace-write")).toHaveLength(1);
+      expect(running.filter((task) => task.envelope.sandbox === "read-only").map((task) => task.envelope.id)).toEqual([advisory.id]);
+      expect(waiting).toHaveLength(1); expect([first.taskId, second.stages[0]!.task_id]).toContain(waiting[0]!.envelope.id);
+      expect(waiting[0]!.orchestration).toMatchObject({ attempts: 0, lease: null });
+      const waitingAdmission = waiting[0]!.envelope.context_admission!; expect(waitingAdmission.schema_version).toBe(2);
+      if (waitingAdmission.schema_version !== 2) throw new Error("Synthetic waiting task lost its governed admission");
+      expect(controller.service.detail(waitingAdmission.workflow_id).workflow.counters).toMatchObject({ tasks: 1, attempts: 0, total_tokens: 0, runtime_ms: 0, accounting_complete: true });
+      expect(await other.runOnce()).toBe(0); expect(runAttempt).toHaveBeenCalledTimes(2);
+      expect(Object.values(readWorkflowDocument().accounting)).toHaveLength(1); expect(first.executor.run).not.toHaveBeenCalled();
+      expect(existsSync(join(root, "projects/surtec-worktrees"))).toBe(false); expect(listTasks()).toHaveLength(3);
+    } finally { await other.stop(); await worker.stop(); }
   });
   it("stale proof cannot observe usage or publish role output after lease replacement", () => {
     const f = fixture(), { proof } = claim(f), prepared = f.controller.prepare(proof);
@@ -444,5 +485,52 @@ describe("T010 one bounded correction under existing authority", () => {
     service.cancel(f.workflowId, { expected_revision: detail.workflow.revision, expected_issue_revision: readIssueDocument().issues[issueId]!.revision });
     new WorkflowOrchestrator(root).reconcile(); expect(f.detail().workflow.status).toBe("cancelled"); expect(f.detail().lineage!.corrections_consumed).toBe(1);
     expect(await worker!.runOnce()).toBe(0); expect(f.executor.run).toHaveBeenCalledTimes(4);
+  }, 90000);
+});
+
+describe("T013 correction completion and exhausted-authority recovery", () => {
+  it("seals a completed correction after a lost callback and reserves its exact review successor only once across restart", async () => {
+    const f = await correctionFixture(); await f.advance("qa");
+    const reserved = f.detail(), correction = reserved.stages.at(-1)!, callback = vi.spyOn(f.controller, "reconcile").mockImplementation(() => {});
+    await f.advance("correction"); callback.mockRestore();
+    expect(f.detail().stages.at(-1)!.status).toBe("running"); expect(f.detail().workflow.candidate).toEqual(f.original);
+    const terminal = readTask(correction.task_id!)!; expect(terminal).toMatchObject({ lifecycle: "finished", outcome: "completed" });
+    expect(terminal.orchestration!.lease).toBeNull(); expect(terminal.testing_evidence!.candidate!.base_revision).toBe(f.original.candidate_revision);
+    const restarted = new WorkflowOrchestrator(root); restarted.reconcile();
+    const reconciled = restarted.service.detail(f.workflowId), corrected = reconciled.workflow.candidate!;
+    expect(corrected.candidate_id).toBe(terminal.testing_evidence!.candidate!.id); expect(corrected.task_id).toBe(correction.task_id);
+    expect(corrected.base_revision).toBe(f.original.candidate_revision); expect(corrected.candidate_id).not.toBe(f.original.candidate_id);
+    expect(reconciled.lineage).toMatchObject({ corrections_consumed: 1, consumed_stage_id: correction.id, candidate_ids: [f.original.candidate_id, corrected.candidate_id] });
+    expect(reconciled.stages.at(-1)).toMatchObject({ kind: "review", status: "queued", predecessor_stage_id: correction.id, candidate: corrected });
+    expect(reconciled.workflow.counters).toMatchObject({ tasks: 6, attempts: 5, total_tokens: 15, accounting_complete: true });
+    expect(reconciled.accounting).toHaveLength(5); expect(reconciled.accounting.every((charge) => charge.usage_complete)).toBe(true);
+    const workflowBytes = readFileSync(join(state, "workflows/workflows.json")), issueBytes = readFileSync(join(state, "issues/issues.json")), identities = listTasks().map((task) => task.envelope.id).sort();
+    for (const duplicate of [f.controller, restarted, new WorkflowOrchestrator(root)]) duplicate.reconcile();
+    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes);
+    expect(listTasks().map((task) => task.envelope.id).sort()).toEqual(identities); expect(f.executor.run).toHaveBeenCalledTimes(5);
+    expect(() => restarted.service.admitCorrection(f.workflowId)).toThrow(/current/);
+    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes);
+    await f.advance("review"); await f.advance("qa");
+    expect(f.detail().workflow.status).toBe("waiting-human"); expect(f.detail().decisions.at(-1)!.kind).toBe("candidate-acceptance");
+    expect(f.detail().workflow.counters).toMatchObject({ tasks: 7, attempts: 7, total_tokens: 21, accounting_complete: true });
+    expect(f.executor.run).toHaveBeenCalledTimes(7);
+  }, 90000);
+
+  it("does not replay an exhausted second correction request through duplicate ticks, a fresh worker or explicit recovery", async () => {
+    const f = await correctionFixture({ repeatFinding: true }); await f.advance("qa"); await f.advance("correction"); await f.advance("review");
+    const exhausted = f.detail(), current = exhausted.stages.at(-1)!;
+    expect(exhausted.workflow.status).toBe("needs-decision"); expect(exhausted.workflow.blocked_reason).toContain("single correction");
+    expect(exhausted.lineage!.corrections_consumed).toBe(1); expect(exhausted.workflow.counters).toMatchObject({ tasks: 6, attempts: 6, total_tokens: 18, accounting_complete: true });
+    const workflowBytes = readFileSync(join(state, "workflows/workflows.json")), issueBytes = readFileSync(join(state, "issues/issues.json")), identities = listTasks().map((task) => task.envelope.id).sort();
+    await worker!.stop();
+    const restarted = new WorkflowOrchestrator(root); worker = new TaskOrchestrator({ repoRoot: root, workflows: restarted, executor: f.executor, maxConcurrent: 1 });
+    for (const duplicate of [f.controller, restarted, new WorkflowOrchestrator(root)]) duplicate.reconcile();
+    expect(await worker.runOnce()).toBe(0); expect(() => worker!.retry(current.task_id!)).toThrow(/controller/);
+    expect(() => restarted.service.admitCorrection(f.workflowId)).toThrow(/current/);
+    expect(() => restarted.service.recover(f.workflowId, { expected_revision: exhausted.workflow.revision, expected_issue_revision: readIssueDocument().issues[issueId]!.revision })).toThrow(/provable/);
+    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes);
+    expect(listTasks().map((task) => task.envelope.id).sort()).toEqual(identities); expect(f.executor.run).toHaveBeenCalledTimes(6);
+    expect(restarted.service.detail(f.workflowId).workflow.candidate).toEqual(exhausted.workflow.candidate);
+    expect(restarted.service.detail(f.workflowId).review_receipts).toEqual(exhausted.review_receipts); expect(restarted.service.detail(f.workflowId).accounting).toEqual(exhausted.accounting);
   }, 90000);
 });

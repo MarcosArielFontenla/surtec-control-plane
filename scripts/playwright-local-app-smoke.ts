@@ -10,15 +10,17 @@ import { fileURLToPath } from "node:url";
 import { createServer, type ViteDevServer } from "vite";
 import { chromium, type Browser, type Page } from "playwright";
 import { parse, stringify } from "yaml";
-import type { HarnessResponse } from "../dashboard/src/ui/api";
+import type { HarnessResponse, WorkflowDetail, WorkflowPreview } from "../dashboard/src/ui/api";
 import type { ContextPreview, ContextPreviewRequest } from "../dashboard/src/server/context-service";
 import type { TaskRecord } from "../lib/state/types";
+import type { IssueLineage, WorkIssue } from "../lib/issues/types";
+import type { WorkflowTemplateId } from "../lib/workflows/types";
 
 // Both promises acquire rejection handlers before the action begins. Closing
 // the page after a failed click cannot leak an unhandled pending response.
-export async function observeResponse(page: Pick<Page, "waitForResponse">, path: string, method: string, action: () => Promise<unknown>) {
+export async function observeResponse(page: Pick<Page, "waitForResponse">, path: string, method: string, action: () => Promise<unknown>, timeoutMs = 10_000) {
   const [response] = await Promise.all([
-    page.waitForResponse((response) => new URL(response.url()).pathname === path && response.request().method() === method, { timeout: 10_000 }),
+    page.waitForResponse((response) => new URL(response.url()).pathname === path && response.request().method() === method, { timeout: timeoutMs }),
     Promise.resolve().then(action),
   ]);
   return response;
@@ -75,6 +77,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const profileProjectId = "harness-smoke-project";
 const profileClientId = "harness-smoke-client";
 const issueProjectId = "appointment-manager";
+const workflowProjectId = "workflow-smoke-project";
 const syntheticClientId = "client-synthetic";
 
 interface ApiProcess {
@@ -243,8 +246,8 @@ async function createObjective(page: Page, input: { title: string; status: "acti
   return body.objective;
 }
 
-async function readApiJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+async function readApiJson<T>(url: string, timeoutMs = 5_000): Promise<T> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   assert.equal(response.status, 200, `GET ${new URL(url).pathname} returns 200`);
   return await response.json() as T;
 }
@@ -257,6 +260,295 @@ async function waitForTask(apiUrl: string, id: string): Promise<TaskRecord> {
     await delay(200);
   }
   throw new Error("Synthetic task did not finish within its bounded acceptance deadline");
+}
+
+/** Real UI approvals and real controller/worker/Git; only role responses are fake. */
+async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUrl: string; root: string; stateRoot: string;
+  projectsRoot: string; post: (path: string, body: unknown) => Promise<Response>; effects: () => Promise<unknown>; stage: (value: string) => void }) {
+  const { page, apiUrl, post, root } = input;
+  const observe = (path: string, action: () => Promise<unknown>) => observeResponse(page, path, "POST", action, 30_000);
+  const sourceBefore = await harnessTreeHash(join(input.projectsRoot, workflowProjectId));
+  const policyBefore = await harnessTreeHash(join(root, "registry"));
+  const completed: WorkflowDetail[] = [];
+  const scenarios: Record<string, string> = {};
+  const effectLog = async () => (await readFile(join(root, "executor-effects.jsonl"), "utf8")).trim().split("\n")
+    .map((line) => JSON.parse(line) as { workflow_id?: string; task_id?: string; stage_id?: string; execution_id?: string; kind?: string; mode: string; fingerprint: string; candidate_id?: string; candidate_revision?: string });
+  // Candidate sealing performs bounded synchronous Git inspection in the child.
+  // Give only this campaign's network observations a larger bounded deadline.
+  const detail = (id: string) => readApiJson<WorkflowDetail>(`${apiUrl}/api/workflows/${id}`, 30_000);
+  const lineage = (id: string) => readApiJson<IssueLineage>(`${apiUrl}/api/work-issues/${id}`, 30_000);
+  const wait = async (id: string, predicate: (facts: WorkflowDetail) => boolean, timeoutMs = 90_000) => {
+    const deadline = Date.now() + timeoutMs;
+    let facts = await detail(id);
+    while (!predicate(facts) && Date.now() < deadline) {
+      if (facts.workflow.status === "needs-decision") {
+        const stage = facts.stages.at(-1)!, task = stage.task_id ? await readApiJson<TaskRecord>(`${apiUrl}/api/tasks/${stage.task_id}`, 30_000) : null;
+        throw new Error(`Synthetic workflow blocked: ${facts.workflow.blocked_reason}; ${JSON.stringify({ kind: stage.kind, status: stage.status,
+          task_outcome: task?.outcome, verification: task?.result?.verification?.status, observations: task?.testing_evidence?.observations.map((entry) => ({ stage: entry.stage, outcome: entry.outcome, exit_code: entry.exit_code })) })}`);
+      }
+      await delay(250); facts = await detail(id);
+    }
+    assert.ok(predicate(facts), `workflow reaches its bounded gate: ${facts.workflow.template_id}/${facts.workflow.status}/${facts.workflow.blocked_reason}`);
+    return facts;
+  };
+  const create = async (name: string, scenario = "approve", authorize = false) => {
+    input.stage(`T013 ${name}: create explicit synthetic issue`);
+    const trivial = name === "trivial-and-quality";
+    const acceptance = trivial ? ["Observable synthetic workflow result"] : ["Observable synthetic workflow result", "Retain the exact authorized scope"];
+    const response = await post("/api/work-issues", { project_id: workflowProjectId, title: `Synthetic workflow ${name}`, expected_outcome: "Observe the exact bounded result",
+      acceptance_criteria: acceptance, assigned_role_id: "frontend-engineer", criticality: trivial ? "low" : "high",
+      plan: trivial ? [] : ["Change only the approved paths", "Inspect the configured verification"], next_action: "Inspect the exact next human gate",
+      authorized_scope: { expected_outcome: "Observe the exact bounded result", acceptance_criteria: acceptance,
+        allowed_path_patterns: ["dashboard/src/**"], excluded_path_patterns: [], allowed_change_categories: ["implementation"], explicit_exclusions: [] } });
+    assert.equal(response.status, 201, await response.clone().text());
+    let issue = (await response.json() as { issue: WorkIssue }).issue;
+    scenarios[issue.id] = scenario; await writeFile(join(root, "workflow-scenarios.json"), JSON.stringify(scenarios));
+    if (authorize) {
+      const authorized = await post(`/api/work-issues/${issue.id}/authorize`, { expected_revision: issue.revision, approval_id: "synthetic-workflow-scope-human" });
+      assert.equal(authorized.status, 200, await authorized.clone().text()); issue = (await lineage(issue.id)).issue;
+    }
+    return issue;
+  };
+  const open = async (issue: WorkIssue) => {
+    await page.goto(`${input.dashboardUrl}/`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Issues", exact: true }).click();
+    const card = page.locator("article.work-issue-card").filter({ hasText: issue.title });
+    await card.getByRole("button", { name: "Ver workflow", exact: true }).click();
+    const panel = card.getByRole("region", { name: `Workflow de ${issue.title}` });
+    await panel.getByRole("button", { name: "Actualizar workflow", exact: true }).waitFor();
+    return panel;
+  };
+  const start = async (issue: WorkIssue, template: WorkflowTemplateId, correction = false, negativePreview = false) => {
+    input.stage(`T013 ${template}: real dashboard preview/root gate`);
+    const panel = await open(issue);
+    const prepare = panel.locator("details.workflow-create");
+    if (!await prepare.evaluate((element) => (element as HTMLDetailsElement).open)) await prepare.locator("summary").click();
+    await panel.getByLabel("Template de workflow").selectOption(template);
+    assert.equal(await panel.getByLabel("Template de workflow").locator("option").count(), 5, "only finite templates are offered");
+    if (["implementation", "trivial-change"].includes(template)) {
+      await panel.getByLabel(/Incluir el perfil QA/).check();
+      if (correction) await panel.getByLabel(/Autorizar hasta una corrección/).check();
+    }
+    const selected: Record<string, string> = { "portfolio-analyst": "product-manager", planner: "tech-lead", "software-engineer": "frontend-engineer",
+      reviewer: "reality-checker", "qa-evaluator": "qa-reviewer", "operations-observer": "devops-engineer" };
+    for (const [role, agent] of Object.entries(selected)) {
+      const control = panel.getByLabel(`Agente de ${role}`, { exact: true });
+      if (await control.count() && await control.isEnabled()) await control.selectOption(agent);
+    }
+    assert.equal(await panel.locator(".workflow-role input:checked").count(), 0, "consent starts empty independently for every role");
+    const before = await input.effects();
+    const previewResponse = await observe("/api/workflows/preview", () => panel.getByRole("button", { name: "Previsualizar workflow", exact: true }).click());
+    assert.equal(previewResponse.status(), 200);
+    let preview = await previewResponse.json() as WorkflowPreview;
+    assert.equal(preview.allowed, true, preview.blocked_reasons.join("; "));
+    assert.deepEqual(await input.effects(), before, "preview creates no tasks, worktrees or executor effects");
+    assert.equal(await panel.getByRole("button", { name: "Iniciar workflow aprobado" }).isDisabled(), true);
+    if (negativePreview) {
+      await panel.getByLabel(/Apruebo este template/).check();
+      await panel.getByLabel("Tokens máximos", { exact: true }).fill("99999");
+      assert.equal(await panel.getByRole("button", { name: "Iniciar workflow aprobado" }).isDisabled(), true, "budget edit invalidates root acknowledgement");
+      const stale = await post("/api/workflows/start", { request: { ...preview.request, budget: { ...preview.budget, max_total_tokens: 99999 } }, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-stale-root" });
+      assert.equal(stale.status, 409); assert.deepEqual(await input.effects(), before);
+      await panel.getByLabel("Tokens máximos", { exact: true }).fill("100000");
+      const newPreview = await observe("/api/workflows/preview", () => panel.getByRole("button", { name: "Previsualizar workflow", exact: true }).click());
+      preview = await newPreview.json() as WorkflowPreview; assert.equal(preview.allowed, true);
+    }
+    await panel.getByRole("region", { name: "Preview de workflow", exact: true }).getByText("Workflow habilitado para este pedido.", { exact: true }).waitFor();
+    await panel.getByLabel(/Apruebo este template/).check();
+    const response = await observe("/api/workflows/start", () => panel.getByRole("button", { name: "Iniciar workflow aprobado", exact: true }).click());
+    assert.equal(response.status(), 201, await response.text());
+    const facts = await response.json() as WorkflowDetail;
+    assert.equal(facts.grant.approved_by, "human");
+    assert.ok(facts.grant.role_assignments.every((role) => role.client_context_categories.length === 0));
+    return facts.workflow.id;
+  };
+  const refresh = async (issue: WorkIssue, facts: WorkflowDetail) => {
+    // Load the parent issue's current revision before refreshing the panel.
+    // Otherwise an owned progress update may remount it after a stale kind
+    // label appears, closing evidence and clearing decision acknowledgements.
+    const panel = await open(issue);
+    const response = await observeResponse(page, `/api/workflows/${facts.workflow.id}`, "GET",
+      () => panel.getByRole("button", { name: "Actualizar workflow", exact: true }).click(), 30_000);
+    assert.equal(response.status(), 200);
+    const current = await response.json() as WorkflowDetail;
+    assert.equal(current.workflow.id, facts.workflow.id);
+    assert.ok(current.workflow.revision >= facts.workflow.revision, "refresh cannot restore an older workflow revision");
+    assert.equal(current.workflow.pending_decision_id, facts.workflow.pending_decision_id);
+    await panel.getByText(`${current.workflow.id} · r${current.workflow.revision} · autoridad r${current.workflow.authority_revision}`, { exact: true }).waitFor();
+    const decision = current.decisions.find((entry) => entry.id === current.workflow.pending_decision_id);
+    if (decision) {
+      assert.equal(decision.resource_fingerprint, facts.decisions.find((entry) => entry.id === decision.id)!.resource_fingerprint);
+      await panel.getByText(`${decision.id} · issue r${decision.expected_issue_revision} · workflow r${decision.expected_workflow_revision} · ${decision.resource_fingerprint}`, { exact: true }).waitFor();
+    }
+    return panel;
+  };
+  const approve = async (issue: WorkIssue, facts: WorkflowDetail) => {
+    const decision = facts.decisions.find((entry) => entry.id === facts.workflow.pending_decision_id)!;
+    assert.ok(decision && decision.status === "pending"); input.stage(`T013 ${facts.workflow.template_id}: ${decision.kind} human gate`);
+    const panel = await refresh(issue, facts);
+    await panel.getByLabel("Motivo de la decisión").fill("Reviewed the exact synthetic evidence and current bindings");
+    await panel.getByLabel("Revisé esta decisión y sus bindings actuales", { exact: true }).check();
+    if (decision.kind === "candidate-acceptance") {
+      assert.equal(await panel.getByRole("button", { name: "Aprobar decisión exacta", exact: true }).isDisabled(), true, "acceptance requires every criterion");
+      for (const criterion of (await lineage(issue.id)).issue.acceptance_criteria) await panel.getByLabel(criterion, { exact: true }).check();
+    }
+    const response = await observe(`/api/workflows/${facts.workflow.id}/decision`, () => panel.getByRole("button", { name: "Aprobar decisión exacta", exact: true }).click());
+    assert.equal(response.status(), 200, await response.text());
+    return await response.json() as WorkflowDetail;
+  };
+  const gate = (facts: WorkflowDetail) => facts.workflow.status === "waiting-human" && facts.decisions.some((entry) => entry.id === facts.workflow.pending_decision_id && entry.status === "pending");
+  const verify = async (facts: WorkflowDetail, kinds: string[]) => {
+    assert.deepEqual(facts.stages.map((stage) => stage.kind), kinds);
+    const effects = (await effectLog()).filter((effect) => effect.workflow_id === facts.workflow.id);
+    assert.deepEqual(effects.map((effect) => effect.kind), kinds);
+    assert.equal(new Set(effects.map((effect) => effect.task_id)).size, kinds.length);
+    assert.equal(new Set(effects.map((effect) => effect.execution_id)).size, kinds.length);
+    assert.equal(facts.workflow.counters.tasks, kinds.length); assert.equal(facts.workflow.counters.attempts, kinds.length);
+    assert.equal(facts.workflow.counters.total_tokens, kinds.length * 3); assert.equal(facts.workflow.counters.accounting_complete, true);
+    for (const effect of effects) {
+      const stage = facts.stages.find((entry) => entry.id === effect.stage_id)!;
+      assert.equal(stage.task_id, effect.task_id); assert.equal(stage.execution_id, effect.execution_id);
+      assert.equal(effect.mode, ["implementation", "correction"].includes(stage.kind) ? "workspace-write-verify" : "read-only");
+      if (["implementation", "correction"].includes(stage.kind)) {
+        const writer = await readApiJson<TaskRecord>(`${apiUrl}/api/tasks/${stage.task_id}`, 30_000);
+        assert.equal(writer.result!.verification!.status, "passed"); assert.equal(writer.testing_evidence!.mode, facts.grant.testing_mode);
+        assert.ok(writer.testing_evidence!.fingerprint); assert.equal(writer.testing_evidence!.execution_id, effect.execution_id);
+        assert.deepEqual(writer.result!.files_changed, ["dashboard/src/workflow.txt"]);
+      }
+      if (["review", "qa"].includes(stage.kind)) {
+        const receipt = facts.review_receipts.find((entry) => entry.stage_id === stage.id)!;
+        assert.ok(receipt); assert.equal(receipt.candidate.candidate_id, effect.candidate_id);
+        assert.equal(receipt.candidate.candidate_revision, effect.candidate_revision);
+        assert.equal(receipt.context_fingerprint, (await readApiJson<TaskRecord>(`${apiUrl}/api/tasks/${stage.task_id}`)).envelope.context_manifest!.fingerprint);
+      }
+    }
+    const encoded = JSON.stringify(facts);
+    assert.ok(!encoded.includes(root) && !encoded.includes("Synthetic private project source body") && !encoded.includes("Synthetic confidential client body"), "workflow projections remain body-free");
+    completed.push(facts);
+  };
+  for (const template of ["analysis", "operations-investigation"] as const) {
+    const issue = await create(template), id = await start(issue, template, false, template === "analysis");
+    const facts = await wait(id, gate);
+    if (template === "operations-investigation") {
+      const panel = await refresh(issue, facts); await panel.getByText("Etapas, roles y consentimiento aprobado", { exact: true }).click();
+      await panel.getByText(/Propuesta solamente: Synthetic operations proposal/).waitFor();
+      const issues = await readApiJson<{ issues: WorkIssue[] }>(`${apiUrl}/api/work-issues`);
+      assert.ok(!issues.issues.some((entry) => entry.title === "Synthetic operations proposal"), "operation output cannot create an issue");
+    }
+    const accepted = await approve(issue, facts); assert.equal(accepted.workflow.status, "completed");
+    assert.equal((await lineage(issue.id)).issue.status, "proposed", "advisory acknowledgement does not authorize or finish the issue");
+    await verify(accepted, [template === "analysis" ? "analysis" : "operations"]);
+  }
+  const implementation = await create("implementation", "advisory", true), implementationId = await start(implementation, "implementation");
+  let facts = await wait(implementationId, gate);
+  assert.equal(facts.decisions.at(-1)!.kind, "plan-approval"); assert.equal(facts.stages.length, 1);
+  const planEffects = await input.effects(); await delay(350); assert.deepEqual(await input.effects(), planEffects, "Planner gate cannot admit a writer");
+  await approve(implementation, facts); facts = await wait(implementationId, gate);
+  assert.equal(facts.decisions.at(-1)!.kind, "risk-acknowledgement");
+  assert.equal((await lineage(implementation.id)).issue.status, "ready-for-review");
+  await approve(implementation, facts); facts = await wait(implementationId, gate);
+  assert.equal(facts.decisions.at(-1)!.kind, "candidate-acceptance");
+  if (process.argv.includes("--fail-after-workflow-candidate")) { input.stage("injected failure after a real workflow candidate and receipts"); throw new Error("Synthetic workflow candidate failure"); }
+  facts = await approve(implementation, facts); assert.equal((await lineage(implementation.id)).issue.status, "done");
+  await verify(facts, ["planning", "implementation", "review", "qa"]);
+
+  const trivial = await create("trivial-and-quality", "approve", true);
+  assert.equal(trivial.work_scale, "trivial"); const trivialId = await start(trivial, "trivial-change");
+  facts = await wait(trivialId, gate); assert.equal(facts.decisions.at(-1)!.kind, "candidate-acceptance");
+  assert.equal(facts.workflow.review_policy!.effective_depth, "full"); assert.equal(facts.workflow.review_policy!.qa_required, true);
+  await verify(facts, ["implementation", "review", "qa"]);
+  const stop = async (issue: WorkIssue, facts: WorkflowDetail) => {
+    const panel = await refresh(issue, facts); await panel.getByLabel(/Confirmo detener este workflow/).check();
+    const response = await observe(`/api/workflows/${facts.workflow.id}/cancel`, () => panel.getByRole("button", { name: "Detener workflow", exact: true }).click());
+    assert.equal(response.status(), 200, await response.text()); return wait(facts.workflow.id, (value) => value.workflow.status === "cancelled");
+  };
+  const retainedCandidate = facts.workflow.candidate!; completed[completed.length - 1] = await stop(trivial, facts);
+  const qualityIssue = (await lineage(trivial.id)).issue;
+  assert.equal(qualityIssue.status, "ready-for-review"); const qualityId = await start(qualityIssue, "quality-review");
+  facts = await wait(qualityId, gate); assert.deepEqual(facts.workflow.candidate, retainedCandidate);
+  assert.equal(facts.grant.correction.enabled, false);
+  const decision = facts.decisions.at(-1)!;
+  const beforeInvalid = await input.effects();
+  const stale = await post(`/api/workflows/${qualityId}/decision`, { expected_revision: facts.workflow.revision - 1, expected_issue_revision: decision.expected_issue_revision,
+    decision_id: decision.id, resource_fingerprint: decision.resource_fingerprint, decision: "approve", confirm: true,
+    approval_id: "synthetic-stale-acceptance", rationale: "Must not bypass exact candidate criteria", confirmed_criteria: qualityIssue.acceptance_criteria });
+  assert.equal(stale.status, 409); assert.deepEqual(await input.effects(), beforeInvalid);
+  const writer = await readApiJson<TaskRecord>(`${apiUrl}/api/tasks/${retainedCandidate.task_id}`);
+  const candidatePath = (writer.envelope.metadata.run as { worktree_path: string }).worktree_path;
+  assert.ok(isInside(join(input.projectsRoot, "surtec-worktrees"), candidatePath));
+  const changedPath = join(candidatePath, "dashboard/src/workflow.txt"), originalBytes = await readFile(changedPath);
+  await writeFile(changedPath, "Synthetic unsealed physical mutation.\n");
+  const changedEffects = await input.effects();
+  const changed = await post(`/api/workflows/${qualityId}/decision`, { expected_revision: facts.workflow.revision, expected_issue_revision: decision.expected_issue_revision,
+    decision_id: decision.id, resource_fingerprint: decision.resource_fingerprint, decision: "approve", confirm: true,
+    approval_id: "synthetic-mutated-tree", rationale: "Must not accept an unsealed physical candidate", confirmed_criteria: qualityIssue.acceptance_criteria });
+  assert.equal(changed.status, 409); assert.deepEqual(await input.effects(), changedEffects);
+  await writeFile(changedPath, originalBytes); facts = await approve(qualityIssue, await detail(qualityId));
+  assert.equal((await lineage(trivial.id)).issue.status, "done"); await verify(facts, ["review", "qa"]);
+
+  for (const scenario of ["correction", "repeat-correction"]) {
+    const issue = await create(scenario, scenario, true), id = await start(issue, "implementation", true);
+    await approve(issue, await wait(id, gate));
+    if (scenario === "repeat-correction") {
+      input.stage("T013 repeat-correction: one consumed allowance and exact second-correction refusal");
+      // Six post-Planner roles include two full candidate inspection/review
+      // cycles. Bound this campaign's wall time separately from active-runtime
+      // caps, HTTP deadlines and every shorter gate's existing deadline.
+      const deadline = Date.now() + 180_000; facts = await detail(id);
+      while (facts.workflow.status !== "needs-decision" && Date.now() < deadline) { await delay(250); facts = await detail(id); }
+      assert.equal(facts.workflow.status, "needs-decision"); assert.equal(facts.stages.filter((stage) => stage.kind === "correction").length, 1);
+      assert.ok(facts.workflow.blocked_reason?.includes("single correction"), `only exhausted correction may block this scenario: ${facts.workflow.blocked_reason}`);
+      const panel = await refresh(issue, facts); await panel.locator(".workflow-facts dd").filter({ hasText: /needs-decision/ }).waitFor();
+      assert.equal(await panel.getByRole("button", { name: "Aprobar decisión exacta" }).count(), 0);
+    } else {
+      facts = await wait(id, gate, 180_000); assert.equal(facts.decisions.at(-1)!.kind, "candidate-acceptance");
+      input.stage("T013 correction: exact candidate evidence, mobile layout and owned task navigation");
+      const panel = await refresh(issue, facts);
+      for (const summary of ["Etapas, roles y consentimiento aprobado", /^Handoffs completados/, /^Evidencia, verificación y receipts/, "Recovery, intents y eventos"]) {
+        const control = panel.getByText(summary, { exact: typeof summary === "string" });
+        if (!await control.evaluate((element) => (element.closest("details") as HTMLDetailsElement).open)) await control.click();
+      }
+      await panel.getByText(`Receipt de testing · ${facts.grant.testing_mode}`, { exact: true }).waitFor();
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "full workflow evidence wraps on mobile");
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      const ownedTask = facts.stages.at(-1)!.task_id!;
+      const taskLink = panel.getByRole("button", { name: `Ver tarea ${ownedTask}`, exact: true });
+      await taskLink.waitFor({ state: "visible" }); await taskLink.click();
+      await page.getByRole("region", { name: "Workflow propietario", exact: true }).getByText(`${id} · ${issue.id}`, { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Abrir workflow del issue", exact: true }).click();
+      await page.getByRole("region", { name: `Workflow de ${issue.title}`, exact: true }).waitFor();
+      facts = await approve(issue, await detail(id)); assert.equal((await lineage(issue.id)).issue.status, "done");
+    }
+    assert.equal(facts.lineage!.corrections_consumed, 1); assert.equal(facts.lineage!.candidate_ids.length, 2);
+    const entries = (await lineage(issue.id)).candidates, prior = entries.find((entry) => entry.id === facts.lineage!.candidate_ids[0])!, corrected = entries.find((entry) => entry.id === facts.lineage!.candidate_ids[1])!;
+    assert.equal(corrected.base_revision, prior.candidate_revision); assert.notEqual(corrected.diff_fingerprint, prior.diff_fingerprint);
+    assert.ok(prior.invalidated_at); assert.equal(facts.review_receipts.length, 4);
+    await verify(facts, ["planning", "implementation", "review", "qa", "correction", "review", "qa"]);
+  }
+  const heldIssue = await create("held-stop", "hold"), heldId = await start(heldIssue, "analysis");
+  input.stage("T013 held-stop: durable cancellation of an invoked read-only role");
+  facts = await wait(heldId, (value) => value.stages[0]!.status === "running" && value.workflow.counters.attempts === 1);
+  const heldDeadline = Date.now() + 10_000;
+  while (!(await effectLog()).some((entry) => entry.workflow_id === heldId && entry.stage_id === facts.stages[0]!.id && entry.execution_id === facts.stages[0]!.execution_id) && Date.now() < heldDeadline) await delay(100);
+  assert.ok((await effectLog()).some((entry) => entry.workflow_id === heldId && entry.task_id === facts.stages[0]!.task_id), "stop targets an actually invoked held role");
+  const stopped = await stop(heldIssue, await detail(heldId)), stoppedTask = await waitForTask(apiUrl, stopped.stages[0]!.task_id!);
+  assert.equal(stoppedTask.outcome, "cancelled"); assert.equal(stopped.stages.length, 1);
+  const stoppedFacts = await detail(heldId);
+  assert.equal(stoppedFacts.workflow.counters.accounting_complete, false, "interrupted unknown usage is never accounted as complete zero");
+  assert.equal(stoppedFacts.accounting[0]!.usage_complete, false);
+  assert.equal((await lineage(heldIssue.id)).issue.status, "proposed"); completed.push(stoppedFacts);
+  const pendingIssue = await create("pending-plan-restart", "approve", true), pendingId = await start(pendingIssue, "implementation");
+  const pending = await wait(pendingId, gate); assert.equal(pending.stages.length, 1); assert.equal(pending.decisions.at(-1)!.kind, "plan-approval");
+  assert.equal(await harnessTreeHash(join(input.projectsRoot, workflowProjectId)), sourceBefore, "source checkout and protected verifier bytes never change");
+  assert.equal(await harnessTreeHash(join(root, "registry")), policyBefore, "workflow execution cannot change trusted policy or allowlists");
+  completed.push(pending); input.stage("T013 all five templates, bounded correction and durable gates completed");
+  // Quality-review legitimately appends its owner to the retained candidate's
+  // shared lineage. Capture the complete final read models after that action,
+  // rather than comparing an earlier lineage snapshot to the post-restart one.
+  const records: WorkflowDetail[] = [];
+  for (const record of completed) records.push(await detail(record.workflow.id));
+  return { records, pendingIssue, pendingId, stop, detail, effects: await effectLog() };
 }
 
 async function main(): Promise<void> {
@@ -281,13 +573,16 @@ async function main(): Promise<void> {
     await createSyntheticGitProject(projectsRoot, profileProjectId, environment);
     await createSyntheticGitProject(projectsRoot, profileClientId, environment);
     await createSyntheticGitProject(projectsRoot, issueProjectId, environment);
+    await createSyntheticGitProject(projectsRoot, workflowProjectId, environment);
     // Privileged registry and Git identity belong only to this disposable fixture.
     await mkdir(join(tempRoot, "registry"), { recursive: true });
-    for (const source of ["registry/agents.yml", "registry/agent-roles.yml", "registry/context-policy.yml", "evals"]) await cp(join(repoRoot, source), join(tempRoot, source), { recursive: true });
+    for (const source of ["registry/agents.yml", "registry/agent-roles.yml", "registry/context-policy.yml", "registry/workflow-policy.yml", "evals"]) await cp(join(repoRoot, source), join(tempRoot, source), { recursive: true });
     const contextConfig = parse(await readFile(join(tempRoot, "registry/context-policy.yml"), "utf8"));
     contextConfig.routes = [{ id: "synthetic-required-source", role_ids: [], task_kinds: [], affected_domains: [], paths: ["docs/smoke-context.md"], required: true }];
+    // Synthetic trusted floor exercises QA even for a classified trivial issue.
+    contextConfig.testing.projects[workflowProjectId] = { mode: "functional", minimum_review_depth: "full", runner_ids: [] };
     await writeFile(join(tempRoot, "registry/context-policy.yml"), stringify(contextConfig));
-    await writeFile(join(tempRoot, "registry", "projects.yml"), `projects:\n  ${profileProjectId}:\n    status: active\n    allowed_agents: [tech-lead, frontend-engineer]\n  ${profileClientId}:\n    status: active\n    allowed_agents: [tech-lead, frontend-engineer]\n  ${issueProjectId}:\n    allowed_agents: [frontend-engineer, tech-lead]\n    sandbox:\n      default: workspace-write\n    commands:\n      test: node --version\n`);
+    await writeFile(join(tempRoot, "registry", "projects.yml"), `projects:\n  ${profileProjectId}:\n    status: active\n    allowed_agents: [tech-lead, frontend-engineer]\n  ${profileClientId}:\n    status: active\n    allowed_agents: [tech-lead, frontend-engineer]\n  ${issueProjectId}:\n    allowed_agents: [frontend-engineer, tech-lead]\n    sandbox:\n      default: workspace-write\n    commands:\n      test: node --version\n  ${workflowProjectId}:\n    allowed_agents: [product-manager, frontend-engineer, tech-lead, reality-checker, qa-reviewer, devops-engineer]\n    sandbox: { default: workspace-write }\n    verify: ['node verify-workflow.mjs']\n`);
     // Explicit synthetic canonical source and project scaffolds; only reviewed public files.
     const canonicalRoot = join(tempRoot, "canonical");
     for (const destination of [canonicalRoot, join(projectsRoot, profileProjectId), join(projectsRoot, profileClientId)]) {
@@ -300,7 +595,7 @@ async function main(): Promise<void> {
     harnessRegistry.projects[profileProjectId] = { ownership: [{ path: "AGENTS.md", classification: "user-owned", evidence: "Synthetic human ownership confirmation" }], testing_policy: { schema_version: 1, mode: "functional", runner_id: null, requires_red_evidence: false, applicable_task_kinds: [] }, review_policy: "human-required", backup_ready: false, rollback_ready: false, validation: null };
     await writeFile(join(tempRoot, "registry/harness-sources.yml"), stringify(harnessRegistry));
     await unlink(join(projectsRoot, profileClientId, ".agents/scripts/validate-spec.ps1"));
-    for (const id of [profileProjectId, profileClientId, issueProjectId]) {
+    for (const id of [profileProjectId, profileClientId, issueProjectId, workflowProjectId]) {
       await mkdir(join(projectsRoot, id, "docs"), { recursive: true });
       await writeFile(join(projectsRoot, id, "docs/smoke-context.md"), "Synthetic private project source body.\n");
     }
@@ -318,6 +613,10 @@ async function main(): Promise<void> {
     for (const args of [["config", "user.name", "Synthetic Smoke"], ["config", "user.email", "synthetic@example.test"], ["add", "README.md", "docs/smoke-context.md"], ["commit", "--quiet", "-m", "Synthetic fixture baseline"]]) {
       execFileSync("git", ["-C", syntheticRepo, ...args], { env: environment, windowsHide: true });
     }
+    const workflowRepo = join(projectsRoot, workflowProjectId);
+    await writeFile(join(workflowRepo, "verify-workflow.mjs"), "import {readFileSync} from 'node:fs'; const value=readFileSync('dashboard/src/workflow.txt','utf8'); if(!/^Synthetic (initial|corrected) I-[a-f0-9-]+\\.\\r?\\n$/.test(value)) process.exit(1); console.log('Synthetic bounded workflow result verified');\n");
+    for (const args of [["config", "user.name", "Synthetic Smoke"], ["config", "user.email", "synthetic@example.test"], ["add", "docs/smoke-context.md", "verify-workflow.mjs"], ["commit", "--quiet", "-m", "Synthetic workflow baseline"]]) execFileSync("git", ["-C", workflowRepo, ...args], { env: environment, windowsHide: true });
+    const workflowBaseline = execFileSync("git", ["-C", workflowRepo, "rev-parse", "HEAD"], { env: environment, encoding: "utf8", windowsHide: true }).trim();
     const legacyProfiles = {
       schema_version: 1,
       projects: {
@@ -391,7 +690,7 @@ async function main(): Promise<void> {
     });
     page.on("request", (request) => {
       const url = new URL(request.url());
-      if ((url.pathname.startsWith("/api/organization/") || url.pathname.startsWith("/api/work-issues")) && ["POST", "PUT", "PATCH", "DELETE"].includes(request.method())) {
+      if ((url.pathname.startsWith("/api/organization/") || url.pathname.startsWith("/api/work-issues") || url.pathname.startsWith("/api/workflows")) && ["POST", "PUT", "PATCH", "DELETE"].includes(request.method())) {
         mutatingSessionHeaders.push(request.headers()["x-surtec-session"] ?? "");
       }
     });
@@ -442,9 +741,9 @@ async function main(): Promise<void> {
     stage = "verify cycle rejection and relationship integrity";
     const firstSessionToken = mutatingSessionHeaders.find((token) => token.length > 0);
     assert.ok(firstSessionToken, "dashboard mutations include an in-memory session token");
-    const apiPost = (path: string, body: unknown, token = firstSessionToken) => fetch(`${apiUrl}${path}`, {
+    const apiPost = (path: string, body: unknown, token = firstSessionToken, timeoutMs = 5_000) => fetch(`${apiUrl}${path}`, {
       method: "POST", headers: { "content-type": "application/json", "x-surtec-session": token },
-      body: JSON.stringify(body), signal: AbortSignal.timeout(5_000),
+      body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
     });
     const previewRequest = async (input: ContextPreviewRequest): Promise<ContextPreview> => {
       const response = await apiPost("/api/context/preview", input);
@@ -827,6 +1126,10 @@ async function main(): Promise<void> {
     assert.equal(await harnessTreeHash(harnessProjectRoot), beforeHarness);
     assert.deepEqual((await readApiJson<HarnessResponse>(`${apiUrl}/api/projects/${profileProjectId}/harness`)).saved, restoredSavedHarness, "GET unknown observations do not replace explicitly restored saved evidence");
 
+    const workflows = await workflowCampaign({ page, apiUrl, dashboardUrl, root: tempRoot, stateRoot, projectsRoot,
+      post: (path, body) => apiPost(path, body, firstSessionToken, 30_000), effects,
+      stage: (value) => { stage = value; console.log(value); } });
+    const beforeWorkflowRestart = await effects();
     stage = "restart the real API and verify durable state and session rotation";
     const initialSessionResponse = await readApiJson<{ token: string }>(`${apiUrl}/api/session`);
     assert.equal(initialSessionResponse.token, firstSessionToken, "browser and API share the same initial session token");
@@ -861,10 +1164,13 @@ async function main(): Promise<void> {
     assert.equal(stableProfiles.migration, null, "already-migrated profiles do not migrate twice");
     assert.equal(stableProfiles.profiles.length, 2);
     const persistedIssues = await readApiJson<{ issues: Array<{ id: string; status: string; work_scale: string; scope_revision: number }> }>(`${apiUrl}/api/work-issues`);
-    assert.deepEqual(persistedIssues.issues.map((issue) => ({ id: issue.id, status: issue.status, work_scale: issue.work_scale, scope_revision: issue.scope_revision })), [
+    const legacyIssueIds = [issueCreateBody.issue.id, ...scopeOutcomes.map((issue) => issue.id)];
+    assert.deepEqual(persistedIssues.issues.filter((issue) => legacyIssueIds.includes(issue.id)).map((issue) => ({ id: issue.id, status: issue.status, work_scale: issue.work_scale, scope_revision: issue.scope_revision })), [
       { id: issueCreateBody.issue.id, status: "done", work_scale: "trivial", scope_revision: 1 },
       ...scopeOutcomes.map((issue) => ({ ...issue, work_scale: "trivial" })),
     ], "local issue and authorization survive API restart without any provider write");
+    assert.deepEqual(await effects(), beforeWorkflowRestart, "workflow gates, completed handoffs, stopped tasks and counters survive restart without replay");
+    for (const record of workflows.records) assert.deepEqual(await workflows.detail(record.workflow.id), record, "restart retains exact stage/task/grant/receipt/accounting identities");
     const persistedOrganization = JSON.parse(await readFile(join(stateRoot, "organization", "organization.json"), "utf8")) as { schema_version?: number };
     assert.equal(persistedOrganization.schema_version, 1, "organization state remains in its supported versioned format");
 
@@ -892,17 +1198,38 @@ async function main(): Promise<void> {
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "recorded task manifest has no mobile overflow");
     await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByRole("button", { name: "Issues", exact: true }).click();
+    const pendingCard = page.locator("article.work-issue-card").filter({ hasText: workflows.pendingIssue.title });
+    await pendingCard.getByRole("button", { name: "Ver workflow", exact: true }).click();
+    const restartedPending = await workflows.detail(workflows.pendingId);
+    await page.getByRole("region", { name: `Workflow de ${workflows.pendingIssue.title}`, exact: true }).getByText(/^plan-approval ·/).waitFor();
+    assert.equal(restartedPending.stages.length, 1, "restart at Planner gate cannot admit an engineer");
+    await workflows.stop(workflows.pendingIssue, restartedPending);
     assert.ok(browserErrors.length === 0 && browserHttpErrors.length === 0, `browser remains free of errors after API restart (${[...browserErrors, ...browserHttpErrors].join(" | ")})`);
 
     stage = "verify immediate browser evidence consistency after local acceptance";
     assert.equal(reviewLineageStale, false, "after acceptance the open lineage must refresh; it must not retain a missing-human-review gap while the issue is done");
-    const executorEffects = (await readFile(join(tempRoot, "executor-effects.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { mode: string; fingerprint: string });
-    assert.deepEqual(executorEffects.map((effect) => effect.mode), ["read-only", "workspace-write-verify", "workspace-write-verify", "workspace-write-verify"], "exactly four synthetic turns; previews/refusals/restart never invoke an executor");
+    const executorEffects = (await readFile(join(tempRoot, "executor-effects.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { mode: string; fingerprint: string; workflow_id?: string });
+    assert.deepEqual(executorEffects.filter((effect) => !effect.workflow_id).map((effect) => effect.mode), ["read-only", "workspace-write-verify", "workspace-write-verify", "workspace-write-verify"], "exactly four preserved v1 turns");
+    assert.equal(executorEffects.length, 31, "exactly four v1 plus 27 governed turns; preview/refusal/restart/stop never adds a turn");
+    assert.deepEqual(executorEffects, workflows.effects, "restart and gate cancellation never replay a role");
     assert.ok(executorEffects.every((effect) => /^[a-f0-9]{64}$/.test(effect.fingerprint)));
     assert.equal(execFileSync("git", ["-C", syntheticRepo, "status", "--porcelain"], { env: environment, encoding: "utf8", windowsHide: true }).trim(), "", "source Git checkout remains clean");
-    console.log("PASS real local API + Playwright dashboard: Phase N role restrictions, no-effect preview, stale/missing/oversized sources, explicit consent/default privacy, read-only and issue dispatch, recorded manifests/verification receipts and restart issuance guards; prior Harness inventory/Doctor/refresh, migration/organization, real Git verification, candidate acceptance/lineage/scope guards, responsive controls, reload/restart and session rotation; four synthetic turns, no paid runtime or provider writes.");
+    assert.equal(execFileSync("git", ["-C", workflowRepo, "status", "--porcelain"], { env: environment, encoding: "utf8", windowsHide: true }).trim(), "", "workflow source checkout remains clean and unpublished");
+    assert.equal(execFileSync("git", ["-C", workflowRepo, "rev-parse", "HEAD"], { env: environment, encoding: "utf8", windowsHide: true }).trim(), workflowBaseline);
+    assert.equal(execFileSync("git", ["-C", workflowRepo, "remote"], { env: environment, encoding: "utf8", windowsHide: true }).trim(), "", "synthetic workflow Git has no publication destination");
+    assert.ok(mutatingSessionHeaders.every(Boolean), "every workflow/dashboard mutation uses a local session");
+    console.log("PASS real local API + Playwright dashboard: all five Phase O templates, exact Planner/risk/criteria gates, candidate-only Reviewer/QA, verified receipts, one bounded correction and second-correction refusal, stale/budget/tree guards, task ownership/full mobile evidence, active-role stop, restart/no replay/session rotation; prior Phase K-N migration/organization/Harness/context/issues retained; exactly 31 synthetic turns (4 v1 + 27 workflow), no paid runtime or provider writes.");
   } catch (error) {
     console.error(`Local dashboard smoke failed during: ${stage}`);
+    if (tempRoot) {
+      const snapshot = await readFile(join(tempRoot, "state/workflows/workflows.json"), "utf8").catch(() => null);
+      if (snapshot) {
+        const facts = JSON.parse(snapshot) as { workflows: Record<string, WorkflowDetail["workflow"]>; stages: Record<string, WorkflowDetail["stages"][number]> };
+        console.error("SYNTHETIC_WORKFLOW_FACTS " + JSON.stringify(Object.values(facts.workflows).map((owner) => ({ template: owner.template_id, status: owner.status,
+          current_stage: owner.current_stage_id ? facts.stages[owner.current_stage_id]?.kind : null, counters: owner.counters, blocked_reason: owner.blocked_reason }))));
+      }
+    }
     throw error;
   } finally {
     const cleanup = await cleanupSmoke({ browser: browser ? () => browser!.close() : undefined, vite: vite ? () => vite!.close() : undefined, api: api ? () => stopApi(api!) : undefined, root: tempRoot });

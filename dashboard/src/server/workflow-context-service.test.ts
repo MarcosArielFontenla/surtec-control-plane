@@ -4,16 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { createWorkflowContextService, type WorkflowPreviewRequest, type WorkflowContextDependencies, type WorkflowContextPreview } from "./workflow-context-service";
-import type { AgentRoleRegistry, ContextConfig } from "../../../lib/context/types";
+import type { AgentRoleRegistry, ContextAdmissionV2, ContextConfig } from "../../../lib/context/types";
 import type { IssueDocument, ReviewCandidate, WorkIssue } from "../../../lib/issues/types";
 import type { TaskRecord } from "../../../lib/state/types";
-import type { WorkflowDocument, WorkflowGrant, WorkflowRoleId } from "../../../lib/workflows/types";
+import type { WorkflowDocument, WorkflowGrant, WorkflowRoleId, WorkflowStage } from "../../../lib/workflows/types";
 import { assertWorkflowDocument } from "../../../lib/workflows/validation";
 import { sealTestingEvidence, evidenceHash, testingRequirement } from "../../../lib/context/testing-evidence";
 import { defaultTaskOrchestration } from "../../../lib/state/orchestration";
 import { createContextService } from "./context-service";
 import { createTask } from "./dispatch";
 import { readTask } from "../../../lib/state/store";
+import { validateTaskRecord } from "../../../lib/state/validation";
 import { emptyProjectProfile } from "../../../lib/portfolio-profile";
 import { contextHash } from "../../../lib/context/assemble";
 import { PolicyService } from "../../../lib/policy/service";
@@ -43,7 +44,7 @@ beforeEach(() => {
   issues = { schema_version: 1, issues: { [issue.id]: issue }, candidates: {}, evidence: {}, events: [] };
   workflows = { schema_version: 1, workflows: {}, stages: {}, grants: {}, decisions: {}, handoffs: {}, review_receipts: {}, admission_intents: {}, accounting: {}, lineages: {}, events: [] };
 });
-afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false); });
 const request = (template: WorkflowPreviewRequest["template_id"] = "analysis"): WorkflowPreviewRequest => ({ template_id: template, template_version: 1, project_id: "alpha", issue_id: issue.id, expected_revision: issue.revision,
   selected_agents: Object.fromEntries((template === "analysis" ? ["portfolio-analyst"] : template === "implementation" ? ["planner", "software-engineer", "reviewer"] : template === "trivial-change" ? ["software-engineer", "reviewer"] : template === "quality-review" ? ["reviewer", "qa-evaluator"] : ["operations-observer"]).map((role) => [role, agents[role as WorkflowRoleId]])), client_context_categories: {}, correction_enabled: false, ...(template === "quality-review" ? { candidate_id: candidateId } : {}) });
 const deps = (): WorkflowContextDependencies => ({ readIssues: () => issues, readWorkflows: () => workflows, readTasks: () => Object.values(records), readTask: (id) => records[id] ?? null, readConfig: () => config });
@@ -119,6 +120,82 @@ function plannedEngineer() {
   workflows.stages[stage.id] = stage; workflow.stage_ids.push(stage.id); workflow.current_stage_id = stage.id;
   assertWorkflowDocument(workflows);
   return { task, predecessor, workflow, stage, input: { workflow_id: workflow.id, stage_id: stage.id, expected_issue_revision: issue.revision } };
+}
+
+function correctionReviewerBudget() {
+  // Context-only fixture: real bounded manifests and schema-valid captured
+  // receipts, never a model, Git command or claim of live candidate authority.
+  const initial = capturedCandidate(), candidate = service().preview(request("quality-review")).candidate!;
+  issue.status = "authorized";
+  reserve(service().preview({ ...request("trivial-change"), correction_enabled: true }));
+  const workflow = workflows.workflows["workflow-1"]!, grant = workflows.grants[workflow.current_grant_id]!, writer = workflows.stages["stage-1"]!;
+  const task = initial.task; task.orchestration!.attempts = 1; task.envelope.metadata = { run: task.envelope.metadata.run };
+  const binding: ContextAdmissionV2 = { schema_version: 2, kind: "workflow-stage", workflow_id: workflow.id, stage_id: writer.id, stage_generation: 1,
+    stage_kind: "implementation", task_id: task.envelope.id, template_id: "trivial-change", template_version: 1, grant_id: grant.id, authority_revision: 1,
+    role_id: "software-engineer", issue_id: issue.id, issue_revision: issue.revision, scope_revision: issue.scope_revision, scope_fingerprint: contextHash(JSON.stringify(issue.authorized_scope)),
+    approved_plan: null, predecessor_stage_id: null, handoff_id: null, candidate: null, manifest_fingerprint: task.envelope.context_manifest!.fingerprint,
+    instructions_length: task.envelope.instructions.length, instructions_hash: contextHash(task.envelope.instructions) };
+  task.envelope.context_admission = binding; expect(validateTaskRecord(task)).toBe(true);
+  Object.assign(writer, { status: "completed", task_id: task.envelope.id, execution_id: initial.candidate.execution_id, candidate,
+    context_fingerprint: binding.manifest_fingerprint, output_fingerprint: contextHash(JSON.stringify(candidate)) });
+  workflow.candidate = candidate; workflow.lineage_id = "lineage-1";
+  workflows.lineages[workflow.lineage_id] = { schema_version: 1, id: workflow.lineage_id, project_id: "alpha", issue_id: issue.id, scope_revision: 1,
+    origin_task_id: task.envelope.id, workflow_ids: [workflow.id], candidate_ids: [candidate.candidate_id], correction_limit: 1, corrections_consumed: 0, consumed_stage_id: null, consumed_at: null };
+  const account = (stage: WorkflowStage, attempt: number, runtime: number, tokens: number) => {
+    const id = `${stage.id}-charge-${attempt}`;
+    workflows.accounting[id] = { schema_version: 1, id, workflow_id: workflow.id, stage_id: stage.id, task_id: stage.task_id!, execution_id: stage.execution_id!,
+      attempt, attempt_charged: true, active_runtime_ms: runtime, observed_tokens: tokens, usage_complete: true, captured_at: at };
+    workflow.counters.attempts++; workflow.counters.runtime_ms += runtime; workflow.counters.total_tokens += tokens;
+    return workflows.accounting[id]!;
+  };
+  workflow.counters = { tasks: 1, attempts: 0, runtime_ms: 0, total_tokens: 0, accounting_complete: true }; account(writer, 1, 1000, 100);
+  const successor = (id: string, predecessor: WorkflowStage, kind: "review" | "correction") => {
+    const handoffId = `${id}-handoff`, role = kind === "review" ? "reviewer" as const : "software-engineer" as const;
+    workflows.handoffs[handoffId] = { schema_version: 1, id: handoffId, issue_id: issue.id, from_role_id: predecessor.role_id, to_role_id: role,
+      execution_id: predecessor.execution_id!, outcome_summary: "Synthetic bounded predecessor", evidence_ids: [], unresolved_questions: [], risks: [], recommended_next_action: "Inspect the current authorized evidence", requested_decision: null, created_at: at };
+    const stage: WorkflowStage = { ...writer, id, ordinal: predecessor.ordinal + 1, kind, role_id: role, agent_id: agents[role], sandbox: kind === "correction" ? "workspace-write" : "read-only",
+      status: "pending", task_id: null, execution_id: null, predecessor_stage_id: predecessor.id, handoff_id: handoffId, candidate: workflow.candidate,
+      output: null, output_fingerprint: null, context_fingerprint: null };
+    workflows.stages[id] = stage; workflow.stage_ids.push(id); workflow.current_stage_id = id; return stage;
+  };
+  const finish = (stage: WorkflowStage, prepared: ReturnType<ReturnType<typeof service>["prepareStage"]>, runId: string) => {
+    const manifest = prepared.preview.manifest;
+    Object.assign(stage, { status: "completed", task_id: prepared.binding.task_id, execution_id: runId, context_fingerprint: manifest.fingerprint }); workflow.counters.tasks++;
+    const record: TaskRecord = { ...structuredClone(task), envelope: { ...structuredClone(task.envelope), id: prepared.binding.task_id, task_type: manifest.task_kind,
+      agent: stage.agent_id, title: prepared.instructions.slice(0, 80), instructions: prepared.instructions, branch: `agent/${prepared.binding.task_id}-${stage.agent_id}`,
+      sandbox: stage.sandbox, self_verify: stage.sandbox === "workspace-write", metadata: {}, context_manifest: manifest, context_admission: prepared.binding },
+      testing_evidence: undefined, orchestration: { ...defaultTaskOrchestration(), ...manifest.budget, attempts: 1 } };
+    records[record.envelope.id] = record; expect(validateTaskRecord(record)).toBe(true); account(stage, 1, 1000, 100); return record;
+  };
+  issue.status = "checking";
+  const review = successor("stage-2", writer, "review"), reviewPrepared = service().prepareStage({ workflow_id: workflow.id, stage_id: review.id, expected_issue_revision: issue.revision }, "reviewer-task-1");
+  finish(review, reviewPrepared, "reviewer-run-1");
+  review.output = { schema_version: 1, kind: "review", status: "completed", summary: "One concrete scoped finding", verdict: "correction-required", evidence_ids: [evidenceId],
+    unresolved_questions: [], risks: [], recommended_next_action: "Correct only src/example.ts", requested_decision: null,
+    findings: [{ id: "finding-1", severity: "blocking", summary: "Correct the bounded result", path: "src/example.ts", evidence_ids: [evidenceId], scope_change_required: false }] };
+  review.output_fingerprint = contextHash(JSON.stringify(review.output));
+  const correction = successor("stage-3", review, "correction"), lineage = workflows.lineages[workflow.lineage_id]!;
+  Object.assign(lineage, { corrections_consumed: 1, consumed_stage_id: correction.id, consumed_at: at }); issue.status = "working";
+  const correctionPrepared = service().prepareStage({ workflow_id: workflow.id, stage_id: correction.id, expected_issue_revision: issue.revision }, "correction-task-1");
+  const correctedTask = finish(correction, correctionPrepared, "correction-run-1"), corrected: ReviewCandidate = { ...initial.candidate,
+    id: candidateId.replace(/1$/, "2"), task_id: correctedTask.envelope.id, execution_id: correction.execution_id!, base_revision: initial.candidate.candidate_revision, candidate_revision: "e".repeat(40) };
+  corrected.diff_fingerprint = contextHash(`${corrected.repository_id}\0${corrected.base_revision}\0${corrected.candidate_revision}\0${corrected.changed_paths.join("\0")}`);
+  const { fingerprint: _fingerprint, ...receipt } = initial.task.testing_evidence!;
+  correctedTask.testing_evidence = sealTestingEvidence({ ...receipt, task_id: correctedTask.envelope.id, execution_id: corrected.execution_id,
+    context_fingerprint: correctionPrepared.preview.manifest.fingerprint,
+    candidate: { id: corrected.id, base_revision: corrected.base_revision, candidate_revision: corrected.candidate_revision, diff_fingerprint: corrected.diff_fingerprint },
+    observations: receipt.observations.map((entry) => ({ ...entry, revision: corrected.candidate_revision })) });
+  const patch = "Synthetic corrected captured patch", path = `reports/${correctedTask.envelope.id}-${corrected.execution_id}.diff`; writeFileSync(join(root, path), patch);
+  correctedTask.envelope.metadata.run = { committed: true, diff_path: path, diff_truncated: false }; expect(validateTaskRecord(correctedTask)).toBe(true);
+  initial.candidate.invalidated_at = at; issues.candidates[corrected.id] = corrected; issue.candidate_ids.push(corrected.id); issue.task_ids.push(correctedTask.envelope.id);
+  const verificationId = evidenceId.replace(/1$/, "2"); issues.evidence[verificationId] = { ...issues.evidence[evidenceId]!, id: verificationId,
+    task_id: correctedTask.envelope.id, execution_id: corrected.execution_id, candidate_id: corrected.id, candidate_revision: corrected.candidate_revision,
+    diff_fingerprint: corrected.diff_fingerprint, testing_evidence_fingerprint: correctedTask.testing_evidence.fingerprint }; issue.evidence_ids.push(verificationId);
+  const correctedBinding = { ...candidate, candidate_id: corrected.id, task_id: corrected.task_id, execution_id: corrected.execution_id, base_revision: corrected.base_revision,
+    candidate_revision: corrected.candidate_revision, diff_fingerprint: corrected.diff_fingerprint, content_fingerprint: evidenceHash(patch), testing_evidence_fingerprint: correctedTask.testing_evidence.fingerprint };
+  workflow.candidate = correctedBinding; correction.candidate = correctedBinding; correction.output_fingerprint = contextHash(JSON.stringify(correctedBinding)); lineage.candidate_ids.push(corrected.id);
+  issue.status = "checking"; const pending = successor("stage-4", correction, "review"); assertWorkflowDocument(workflows);
+  return { workflow, grant, correction, input: { workflow_id: workflow.id, stage_id: pending.id, expected_issue_revision: issue.revision }, charge: workflows.accounting[`${correction.id}-charge-1`]! };
 }
 
 describe("effect-free issued workflow previews", () => {
@@ -244,6 +321,64 @@ describe("effect-free issued workflow previews", () => {
 });
 
 describe("current owned stage context", () => {
+  it("isolates correction branch attempts, runtime and tokens from another retained workflow", () => {
+    const fixture = correctionReviewerBudget(), baseline = service().prepareStage(fixture.input, "fresh-reviewer-task");
+    const replacements = new Map<string, string>(Object.entries({ "workflow-1": "retained-workflow", "grant-1": "retained-grant", "lineage-1": "retained-lineage",
+      "stage-1": "retained-stage-1", "stage-2": "retained-stage-2", "stage-3": "retained-stage-3", "stage-4": "retained-stage-4", "writer-1": "retained-writer",
+      "writer-run-1": "retained-writer-run", "reviewer-task-1": "retained-reviewer", "reviewer-run-1": "retained-reviewer-run", "correction-task-1": "retained-correction",
+      "correction-run-1": "retained-correction-run-1", "stage-2-handoff": "retained-handoff-2", "stage-3-handoff": "retained-handoff-3", "stage-4-handoff": "retained-handoff-4",
+      "stage-1-charge-1": "retained-charge-1", "stage-2-charge-1": "retained-charge-2", "stage-3-charge-1": "retained-charge-3",
+      [issueId]: issueId.replace(/1$/, "2"), [candidateId]: candidateId.replace(/1$/, "3"), [candidateId.replace(/1$/, "2")]: candidateId.replace(/1$/, "4") }));
+    const rename = (value: unknown): unknown => typeof value === "string" ? replacements.get(value) ?? value : Array.isArray(value) ? value.map(rename)
+      : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [replacements.get(key) ?? key, rename(entry)])) : value;
+    const retained = rename(workflows) as WorkflowDocument, owner = retained.workflows["retained-workflow"]!, correction = retained.stages["retained-stage-3"]!;
+    Object.assign(owner, { status: "cancelled", stop_requested_at: at, completed_at: at, current_stage_id: null }); retained.stages["retained-stage-4"]!.status = "cancelled";
+    const charge = retained.accounting["retained-charge-3"]!; charge.active_runtime_ms = fixture.grant.correction.budget!.max_runtime_ms / 4; charge.observed_tokens = fixture.grant.correction.budget!.max_total_tokens / 4;
+    for (let attempt = 2; attempt <= 4; attempt++) {
+      const id = `retained-correction-charge-${attempt}`;
+      retained.accounting[id] = { ...charge, id, attempt, execution_id: `retained-correction-run-${attempt}` };
+    }
+    correction.execution_id = "retained-correction-run-4";
+    retained.handoffs["retained-handoff-4"]!.execution_id = correction.execution_id;
+    owner.counters = { ...owner.counters, attempts: 6, runtime_ms: 2000 + fixture.grant.correction.budget!.max_runtime_ms, total_tokens: 200 + fixture.grant.correction.budget!.max_total_tokens };
+    for (const key of ["workflows", "grants", "stages", "handoffs", "accounting", "lineages"] as const) Object.assign(workflows[key], retained[key]);
+    assertWorkflowDocument(workflows); expect(Object.keys(workflows.workflows)).toHaveLength(2);
+    const before = JSON.stringify({ workflows, issues, records }), stateBytes = readFileSync(join(state, "tasks/writer-1.json"));
+    const prepared = service().prepareStage(fixture.input, "fresh-reviewer-task");
+    expect(prepared.preview.manifest.budget).toEqual(baseline.preview.manifest.budget); expect(prepared.binding).toEqual(baseline.binding);
+    expect(JSON.stringify({ workflows, issues, records })).toBe(before); expect(readFileSync(join(state, "tasks/writer-1.json"))).toEqual(stateBytes);
+    expect(existsSync(join(state, "workflows/workflows.json"))).toBe(false);
+  });
+  it.each(["attempts", "runtime", "tokens"] as const)("still denies correction review after the current workflow's own %s subcap is exhausted", (kind) => {
+    if (kind === "attempts") { vi.stubEnv("SURTEC_TASK_MAX_ATTEMPTS", "4"); config.budgets.implementation!.max_attempts = 4; }
+    const fixture = correctionReviewerBudget(), cap = fixture.grant.correction.budget!;
+    if (kind === "attempts") {
+      for (let attempt = 2; attempt <= cap.max_attempts; attempt++) {
+        const id = `own-correction-charge-${attempt}`;
+        workflows.accounting[id] = { ...fixture.charge, id, attempt, execution_id: `own-correction-run-${attempt}` }; fixture.workflow.counters.attempts++;
+        fixture.workflow.counters.runtime_ms += fixture.charge.active_runtime_ms; fixture.workflow.counters.total_tokens += fixture.charge.observed_tokens;
+      }
+      fixture.correction.execution_id = `own-correction-run-${cap.max_attempts}`; records[fixture.correction.task_id!]!.orchestration!.attempts = cap.max_attempts;
+      workflows.handoffs["stage-4-handoff"]!.execution_id = fixture.correction.execution_id;
+      const task = records[fixture.correction.task_id!]!, candidate = issues.candidates[fixture.workflow.candidate!.candidate_id]!;
+      candidate.execution_id = fixture.correction.execution_id;
+      const { fingerprint: _fingerprint, ...receipt } = task.testing_evidence!;
+      task.testing_evidence = sealTestingEvidence({ ...receipt, execution_id: candidate.execution_id });
+      const run = task.envelope.metadata.run as { diff_path: string }, path = `reports/${task.envelope.id}-${candidate.execution_id}.diff`;
+      writeFileSync(join(root, path), readFileSync(join(root, run.diff_path))); run.diff_path = path;
+      Object.assign(fixture.workflow.candidate!, { execution_id: candidate.execution_id, testing_evidence_fingerprint: task.testing_evidence.fingerprint });
+      fixture.correction.output_fingerprint = contextHash(JSON.stringify(fixture.workflow.candidate));
+      Object.assign(issues.evidence[evidenceId.replace(/1$/, "2")]!, { execution_id: candidate.execution_id, testing_evidence_fingerprint: task.testing_evidence.fingerprint });
+      expect(validateTaskRecord(task)).toBe(true);
+    } else if (kind === "runtime") {
+      fixture.workflow.counters.runtime_ms += cap.max_runtime_ms - fixture.charge.active_runtime_ms; fixture.charge.active_runtime_ms = cap.max_runtime_ms;
+    } else {
+      fixture.workflow.counters.total_tokens += cap.max_total_tokens - fixture.charge.observed_tokens; fixture.charge.observed_tokens = cap.max_total_tokens;
+    }
+    assertWorkflowDocument(workflows); const before = JSON.stringify({ workflows, issues, records });
+    expect(() => service().prepareStage(fixture.input, "fresh-reviewer-task")).toThrow(/Correction branch budget is exhausted/);
+    expect(JSON.stringify({ workflows, issues, records })).toBe(before); expect(existsSync(join(state, "workflows/workflows.json"))).toBe(false);
+  });
   it("prepares a pending stage without mutating records or reserving its identity", () => {
     reserve(service().preview(request())); const stage = workflows.stages["stage-1"]!;
     stage.status = "pending"; stage.task_id = null; stage.context_fingerprint = null; workflows.workflows["workflow-1"]!.counters.tasks = 0;
