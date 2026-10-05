@@ -2,7 +2,7 @@
 param(
     [string]$RepoRoot = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent),
     [string]$SpecPath = '', [switch]$Run, [switch]$ConfirmExecution,
-    [ValidateRange(1, 600)][int]$TimeoutSeconds = 120
+    [ValidateRange(1, 900)][int]$TimeoutSeconds = 120
 )
 . "$PSScriptRoot/common.ps1"
 try {

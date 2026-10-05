@@ -98,7 +98,7 @@
     },
     {
       "path": ".agents/scripts/validate-spec.ps1",
-      "sha256": "7241001eecccb0d31ff3b49393dcf822c2b78bff26bd1d6570d04201b9f2aeba",
+      "sha256": "83495c3def7625c33534688cebb1e6046f51feed98805d89b70954d3102ad55c",
       "capability": "validators",
       "required": true
     },

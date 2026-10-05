@@ -79,6 +79,14 @@ designContract:
   checksWaiver: null
 clarifications:
   - date: "2026-10-04"
+    question: Add the public spec validator and its existing tests to T014 for an explicitly selected 900-second per-check ceiling?
+    answer: The human explicitly approved this narrow adjustment in this task conversation before implementation.
+    affects: Change only the public maximum from 600 to 900 seconds and use 900 in the final guarded command; retain the 120-second default, exact command catalog, all four acceptance checks, process-tree termination, environment filtering and existing test/runtime timeouts. Original approval metadata is unchanged.
+  - date: "2026-10-04"
+    question: Update the canonical validator hash, enclosing manifest hash and operational Harness timeout documentation after the approved validator change?
+    answer: The human separately approved registry/harness-manifests/surtec-h1-h4.json, registry/harness-sources.yml and docs/runbooks/harness-validation.md in this task conversation before those edits.
+    affects: Repin only validate-spec.ps1 and the manifest hash; preserve the other 24 entries, versions, skills, snapshots, capabilities, permissions and context budgets. Document the explicit 1..900-second range without changing the default, catalog or execution authority.
+  - date: "2026-10-04"
     question: Add runner/run-task.test.ts to T011 to align its single expired-v2-lease case with controller-required recovery?
     answer: The human explicitly approved adding this test in this task conversation before editing it.
     affects: Preserve the exact task bytes and admission when no controller exists; assert denied retry/claim and stale standalone execution with zero model/worktree/commit/verification effects. No runtime, schema, permission or timeout change is included; original approval metadata is unchanged.

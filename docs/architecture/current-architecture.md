@@ -12,7 +12,8 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 - `lib/context`: bounded attributed assembly, routing/testing requirements and validation of infrastructure-owned testing receipts; context text never grants capabilities.
 - `lib/security`: shared identifier, canonical path-containment, environment-allowlist, and redaction primitives.
 - `lib/integrations`: versioned project-integration contracts, runtime validation, URL safety, and bounded error normalization.
-- `lib/state`: schema-validated file-first task, project, signal, profile, and work-session state with locks, atomic replacement writes, and append-only task events.
+- `lib/state`: schema-validated file-first task, project, signal, profile, work-session and optional workflow state with locks, atomic replacement writes, and append-only task events.
+- `lib/workflows`: five finite templates, review/budget/correction policy, strict role outputs and candidate-bound evidence validation; no execution scheduler.
 - Other `lib` modules: discovery, Git status, portfolio derivation, and URL helpers.
 - `runner`: durable task scheduling, agent execution, worktrees, verification, process management, review publication, and startup reconciliation.
 - `registry`: trusted project, agent, logical-role, context-policy and Harness-source configuration.
@@ -30,16 +31,16 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 
 ### Agent task
 
-1. Explicitly preview an analysis or authorized issue through the shared context service, then reassemble its issued request/source/consent/policy binding before writing a schema-valid queued task and `queued` event. API and CLI cannot supply their own manifest.
-2. The API notifies `TaskOrchestrator` and returns. It never executes the task in the request handler.
+1. Explicitly preview an analysis, authorized issue or finite workflow; reassemble its issued request/source/consent/policy binding before task persistence. Workflow approval reserves server-owned stages/intents; implementation additionally needs exact plan/scope approval. API and CLI cannot supply their own manifest or grant.
+2. The API returns without executing a task in the handler. `TaskOrchestrator` remains the sole worker; its injected `WorkflowOrchestrator` reconciles committed intents and finite successors, with no second scheduler or runtime.
 3. Under the scheduler lock, the worker enforces global capacity and per-project write exclusion, then atomically claims the task with a unique run id and expiring lease.
-4. Re-resolve current policy and reconstruct admitted context before each attempt; reject changed sources, scope, consent or capabilities before model/worktree effects. Unsupported legacy retries require a new governed dispatch.
+4. Re-resolve policy and admitted context before each attempt; reject changed sources, scope, consent or capabilities before model/worktree effects. A v2 stage also requires a live controller identity, exact grant/intent/lease and durable attempt charge; legacy retries need new governed dispatch.
 5. For a write task, create or safely reuse its isolated Git worktree and managed `agent/` branch.
 6. Invoke `AgentExecutor` through local Codex App Server `stdio`; a persisted thread requires the same context, prompt version, execution mode, repository, verification commands and output contract. Strict TDD observes trusted RED before the implementation turn.
 7. Persist concise lifecycle events, thread/turn identifiers, cumulative usage, lease heartbeats, and the current task snapshot. Cancellation reaches App Server through `turn/interrupt`.
-8. Commit edits and capture exact configured verification while the lease remains owned. Governed issue acceptance requires a validated functional or ordered strict-TDD receipt bound to the immutable candidate, scope and policy, not model-authored success claims.
-9. Validate the structured result and finish the task. Transient failures retry with bounded backoff while attempt and token budgets remain.
-10. A human may approve publication or reject and clean up. The review state machine persists intent and each completed effect so a retry resumes rather than duplicates work.
+8. Commit edits and capture exact configured verification while the lease remains owned. Acceptance requires a functional or ordered strict-TDD receipt bound to candidate/scope/policy; workflow writers stay `checking` through required candidate-tree Reviewer/QA receipts, not model-authored success claims.
+9. Validate bounded structured output and finish the task. Supported non-workflow transient failures may retry within budgets; v2 never uses generic retry/requeue. Unknown interrupted usage stops its workflow for human review, not a replacement attempt.
+10. Independently authorized publication/reject cleanup is available only outside active workflow ownership. Workflow acceptance never publishes, and stopping retains candidate trees/evidence. The publication state machine persists effect checkpoints for idempotent resumption.
 
 ### Durable orchestration
 
@@ -47,12 +48,12 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 - A per-task cross-process lock serializes claim, cancel, retry, heartbeat, recovery, and completion. Atomic replacement protects each snapshot.
 - A short global scheduler lock makes the configured concurrency bound and project-write exclusion consistent across local worker processes.
 - A stale run id cannot publish progress or a terminal result after its lease was replaced.
-- Startup leaves current leases alone, requeues expired leases when budgets remain, and terminally fails exhausted attempts. Unknown worktrees are still report-only.
+- Startup leaves current leases alone; eligible non-workflow expired leases requeue within budgets. V2 recovery retains identities and finishes expired runs as `needs-review`; unknown usage blocks progression. Unknown worktrees remain report-only.
 - See [ADR-0002](../decisions/ADR-0002-file-first-durable-orchestration.md) for the persistence boundary and migration threshold.
 
 ### Review publication
 
-1. Revalidate the persisted task against current policy before any Git effect.
+1. Revalidate current policy and retained workflow task/tree ownership before any decision, Git or cleanup effect; missing/unavailable ownership fails closed.
 2. Persist `approving` or `rejecting` with an attempt count.
 3. Approval pushes once, records that checkpoint, finds an existing open PR before creating one, and then records `approved`.
 4. Rejection removes only a contained managed worktree and `agent/` branch, tolerates already-completed cleanup, and then records `rejected`.
@@ -100,11 +101,13 @@ The Phase J design baseline is defined in [ADR-0003](../decisions/ADR-0003-organ
 
 `lib/harness` inspects registered local checkouts without executing their instructions or writing their files. The trusted `registry/harness-sources.yml` pins a curated 25-entry H1-H4 manifest; a changed baseline becomes unknown, not automatically adopted. Version detection requires an exact reviewed baseline match; primer/skill versions are not Harness release versions. Protected explicit refresh persists bounded profiles under `state/harness/profiles.json`; GET inventory and Doctor never write observations. Signals consume saved observations, retain their evidence timestamps, and do not authorize repair. Ownership and validation require explicit trusted metadata; script presence and matching hashes are not proof. See [Phase M acceptance](../runbooks/phase-m-acceptance.md) for limits and verification.
 
-## Phase N governed context
+## Governed context and Phase O workflows
 
 Six logical Codex profiles intersect existing project/agent permissions; an issue's stored agent assignment remains unchanged. Explicit protected preview exposes attributed source metadata, exclusions and effective requirements, never a rendered private prompt. Application-selected project files are contained and bounded; defaults are 500 physical lines / 60000 UTF-8 bytes, separate from runtime token limits. Client categories start empty. Trusted Harness routes select complete applicable instructions/skills without recursive Markdown inclusion or canonical repinning.
 
-New tasks store strict version-1 manifest/admission subdocuments; verification adds version-1 testing receipts. Legacy task/event bytes are not rewritten or backfilled. Preview issuance is bounded, process-local and expires after five minutes; restart requires a new preview, while stored task evidence survives and is revalidated without that issuance ledger. Delegation and independent review execution are not implemented in Phase N. See [approved design](phase-n-context-design.md), [compatibility](organization-state-migration.md#phase-n-additive-task-compatibility) and [acceptance](../runbooks/phase-n-acceptance.md#t012-final-closure---2026-10-01).
+Manifest/testing receipts remain v1; admission explicitly dispatches legacy, v1 analysis/issue or v2 server-owned workflow stages without historical backfill. Preview issuance is bounded, process-local and expires after five minutes; restart requires fresh issuance, not automatic replay. Persisted tasks retain evidence and reassemble current authority independently of that ledger. See [Phase N](phase-n-context-design.md) and [compatibility](organization-state-migration.md#phase-o-additive-workflow-compatibility).
+
+Phase O provides analysis, implementation, quality-review, operations-investigation and trivial-change under exact root/per-role consent and finite aggregate caps. The existing worker runs sequential roles; Reviewer/QA have separate read-only task/thread contracts over the inactive implementer's exact managed candidate, checked before/after. Plan, risk acknowledgement and final criterion acceptance remain human gates. One correction is off by default, consumed before admission, uses the original Engineer/scope and exact prior candidate base, then fresh verification/reviews; replacement/restart cannot refund it. Workflow v1 stores immutable handoffs/receipts, intents, run charges and lineage; recovery reconciles only provable unstarted gaps. See [design](phase-o-workflow-design.md) and [acceptance](../runbooks/phase-o-acceptance.md); neither product role chaining nor development helpers activate Harness multi-agent orchestration.
 
 ## Known limitations
 
@@ -119,4 +122,4 @@ New tasks store strict version-1 manifest/admission subdocuments; verification a
 - Orphan worktrees require an explicit human cleanup decision after inspecting the reconciliation report.
 - Pattern-based redaction and secret scanning reduce accidental exposure but are not general data-loss-prevention systems.
 - Subsequent runtime filesystem reads are not guaranteed project-only; selected-source containment does not strengthen the existing sandbox's read isolation.
-- Context is reassembled before attempts, not continuously watched; verification rechecks command/role/config authority. Fingerprints and sealed receipts are hashes, not signatures against arbitrary same-user writers.
+- Context is reassembled before attempts, not continuously watched; verification rechecks command/role/config authority. Fingerprints are hashes, not signatures. Unknown usage is not zero; an in-flight reported token chunk can overshoot a cap, which is not a provider billing guarantee.

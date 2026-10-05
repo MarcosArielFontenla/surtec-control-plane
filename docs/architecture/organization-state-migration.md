@@ -1,6 +1,6 @@
 # Organization state migration contract
 
-Status: Historical Phase J migration contract with implemented Phase K and Phase N compatibility addenda. Phase J itself implemented or ran no migration; later addenda describe current behavior without changing that baseline.
+Status: Historical Phase J migration contract with implemented Phase K, Phase N and Phase O compatibility addenda. Phase J itself implemented or ran no migration; later addenda describe current behavior without changing that baseline.
 
 ## Existing persisted contracts
 
@@ -92,3 +92,18 @@ Preview's issuance ledger holds at most 256 fingerprints for five minutes and is
 Context preview must not trigger the Phase K portfolio-profile migration: a v1 profile store refuses preview with an explicit migration requirement and unchanged bytes. The existing ordinary migration flow remains separate. Phase L issue and Phase M observation state retain their existing version-1 contracts; Phase N does not migrate or refresh them as a side effect of preview.
 
 There is no Phase N bulk migrator, backup rewrite, downgrade tool or rollback command to run. Preserve ignored local state and earlier Phase K backups. Test evidence uses synthetic legacy/current/future/tampered records and isolated restart fixtures, never normal client state; see [Phase N acceptance](../runbooks/phase-n-acceptance.md#t012-final-closure---2026-10-01). Future incompatible whole-document changes still require the explicit migration/backup/rollback procedure above.
+
+## Phase O additive workflow compatibility
+
+`state/workflows/workflows.json` is an optional strict `schema_version: 1` aggregate, bounded to 16 MiB, 500 workflows, 10000 retained stage generations, 5000 handoffs, 5000 review receipts and 20000 events. Missing reads return empty without creating directories/files; malformed/future/unsafe/inaccessible bytes block ownership and execution without repair. Synchronous state-only mutations reread under the exclusive workflow lock and validate ownership/revisions/immutable history before unique flushed staging and atomic replacement. Unknown or crashed locks are not stolen by age; recovery requires inspected ownership, not deletion to make a test pass.
+
+| Contract | Current behavior; no migration authority |
+| --- | --- |
+| Legacy task/event history and admission v1 | Remain explicitly supported without byte rewrite or invented grants/reviews. Phase N's legacy retry/thread restrictions remain; changed bound role sources require a new preview, not backfill. |
+| `TaskEnvelope.context_admission` v2 | Strict `workflow-stage` binding to server-owned workflow/stage/generation/grant, task/role/scope/plan/handoff/candidate/context. Manifest stays v1; generic API/CLI metadata cannot manufacture this authority. |
+| Candidate, issue and testing evidence v1 | Remain unchanged. V2 writer receipts bind admitted scope/context, not legacy implementation metadata; fresh Reviewer/QA receipts supplement rather than rewrite captured verification or historical non-workflow acceptance. |
+| Workflow aggregate, RoleHandoff and ReviewReceipt v1 | Strict bounded records retain completed output, grants, decisions, run charges and consumed correction lineage. Supersession appends history; new workflow/task ids, stop or restart do not refund consumption. |
+
+Issue/task/workflow snapshots, task events and Git effects are separate durable operations, not a cross-store transaction. Reserved identities and intents precede admission; execution requires commitment and current controller/lease authority. Recovery may reconcile only exact existing unstarted gaps; missing/progressed/drifted facts and unknown usage pause for a human without redispatch or zero-cost defaults. An active owner fences generic retry/CLI publication/cleanup, including older retained candidate trees.
+
+No Phase O bulk migrator, downgrade, normal-state rewrite or backup conversion is required or executed. Pending preview issuance/session state does not survive restart; durable evidence does, and renewed explicit actions revalidate current sources/policy/consent. Keep earlier ignored state/backups. Synthetic legacy/v1/v2, corrupt/future, partial-persistence and actual API-process restart checks are in [Phase O acceptance](../runbooks/phase-o-acceptance.md); future incompatible formats still require the migration procedure above.

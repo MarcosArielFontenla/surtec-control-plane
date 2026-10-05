@@ -126,6 +126,22 @@ describe("native Harness validators", () => {
     expect(run(root, "validate-spec.ps1", "-Run", "-ConfirmExecution", "-SpecPath", specPath).code).toBe(1);
   }, 25_000);
 
+  it("accepts an explicit 900-second public gate ceiling while retaining the 120-second default", () => {
+    const validator = readFileSync(join(repository, ".agents/scripts/validate-spec.ps1"), "utf8");
+    expect(validator.match(/\[int\]\$TimeoutSeconds\s*=\s*(\d+)/)?.[1]).toBe("120");
+    const root = fixture(); save(root, spec(root));
+    // node --version exits immediately; the existing 20-second launcher bound
+    // proves accepting a 900-second ceiling does not wait for that duration.
+    const result = run(root, "validate-spec.ps1", "-Run", "-ConfirmExecution", "-SpecPath", specPath, "-TimeoutSeconds", "900");
+    expect(result, result.output).toMatchObject({ code: 0 }); expect(result.output).toContain("1 checks executed");
+  }, 25_000);
+
+  it.each(["0", "901"])("rejects public gate timeout %s before executing acceptance", (seconds) => {
+    const root = fixture(); save(root, spec(root));
+    const result = run(root, "validate-spec.ps1", "-Run", "-ConfirmExecution", "-SpecPath", specPath, "-TimeoutSeconds", seconds);
+    expect(result.code).toBe(1); expect(result.output).toContain("TimeoutSeconds"); expect(result.output).not.toContain("[OK] acceptance");
+  }, 25_000);
+
   it("refuses changed package implementations and lifecycle hooks", () => {
     const root = fixture(); const document = spec(root); document.designContract.acceptanceChecks[0].command = "pnpm typecheck"; save(root, document);
     const path = join(root, "package.json"); const pkg = JSON.parse(readFileSync(path, "utf8"));
