@@ -60,6 +60,14 @@ export function workflowStatePath(base: string = stateDir()): string {
   return join(base, "workflows", "workflows.json");
 }
 
+export function budgetsDir(base: string = stateDir()): string {
+  return join(base, "budgets");
+}
+
+export function budgetStatePath(base: string = stateDir()): string {
+  return join(budgetsDir(base), "budgets.json");
+}
+
 export function harnessProfilesPath(base: string = stateDir()): string {
   return join(base, "harness", "profiles.json");
 }
