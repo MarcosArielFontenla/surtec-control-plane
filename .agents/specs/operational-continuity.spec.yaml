@@ -1,0 +1,100 @@
+schema_version: 1
+name: phase-p-operational-continuity
+entity: Routine
+domains:
+  - resource-policy
+  - local-state
+  - execution-orchestration
+  - evidence-refresh
+  - dashboard
+purpose: Provide deterministic hierarchical budgets, safe local routines and explicit bounded state recovery without widening execution authority.
+requirements:
+  - id: req-hierarchy
+    description: Resolve company, selected objective and ancestors, project, issue, role and execution constraints deterministically; the most restrictive hard limit wins and frozen attribution preserves personal work and historical consumption.
+  - id: req-budget-state
+    description: Expose consumed, reserved, remaining or unavailable, warning, hard limit, configured UTC period, source fingerprints, review/correction consumption and exact denial reasons without mutable balances becoming authority.
+  - id: req-budget-contracts
+    description: Version and strictly bound trusted budget policy, one durable aggregate ledger and independent immutable task BudgetAdmission; reject malformed, null, future, missing required and contradictory bindings safely.
+  - id: req-reservation
+    description: Reserve every applicable scope/dimension atomically before admission with exact task/run or occurrence subjects, one slot/attempt and bounded per-attempt runtime top-ups under cumulative parent limits; no partial holds, double allocation or implicit cumulative leaf cap.
+  - id: req-enforcement
+    description: Require current committed budget admission and private intent/controller/lease proofs before model, worktree and verification effects; changed policy never increases admitted capabilities or caps.
+  - id: req-accounting
+    description: Preserve absent/invalid/incomplete adapter usage as unknown, account exact task/run or occurrence consumption once with monotonic idempotent deltas and no fabricated zeros, and refuse automatic refunds across interruption, retry and period rollover.
+  - id: req-review-correction
+    description: Independently enforce existing review and correction caps; record exact exhaustion evidence and applicable canonical needs-decision transition without new lifecycle edges, extra corrections or unbounded role loops.
+  - id: req-pricing
+    description: Missing versioned matching pricing produces unavailable currency rather than estimates; reject mandatory monetary limits that cannot be measured/enforced and ship no invented pricing table.
+  - id: req-compatibility
+    description: Preserve historical legacy/context v1/v2 bytes and meanings without backfill; cutover requires a proven cooperative boundary and explicit operator confirmation, then missing budget admission cannot start/retry work and requires fresh normal admission.
+  - id: req-routine-contract
+    description: Strict Routine v1 admits only four fixed actions and existing company/objective/project scopes, safe bounded UTC interval/manual schedules, finite concurrency/catch-up policies, budget policy references and honest timestamps.
+  - id: req-routine-once
+    description: Reuse the existing worker tick with durable unique revision/slot occurrence and tracked background ownership without delaying task claims; disabled/duplicate/interrupted/coalesced/missed/restarted schedules cannot replay work or create an unbounded backlog.
+  - id: req-routine-safety
+    description: Deterministic routines may refresh evidence, evaluate signals, propose local human-reviewed issues or write bounded local reports only; reject model calls, workspace mutation, publication, objective edits, external messages and caller-defined commands/URLs/paths.
+  - id: req-refresh-safety
+    description: Use no-migration validated reads, explicit trusted provider configuration, existing adapter trust protections and bounded asynchronous refresh so fake slow providers cannot starve leases, cancellation or optional-failure isolation.
+  - id: req-routine-receipts
+    description: Persist bounded occurrence-specific receipts/proposal keys with policy, times, freshness, counters and sanitized next action; no duplicate proposals, private notes/instructions or raw provider/auth payloads enter receipts.
+  - id: req-today
+    description: Today/context/issue/project views expose effective budgets, routine freshness/failures and exact pending decisions without a global outage or implying domain transitions/execution authority from a read model.
+  - id: req-host-lifecycle
+    description: Document and enforce the supported one-host API/worker ownership, graceful owned-process shutdown and reconnect semantics; closed browsers, stopped hosts and durable sessions cannot claim live process history or offline work.
+  - id: req-quiescence
+    description: All actual API/worker/CLI state mutation, migration, event and process/effect entrypoints participate in a private cooperative barrier spanning complete read-modify-write; active/unknown ownership refuses snapshot/restore without age stealing or unknown-process termination.
+  - id: req-snapshot-catalog
+    description: Validate raw exact bytes and cross-record invariants over a closed bounded operating-state catalog with named legacy formats and explicit absence, never skipped corrupt files, implicit migrations or fabricated history.
+  - id: req-backup
+    description: Explicit local backup validates contained private source/destination, bounded manifest identity/versions/size/hashes/configuration and candidate references, excluding credentials, raw payloads, project source/worktrees and replaceable execution authority controls.
+  - id: req-restore-plan
+    description: Restore requires an explicit safe target and exact displayed replacement-plan fingerprint with current precondition hashes and known-file tombstones; preserve unrelated files and refuse stale/invalid/future/link/traversal/oversized snapshots.
+  - id: req-restore-journal
+    description: Persist verified preimage, journal, accounting floors, permanent revocations and root hold outside the payload before any replacement; stage/fsync/rename per file, preserve interruption and rollback conflicts without claiming a multi-file transaction.
+  - id: req-recovery-authority
+    description: Restored records cannot revive grants, intents, leases, retry/resume, successors, corrections, publication or routine execution; preserve accounting and occurrence/slot/proposal high-water across restore/rollback/aliases/restart, and require fresh protected routine configuration confirmation without replay.
+  - id: req-recovery-operation
+    description: Exact human hold release requires completed journal/inventory/guard and proven quiescence, changes only operational availability and never clears permanent revocations, refunds usage, rewrites lifecycle or silently creates new work; missing process/Git/candidate facts stay unavailable.
+  - id: req-acceptance
+    description: Prove hierarchy/concurrency/unknown accounting, routine heartbeat/restart/denials, real isolated HTTP/browser flow, raw-byte round-trip and every restore interruption/refusal/cleanup using fictional temporary state, fake runtime/providers and no normal user state.
+constraints:
+  - Implement only the exact human-approved Phase P design and task delta; proposed metadata, roadmap text and structural validation do not grant execution authority.
+  - Preserve the single-user local-first modular monolith, current worker loop, sandbox/capability ceilings and issue lifecycle v1; no new service, database, plugin framework or persistent terminal backend.
+  - Split routed context into sequential slices within current 500-line limits; read required skills/documents completely and leave skill hashes, snapshots, command catalog and timeout defaults unchanged.
+  - Unknown accounting, ownership, schema/config/reference validity or cross-store gaps fail closed with preserved bytes; missing is not zero and warnings never override hard stops.
+  - Proposed defaults and bounds are defined in the accompanying design and require human review, not invented clarification answers.
+  - No automated deletion or real-user restore, credential persistence, raw reasoning, external repository mutation, external messages or paid runtime calls in tests.
+  - Preserve private untracked prompts and unrelated user changes; local task commits never imply push, merge or deployment authority.
+nonGoals:
+  - Phase Q operating-view redesign, later roadmap phases, external benchmark integration or a live-project pilot.
+  - Autonomous implementation, automatic publication, generic cron/plugin infrastructure or work while the host is unavailable.
+  - Model pricing estimates, mandatory currency support without a reviewed matching source or arbitrary accounting forgiveness.
+  - Bulk history migration, automatic old-admission upgrades, restoration of project source/worktrees or revival of stored execution authority.
+  - Encryption/authentication guarantees against a malicious same-user writer or universal operating-system ACL enforcement.
+designContract:
+  status: proposed
+  reviewedBy: null
+  approvedAt: null
+  acceptanceChecks:
+    - id: ac-behavior
+      requirementIds: [req-hierarchy, req-budget-state, req-budget-contracts, req-reservation, req-enforcement, req-accounting, req-review-correction, req-pricing, req-compatibility, req-routine-contract, req-routine-once, req-routine-safety, req-refresh-safety, req-routine-receipts, req-today, req-host-lifecycle, req-quiescence, req-snapshot-catalog, req-backup, req-restore-plan, req-restore-journal, req-recovery-authority, req-recovery-operation, req-acceptance]
+      description: Fake-protocol, pure-policy, strict-state, application and UI tests prove P matrices, denials, historical compatibility and deterministic continuity fault invariants; separate real isolated browser opt-ins remain mandatory acceptance.
+      command: pnpm test
+      expectedExitCode: 0
+    - id: ac-schemas
+      requirementIds: [req-budget-contracts, req-compatibility, req-routine-contract, req-snapshot-catalog, req-backup, req-restore-plan, req-restore-journal, req-recovery-authority]
+      description: Compile every existing and prospective product schema with valid/invalid/version fixtures in the behavior suite; do not reinterpret legacy versions or treat schema success as authority.
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-enforcement, req-budget-state, req-today, req-host-lifecycle, req-quiescence, req-recovery-operation, req-acceptance]
+      description: Typecheck all existing and prospective state, runtime, application, CLI, fixture and UI contracts without widening current capabilities.
+      command: pnpm typecheck
+      expectedExitCode: 0
+    - id: ac-build
+      requirementIds: [req-today, req-host-lifecycle, req-acceptance]
+      description: Build the dashboard containing the small budget/routine/continuity read models; build success alone is not HTTP/browser or phase completion evidence.
+      command: pnpm build
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications: []
