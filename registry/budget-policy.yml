@@ -1,0 +1,24 @@
+# Neutral trusted policy: existing leaf/workflow controls remain authoritative.
+schema_version: 1
+revision: 1
+pricing:
+  status: unavailable
+  reason: no-versioned-source
+rules:
+  - id: surtec-default
+    revision: 1
+    scope:
+      kind: company
+      id: surtec
+    period: none
+    warning_percent: 80
+    limits:
+      attempts: { status: unconfigured }
+      runtime_ms: { status: unconfigured }
+      total_tokens: { status: unconfigured }
+      concurrent_reads: { status: unconfigured }
+      concurrent_writes: { status: unconfigured }
+      review_attempts: { status: unconfigured }
+      review_runtime_ms: { status: unconfigured }
+      review_total_tokens: { status: unconfigured }
+      corrections: { status: unconfigured }
