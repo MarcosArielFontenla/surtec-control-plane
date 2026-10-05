@@ -61,3 +61,21 @@ Fresh publication checks after the adjustment:
 - `pnpm ci:check`: exit 0, 1701 tests / 122 files, 55 schemas, typecheck/build (1920 modules), repository/Harness/security/evaluation checks. All three snapshots and ten route ceilings remained valid; guarded whole-feature acceptance was not executed. The two checkout regressions are included in the full count.
 - `pnpm smoke:local:playwright`: exit 0/PASS, real isolated API/dashboard, four fake turns, reload/API restart/session rotation and prior privacy/role/context/Harness/candidate/scope flows. Fixture `surtec-local-dashboard-6ZWoMr` reported browser_closed, vite_closed, api_stopped and workspace_removed all true, failures empty. No paid runtime or provider write occurred.
 - Before pushing, verify the committed artifacts in a fresh local clone under both autocrlf settings and run the native Harness gate there. This checks checkout bytes, not only the original working directory. Keep this validation temporary and do not repin or auto-refresh normal project state to hide drift.
+
+## Hidden-path CI repair - 2026-10-05
+
+The current master run [37256047910](https://github.com/MarcosArielFontenla/surtec-control-plane/actions/runs/37256047910) failed before schema/test/type/build checks: `Validate Harness contracts` reported that `.agents` could not be found on Ubuntu. The directory is tracked. The shared resolver used `Get-Item` without `-Force` while inspecting existing path attributes; Unix dot directories are hidden. The same defect affected a hidden repository root. The owner authorized a contained CI repair, separately from drafting Phase P.
+
+Only the two attribute-inspection calls in `common.ps1` add `-Force`. This includes hidden items in inspection; it does not permit linked paths, traversal, arbitrary commands or new execution. Existing `LiteralPath`, containment and `ReparsePoint` denials remain. Four portable fixture cases cover hidden artifacts/roots and explicit rejection of hidden artifact/root links. Unix uses dot directories; Windows marks only test-owned directories Hidden. Every case preserves fixture bytes, executes zero acceptance checks and asserts temporary cleanup.
+
+Observed RED: four failed/35 filtered out, exit 1 (9.38 seconds); the failure is the missing hidden item or missing explicit link-denial message. Focused GREEN: four passed/35 filtered out, exit 0 (9.33 seconds). Complete native suite: 39 passed/no skips, exit 0 (88.00 seconds). No test/runtime timeout, catalog, skill, snapshot, capability, route ceiling, workflow trigger or product source changed. The repair repins only `common.ps1` and the enclosing manifest; the other 24 entries and manifest metadata remain unchanged. Future design/spec/task documents are unapproved proposals, not part of this repair.
+
+Windows fixture acceptance is not an Ubuntu CI pass. Local Docker was unavailable and WSL had no supported test distribution; no daemon was started or Linux runtime installed. Record Linux/remote verification separately. Publication and PR creation require the owner's separate explicit authorization; the failing master run is not reclassified as green by local evidence.
+
+Fresh repair-only local checks, before adding any Phase P proposal:
+
+- `pnpm harness:check`: exit 0; three unchanged snapshots, ten unchanged route ceilings, three existing specs/task plans and zero acceptance checks executed.
+- The four additional source/context/contract suites: 54 passed / four files, exit 0 (4.79 seconds). Independent read-only diff review found no blocking issue; the 25-entry manifest retained the other 24 exact pins.
+- `pnpm ci:check`: exit 0 (598.99 seconds); 123 test files passed, 1820 tests passed and one explicit browser opt-in skipped, 55 schemas, typecheck/build (1922 modules), repository/Harness/security/evaluation gates. The skipped `App.test.tsx` isolated workflow browser acceptance requires `SURTEC_WORKFLOW_UI_BROWSER_SMOKE=1`; it is not a pass and this Harness-only repair does not change product UI/runtime behavior.
+- `pnpm audit:check`: exit 0, no known vulnerabilities at this observation. No install or dependency/lockfile change occurred.
+- `git diff --check`: exit 0. No normal state, sibling repository, live model, deployment or provider write was exercised. Product browser acceptance and the guarded Phase P done gate were not run.

@@ -9,8 +9,8 @@ import { cleanupSmoke, harnessTreeHash, observeResponse } from "./playwright-loc
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const owned: string[] = [];
-function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "surtec-harness-test-"));
+function fixture(hidden = false) {
+  const root = mkdtempSync(join(tmpdir(), hidden ? ".surtec-harness-test-" : "surtec-harness-test-"));
   owned.push(root);
   for (const path of [".agents", "docs", "AGENTS.md", "package.json"]) cpSync(join(repository, path), join(root, path), { recursive: true });
   return root;
@@ -19,6 +19,15 @@ function run(root: string, script: string, ...args: string[]) {
   const result = spawnSync("pwsh", ["-NoProfile", "-File", join(repository, ".agents/scripts", script), "-RepoRoot", root, ...args], { encoding: "utf8", timeout: 20_000, shell: false });
   if (result.error) throw result.error;
   return { code: result.status, output: result.stdout + result.stderr };
+}
+function hideOwnedDirectory(root: string, path: string) {
+  expect(owned).toContain(root);
+  expect(path === root || path.startsWith(join(root, "/"))).toBe(true);
+  const literal = "'" + path.replaceAll("'", "''") + "'";
+  // Unix dot directories are already hidden; Windows needs the Hidden flag.
+  // Change attributes only inside this test's unique disposable fixture.
+  const result = spawnSync("pwsh", ["-NoProfile", "-Command", `$ErrorActionPreference = 'Stop'; $item = Get-Item -LiteralPath ${literal} -Force; if ($IsWindows) { $item.Attributes = $item.Attributes -bor [IO.FileAttributes]::Hidden }; if (-not ((Get-Item -LiteralPath ${literal} -Force).Attributes -band [IO.FileAttributes]::Hidden)) { throw 'Fixture directory is not hidden' }`], { encoding: "utf8", timeout: 20_000, shell: false });
+  expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
 }
 function spec(root: string) {
   const document = parse(readFileSync(join(root, ".agents/templates/entity.spec.yaml"), "utf8"));
@@ -32,7 +41,7 @@ function save(root: string, document: ReturnType<typeof spec>) {
   writeFileSync(join(root, ".agents/specs/fixture.spec.yaml"), stringify(document));
 }
 const specPath = ".agents/specs/fixture.spec.yaml";
-afterEach(() => { for (const root of owned.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { for (const root of owned.splice(0)) { rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false); } });
 
 describe("native Harness validators", () => {
   it("checks the real structure without fabricating active specs or execution evidence", () => {
@@ -176,6 +185,34 @@ describe("native Harness validators", () => {
     symlinkSync(dirname(source), link, process.platform === "win32" ? "junction" : "dir");
     expect(run(root, "validate-budget.ps1", "-ExtraArtifacts", ".agents/specs/linked/file-state-contracts.snapshot.md").code).toBe(1);
     expect(existsSync(source)).toBe(true);
+  }, 25_000);
+
+  it("accepts a hidden artifact directory without executing acceptance", () => {
+    const root = fixture(); save(root, spec(root)); hideOwnedDirectory(root, join(root, ".agents"));
+    const before = readFileSync(join(root, specPath));
+    const result = run(root, "validate-spec.ps1", "-SpecPath", specPath);
+    expect(result, result.output).toMatchObject({ code: 0 }); expect(result.output).toContain("1 structurally checked; 0 checks executed");
+    expect(readFileSync(join(root, specPath))).toEqual(before);
+  }, 25_000);
+
+  it("accepts a hidden repository root without executing acceptance", () => {
+    const root = fixture(true); save(root, spec(root)); hideOwnedDirectory(root, root);
+    const before = readFileSync(join(root, specPath));
+    const result = run(root, "validate-spec.ps1", "-SpecPath", specPath);
+    expect(result, result.output).toMatchObject({ code: 0 }); expect(result.output).toContain("1 structurally checked; 0 checks executed");
+    expect(readFileSync(join(root, specPath))).toEqual(before);
+  }, 25_000);
+
+  it.each(["artifact", "repository-root"] as const)("rejects a hidden %s link rather than treating it as a missing directory", (kind) => {
+    const root = fixture(); save(root, spec(root));
+    const target = kind === "artifact" ? join(root, ".agents/specs") : root, link = join(root, kind === "artifact" ? ".agents/specs/.hidden-link" : ".hidden-link");
+    symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir"); hideOwnedDirectory(root, link);
+    const before = readFileSync(join(root, specPath));
+    const result = kind === "artifact"
+      ? run(root, "validate-budget.ps1", "-ExtraArtifacts", ".agents/specs/.hidden-link/fixture.spec.yaml")
+      : run(link, "validate-spec.ps1", "-SpecPath", specPath);
+    expect(result.code).toBe(1); expect(result.output).toContain(kind === "artifact" ? "Linked artifact path is not supported" : "Linked repository root is not supported");
+    expect(result.output).not.toContain("[OK] acceptance"); expect(readFileSync(join(root, specPath))).toEqual(before);
   }, 25_000);
 
   it("checks task mappings, future targets, dependencies and completion without executing", () => {
