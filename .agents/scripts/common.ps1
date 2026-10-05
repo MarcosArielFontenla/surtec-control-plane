@@ -12,7 +12,7 @@ function Initialize-Harness {
     $root = [IO.Path]::GetFullPath($RepoRoot)
     if (-not [IO.Directory]::Exists($root)) { throw 'Repository root does not exist' }
     # Reject links/junctions at every ancestor, including the supplied root.
-    $ancestor = Get-Item -LiteralPath $root
+    $ancestor = Get-Item -LiteralPath $root -Force
     while ($null -ne $ancestor) {
         if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked repository root is not supported' }
         $ancestor = $ancestor.Parent
@@ -33,7 +33,7 @@ function Resolve-HarnessPath {
     foreach ($segment in $relative.Split([IO.Path]::DirectorySeparatorChar)) {
         $part = Join-Path $part $segment
         if (Test-Path -LiteralPath $part) {
-            if ((Get-Item -LiteralPath $part).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked artifact path is not supported' }
+            if ((Get-Item -LiteralPath $part -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Linked artifact path is not supported' }
         }
     }
     if (-not $AllowMissing -and -not (Test-Path -LiteralPath $full)) { throw "Missing artifact: $relative" }

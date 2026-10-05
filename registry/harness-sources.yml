@@ -5,7 +5,7 @@ source:
   id: surtec-h1-h4
   root: .
   manifest: registry/harness-manifests/surtec-h1-h4.json
-  manifest_sha256: 77fa1b841d6255ed63d96787d5672b17ab4ea024226fcf72b870aec83bf8cc22
+  manifest_sha256: f61aa371c5366a5886887d448328542e692a0446ec30683eaaa846e9cf727a4e
 runners: {}
 # No filename/hash-based ownership or validation evidence is inferred.
 projects: {}
