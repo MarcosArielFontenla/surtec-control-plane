@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
 import type { AgentRoleRegistry } from "../../../lib/context/types";
 import { contextHash } from "../../../lib/context/assemble";
 import { readIssueDocument, mutateIssueDocument } from "../../../lib/state/issues";
-import { listTasks, readTask, updateTask } from "../../../lib/state/store";
+import { listTasks, readTask, updateTask, writeTask } from "../../../lib/state/store";
 import { readTaskEvents } from "../../../lib/state/events";
 import { readWorkflowDocument, mutateWorkflowDocument } from "../../../lib/state/workflows";
 import type { WorkflowRoleOutput } from "../../../lib/workflows/types";
@@ -14,10 +14,12 @@ import { assertWorkflowDocument } from "../../../lib/workflows/validation";
 import { createIssueService } from "./issue-service";
 import { createWorkflowContextService, type WorkflowPreviewRequest } from "./workflow-context-service";
 import { createWorkflowService, type WorkflowServiceOptions } from "./workflow-service";
-import { createTask, createWorkflowTask } from "./dispatch";
+import { createTask, createWorkflowTask, prepareTaskBudgetAdmission } from "./dispatch";
 import { createContextService } from "./context-service";
 import { createTestingEvidence, sealTestingEvidence } from "../../../lib/context/testing-evidence";
 import { runTask } from "../../../runner/run-task";
+import { BUDGET_DIMENSIONS, type BudgetLimits } from "../../../lib/budgets/types";
+import type { BudgetPolicySource } from "../../../lib/budgets/policy";
 
 let root: string, state: string, issueId: string;
 const agents = { "portfolio-analyst": "product-manager", planner: "tech-lead", "software-engineer": "backend-engineer", reviewer: "reality-checker", "qa-evaluator": "qa-reviewer", "operations-observer": "devops-engineer" };
@@ -34,7 +36,7 @@ beforeEach(() => {
   const proposed = issues.create({ project_id: "alpha", title: "Synthetic scoped change", expected_outcome: "Synthetic observable outcome", acceptance_criteria: ["Observable acceptance"], assigned_role_id: "backend-engineer", plan: ["Existing issue plan stays unchanged"], authorized_scope: { expected_outcome: "Synthetic observable outcome", acceptance_criteria: ["Observable acceptance"], allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["implementation"], explicit_exclusions: [] } });
   issueId = proposed.id; issues.authorize(issueId, proposed.revision, "synthetic-scope-approval");
 });
-afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false); });
 function request(template: WorkflowPreviewRequest["template_id"] = "analysis"): WorkflowPreviewRequest {
   const roles = template === "analysis" ? ["portfolio-analyst"] : template === "operations-investigation" ? ["operations-observer"] : template === "implementation" ? ["planner", "software-engineer", "reviewer"] : ["software-engineer", "reviewer"];
   return { template_id: template, template_version: 1, project_id: "alpha", issue_id: issueId, expected_revision: readIssueDocument().issues[issueId]!.revision,
@@ -86,6 +88,55 @@ function plannerGate() {
 }
 
 describe("durable explicit workflow admission", () => {
+  it.each([false, true])("separates historical P scaffold readiness from current O controller availability %s", (available) => {
+    vi.stubEnv("SURTEC_BUDGET_CUTOVER", "1"); vi.stubEnv("SURTEC_BUDGET_ENABLED", "true");
+    const notify = vi.fn(), { service, result } = start({ execution: { available: () => available, notify, cancelTask: vi.fn() } });
+    const stage = result.stages[0]!, taskPath = join(state, `tasks/${stage.task_id}.json`), bytes = readFileSync(taskPath), workflowBefore = workflowBytes(), issueBefore = readFileSync(join(state, "issues/issues.json")), inventory = readdirSync(state, { recursive: true });
+    const expected = [{ stage_id: stage.id, task_id: stage.task_id, availability: "available", readiness: { phase: "scaffold", executable: false, status: "historical", reason: "budget-admission-required", next_action: expect.any(String) } }];
+    expect(result.budget_readiness).toEqual(expected); expect(service.detail(result.workflow.id).budget_readiness).toEqual(expected);
+    expect(result.execution_enabled).toBe(available); expect(notify).toHaveBeenCalledExactlyOnceWith(stage.task_id);
+    expect(readTask(stage.task_id!)!.envelope).not.toHaveProperty("budget_admission"); expect(readFileSync(taskPath)).toEqual(bytes);
+    expect(workflowBytes()).toBe(workflowBefore); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBefore);
+    expect(readdirSync(state, { recursive: true })).toEqual(inventory); expect(existsSync(join(state, "budgets"))).toBe(false);
+  });
+  it("shows valid retained synthetic BudgetAdmission v1 on context v2 as blocked P data, not O controller proof", () => {
+    const { service, result } = start(), stage = result.stages[0]!, task = readTask(stage.task_id!)!;
+    const source: BudgetPolicySource = { fingerprint: "a".repeat(64), policy: { schema_version: 1, revision: 1, pricing: { status: "unavailable", reason: "no-versioned-source" }, rules: [{ id: "synthetic-company", revision: 1, scope: { kind: "company", id: "surtec" }, period: "none", warning_percent: 80, limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "unconfigured" }])) as BudgetLimits }] } };
+    // Test-owned persisted shape only. Production O admission does not call this scaffold.
+    const prepared = prepareTaskBudgetAdmission(task, { source, attribution: { company_id: "surtec", objective_ids: [], project_ids: ["alpha"], issue_id: issueId, role_id: stage.role_id, execution_id: task.envelope.id } });
+    writeTask(prepared.task); const bytes = readFileSync(join(state, `tasks/${task.envelope.id}.json`)), before = workflowBytes();
+    const detail = service.detail(result.workflow.id); expect(detail.budget_readiness![0]!.readiness).toMatchObject({ phase: "scaffold", executable: false, status: "bound", reason: "budget-cutover-unavailable" });
+    expect(detail.execution_enabled).toBe(false); expect(readFileSync(join(state, `tasks/${task.envelope.id}.json`))).toEqual(bytes);
+    expect(workflowBytes()).toBe(before); expect(existsSync(join(state, "budgets"))).toBe(false);
+  });
+  it.each(["missing", "malformed", "future-budget"])("reports %s retained task readiness as unavailable without changing workflow/history", (kind) => {
+    const { service, result } = start(), stage = result.stages[0]!, path = join(state, `tasks/${stage.task_id}.json`);
+    if (kind === "missing") rmSync(path);
+    else if (kind === "malformed") writeFileSync(path, "{");
+    else { const task = JSON.parse(readFileSync(path, "utf8")); task.envelope.budget_admission = { schema_version: 99 }; writeFileSync(path, JSON.stringify(task)); }
+    const bytes = existsSync(path) ? readFileSync(path) : null, before = workflowBytes(), issueBefore = readFileSync(join(state, "issues/issues.json"));
+    expect(service.detail(result.workflow.id).budget_readiness).toEqual([{ stage_id: stage.id, task_id: stage.task_id, availability: "unavailable", readiness: null }]);
+    expect(existsSync(path) ? readFileSync(path) : null).toEqual(bytes); expect(workflowBytes()).toBe(before);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBefore); expect(existsSync(join(state, "budgets"))).toBe(false);
+  });
+  it.each(["budget_admission", "reservation_id", "reservation", "intent_id", "budget_cutover", "cutover", "execution_enabled"])("rejects injected %s before workflow preview/revalidation/writes", (key) => {
+    const context = createWorkflowContextService(root), previewCall = vi.spyOn(context, "preview"), revalidate = vi.spyOn(context, "revalidatePreview"), service = createWorkflowService(root, { context });
+    const input = request(), bytes = readFileSync(join(state, "issues/issues.json")), inventory = readdirSync(state, { recursive: true });
+    expect(() => service.preview({ ...input, [key]: {} })).toThrow(/request fields/);
+    expect(() => service.start({ request: { ...input, [key]: {} }, preview_fingerprint: "a".repeat(64), confirm: true, approval_id: "synthetic-human" })).toThrow(/request fields/);
+    expect(() => service.start({ request: input, preview_fingerprint: "a".repeat(64), confirm: true, approval_id: "synthetic-human", [key]: {} })).toThrow(/request fields/);
+    expect(previewCall).not.toHaveBeenCalled(); expect(revalidate).not.toHaveBeenCalled(); expect(listTasks()).toEqual([]);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(bytes); expect(readdirSync(state, { recursive: true })).toEqual(inventory);
+  });
+  it("rejects hooked/hidden root and preview fields without invoking accessors", () => {
+    const context = createWorkflowContextService(root), previewCall = vi.spyOn(context, "preview"), revalidate = vi.spyOn(context, "revalidatePreview"), service = createWorkflowService(root, { context }), getter = vi.fn();
+    const input = request(), body = { request: input, preview_fingerprint: "a".repeat(64), confirm: true, approval_id: "synthetic-human" };
+    expect(() => service.preview(Object.defineProperty({ ...input }, "budget", { enumerable: true, get: getter }))).toThrow(/request fields/);
+    expect(() => service.start(Object.defineProperty({ ...body }, "request", { enumerable: true, get: getter }))).toThrow(/request fields/);
+    expect(() => service.start(Object.defineProperty({ ...body }, "budget_admission", { value: {} }))).toThrow(/request fields/);
+    expect(() => service.preview(new Proxy(input, { getPrototypeOf: getter }))).toThrow(/request fields/);
+    expect(getter).not.toHaveBeenCalled(); expect(previewCall).not.toHaveBeenCalled(); expect(revalidate).not.toHaveBeenCalled(); expect(existsSync(join(state, "workflows"))).toBe(false);
+  });
   it("denies opt-in correction at the root if the complete finite path cannot fit its budget", () => {
     const service = createWorkflowService(root), input = { ...request("implementation"), correction_enabled: true,
       budget: { max_tasks: 4, max_attempts: 10, max_runtime_ms: 900000, max_total_tokens: 100000 } };

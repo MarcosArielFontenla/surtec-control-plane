@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, types as nodeTypes } from "node:util";
 import { contextHash, redactContextText } from "../../../lib/context/assemble";
 import { isSafeIdentifier } from "../../../lib/security/identifiers";
 import { readIssueDocument } from "../../../lib/state/issues";
 import { readTask } from "../../../lib/state/store";
-import { validateTaskRecord } from "../../../lib/state/validation";
+import { taskBudgetReadiness, validateTaskRecord } from "../../../lib/state/validation";
 import { mutateWorkflowDocument, readWorkflowDocument } from "../../../lib/state/workflows";
 import type { GovernedWorkflow, WorkflowDocument, WorkflowEvent, WorkflowGrant, WorkflowStage } from "../../../lib/workflows/types";
 import { assertWorkflowDocument } from "../../../lib/workflows/validation";
@@ -31,8 +31,11 @@ export interface WorkflowServiceOptions {
 const hash = (value: unknown) => contextHash(JSON.stringify(value));
 function requireCurrent(ok: unknown, message: string): asserts ok { if (!ok) throw new WorkflowServiceError(message); }
 function object(value: unknown, keys: string[], required = keys): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
-    || Reflect.ownKeys(value).some((key) => typeof key !== "string" || !keys.includes(key)) || required.some((key) => !Object.hasOwn(value, key))) throw new WorkflowServiceError("Invalid workflow request fields", 400);
+  if (!value || typeof value !== "object" || nodeTypes.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+    || Reflect.ownKeys(value).some((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return typeof key !== "string" || !keys.includes(key) || !descriptor?.enumerable || !Object.hasOwn(descriptor, "value");
+    }) || required.some((key) => !Object.hasOwn(value, key))) throw new WorkflowServiceError("Invalid workflow request fields", 400);
   return value as Record<string, unknown>;
 }
 function identifier(value: unknown): asserts value is string { if (typeof value !== "string" || !isSafeIdentifier(value)) throw new WorkflowServiceError("Invalid workflow identity", 400); }
@@ -72,8 +75,19 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
     const grant = document.grants[workflow.current_grant_id]!;
     // Never project rendered context, source bodies, task instructions or paths.
     const { authorized_scope: _scope, ...publicGrant } = grant;
+    const stages = Object.values(document.stages).filter((entry) => entry.workflow_id === id);
+    // Readiness describes the blocked P scaffold, not current O controller availability.
+    const budget_readiness = stages.filter((stage) => stage.task_id !== null).map((stage) => {
+      try {
+        const task = readTask(stage.task_id!);
+        return { stage_id: stage.id, task_id: stage.task_id!, availability: task ? "available" as const : "unavailable" as const,
+          readiness: task ? taskBudgetReadiness(task) : null };
+      } catch { return { stage_id: stage.id, task_id: stage.task_id!, availability: "unavailable" as const, readiness: null }; }
+    });
+    // Historical typed clients may omit additive diagnostics; the service always emits them.
+    const budgetProjection: { budget_readiness?: typeof budget_readiness } = { budget_readiness };
     return safeProjection({ schema_version: 1 as const, workflow, grant: publicGrant,
-      stages: Object.values(document.stages).filter((entry) => entry.workflow_id === id),
+      stages, ...budgetProjection,
       decisions: Object.values(document.decisions).filter((entry) => entry.workflow_id === id),
       handoffs: Object.values(document.handoffs).filter((entry) => Object.values(document.stages).some((stage) => stage.workflow_id === id && stage.handoff_id === entry.id)),
       review_receipts: Object.values(document.review_receipts).filter((entry) => entry.workflow_id === id),
@@ -354,7 +368,10 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
     }); return detail(id);
   }
   return {
-    preview: (value: unknown) => { strictConsent(value); return context.preview(value); },
+    preview: (value: unknown) => {
+      object(value, ["template_id", "template_version", "project_id", "issue_id", "expected_revision", "selected_agents", "client_context_categories", "correction_enabled", "analysis_role", "budget", "candidate_id"], []);
+      strictConsent(value); return context.preview(value);
+    },
     list(value: unknown = {}) {
       const input = object(value, ["issue_id", "project_id"], []);
       if (input.issue_id !== undefined) identifier(input.issue_id); if (input.project_id !== undefined) identifier(input.project_id);
@@ -387,6 +404,7 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
       const input = object(value, ["request", "preview_fingerprint", "approval_id", "confirm"]);
       fingerprint(input.preview_fingerprint); humanText(input.approval_id, 100);
       if (input.confirm !== true) throw new WorkflowServiceError("Explicit human workflow confirmation is required", 400);
+      object(input.request, ["template_id", "template_version", "project_id", "issue_id", "expected_revision", "selected_agents", "client_context_categories", "correction_enabled", "analysis_role", "budget", "candidate_id"], []);
       strictConsent(input.request);
       const confirmed = context.revalidatePreview(input.request, input.preview_fingerprint), preview = confirmed.preview;
       const before = readWorkflowDocument(), issueDocument = readIssueDocument();

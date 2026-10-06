@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readTask, updateTask, writeTask } from "../../../lib/state/store";
@@ -12,8 +12,10 @@ import type { TaskRecord } from "../../../lib/state/types";
 import type { IssueCreateInput } from "../../../lib/issues/types";
 import type { WorkflowDocument } from "../../../lib/workflows/types";
 import { createIssueService, IssueScopeViolationError, pathsOutsideScope, projectWorkflowIssueLink } from "./issue-service";
-import { createTask } from "./dispatch";
+import { createTask, prepareTaskBudgetAdmission } from "./dispatch";
 import type { CreateTaskInput, TrustedIssueTaskContext } from "./dispatch";
+import { BUDGET_DIMENSIONS, type BudgetLimits } from "../../../lib/budgets/types";
+import type { BudgetPolicySource } from "../../../lib/budgets/policy";
 
 let root: string;
 let state: string;
@@ -70,6 +72,12 @@ function governTask(taskId: string, issueRevision: number) {
     task.envelope.context_admission = { schema_version: 1, kind: "issue", manifest_fingerprint: task.envelope.context_manifest.fingerprint, instructions_length: task.envelope.instructions.length, instructions_hash: contextHash(task.envelope.instructions), issue_id: task.envelope.metadata.issue_id as string, issue_revision: issueRevision, issue_status: "authorized" };
   });
 }
+function governQueuedFixture(taskId: string, issueRevision: number): void {
+  const task = readTask(taskId)!;
+  task.orchestration = defaultTaskOrchestration();
+  writeTask(task);
+  governTask(taskId, issueRevision);
+}
 function attachReceipt(taskId: string, candidate: ReviewCandidate) {
   const task = readTask(taskId)!;
   const receipt = createTestingEvidence(task, candidate.execution_id, { mode: "functional", runners: [{ stage: "functional", command: "node verify.mjs" }] });
@@ -98,10 +106,55 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.SURTEC_STATE_DIR;
   rmSync(root, { recursive: true, force: true });
+  expect(existsSync(root)).toBe(false);
   vi.restoreAllMocks();
 });
 
 describe("local issue service", () => {
+  it.each(["budget_admission", "budget", "reservation_id", "reservation", "intent_id", "budget_cutover", "cutover", "execution_enabled"])("rejects caller %s before issue mutation or task admission", (key) => {
+    const issues = service(), proposed = issues.create(input()), authorized = issues.authorize(proposed.id, proposed.revision, "synthetic-human");
+    const bytes = readFileSync(join(state, "issues/issues.json")), inventory = readdirSync(state, { recursive: true });
+    expect(() => issues.dispatch(proposed.id, authorized.revision, "frontend-engineer", { role_id: "software-engineer", preview_fingerprint: "a".repeat(64), [key]: {} })).toThrow(/dispatch admission fields/);
+    expect(fakeCreateTask).not.toHaveBeenCalled(); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(bytes);
+    expect(readdirSync(state, { recursive: true })).toEqual(inventory); expect(existsSync(join(state, "budgets"))).toBe(false);
+  });
+  it("rejects inherited, symbolic, hidden and accessor admission fields before any lock or getter", () => {
+    const issues = service(), getter = vi.fn(), inputs = [Object.create({ role_id: "software-engineer" }), { [Symbol("budget")]: true }, Object.defineProperty({}, "role_id", { value: "software-engineer" }), Object.defineProperty({}, "role_id", { enumerable: true, get: getter }), new Proxy({}, { getPrototypeOf: getter }), null, []];
+    for (const admission of inputs) expect(() => issues.dispatch("missing", 1, "frontend-engineer", admission as never)).toThrow(/dispatch admission fields/);
+    expect(getter).not.toHaveBeenCalled(); expect(fakeCreateTask).not.toHaveBeenCalled(); expect(existsSync(state)).toBe(false);
+  });
+  it.each(["legacy", "context-v1"])("reads %s task lineage as a P-only historical scaffold without changing O semantics or bytes", (kind) => {
+    const issues = service(), proposed = issues.create(input()), authorized = issues.authorize(proposed.id, proposed.revision, "synthetic-human");
+    const { taskId } = issues.dispatch(proposed.id, authorized.revision, "frontend-engineer");
+    if (kind === "context-v1") governQueuedFixture(taskId, authorized.revision);
+    const taskPath = join(state, `tasks/${taskId}.json`), taskBytes = readFileSync(taskPath), issueBytes = readFileSync(join(state, "issues/issues.json")), inventory = readdirSync(state, { recursive: true });
+    const expected = [{ task_id: taskId, availability: "available", readiness: { phase: "scaffold", executable: false, status: "historical", reason: "budget-admission-required", next_action: expect.any(String) } }];
+    expect(issues.get(proposed.id).budget_readiness).toEqual(expected); expect(issues.lineage(proposed.id).budget_readiness).toEqual(expected);
+    expect(issues.get(proposed.id).issue.status).toBe("working"); expect(readTask(taskId)!.envelope).not.toHaveProperty("budget_admission");
+    expect(readFileSync(taskPath)).toEqual(taskBytes); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes);
+    expect(readdirSync(state, { recursive: true })).toEqual(inventory); expect(existsSync(join(state, "budgets"))).toBe(false);
+  });
+  it("inspects a valid synthetic bound task as non-executable P data without creating a reservation", () => {
+    const issues = service(), proposed = issues.create(input()), authorized = issues.authorize(proposed.id, proposed.revision, "synthetic-human");
+    const { taskId } = issues.dispatch(proposed.id, authorized.revision, "frontend-engineer"); governQueuedFixture(taskId, authorized.revision);
+    const source: BudgetPolicySource = { fingerprint: "a".repeat(64), policy: { schema_version: 1, revision: 1, pricing: { status: "unavailable", reason: "no-versioned-source" }, rules: [{ id: "synthetic-company", revision: 1, scope: { kind: "company", id: "surtec" }, period: "none", warning_percent: 80, limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "unconfigured" }])) as BudgetLimits }] } };
+    // Test-owned retained shape only, never a production queue retrofit.
+    const prepared = prepareTaskBudgetAdmission(readTask(taskId)!, { source, attribution: { company_id: "surtec", objective_ids: [], project_ids: ["alpha"], issue_id: proposed.id, role_id: "software-engineer", execution_id: taskId } });
+    writeTask(prepared.task); const bytes = readFileSync(join(state, `tasks/${taskId}.json`));
+    expect(issues.get(proposed.id).budget_readiness[0]!.readiness).toMatchObject({ phase: "scaffold", executable: false, status: "bound", reason: "budget-cutover-unavailable" });
+    expect(readFileSync(join(state, `tasks/${taskId}.json`))).toEqual(bytes); expect(existsSync(join(state, "budgets"))).toBe(false);
+  });
+  it.each(["missing", "malformed", "future-budget"])("keeps %s referenced task readiness unavailable without repair or invented admission", (kind) => {
+    const issues = service(), proposed = issues.create(input()), authorized = issues.authorize(proposed.id, proposed.revision, "synthetic-human"), { taskId } = issues.dispatch(proposed.id, authorized.revision, "frontend-engineer");
+    const path = join(state, `tasks/${taskId}.json`);
+    if (kind === "missing") rmSync(path);
+    else if (kind === "malformed") writeFileSync(path, "{");
+    else { const task = JSON.parse(readFileSync(path, "utf8")); task.envelope.budget_admission = { schema_version: 99 }; writeFileSync(path, JSON.stringify(task)); }
+    const bytes = existsSync(path) ? readFileSync(path) : null, issueBytes = readFileSync(join(state, "issues/issues.json")), warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(issues.get(proposed.id).budget_readiness).toEqual([{ task_id: taskId, availability: "unavailable", readiness: null }]);
+    expect(issues.get(proposed.id).issue.status).toBe("working"); expect(existsSync(path) ? readFileSync(path) : null).toEqual(bytes);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes); expect(existsSync(join(state, "budgets"))).toBe(false); warn.mockRestore();
+  });
   it.each(["valid", "opt-out", "unconsumed", "engineer", "candidate", "missing-findings"])("links a correction only through the exact consumed checking authority: %s", (change) => {
     const issues = service(), proposed = issues.create(input()), authorized = issues.authorize(proposed.id, proposed.revision, "synthetic-human");
     const taskId = issues.dispatch(proposed.id, authorized.revision, "frontend-engineer").taskId;

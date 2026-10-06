@@ -16,12 +16,12 @@ import type { ContextService } from "./context-service";
 import { readWorkflowDocument } from "../../../lib/state/workflows";
 import type { WorkflowCandidateBinding, WorkflowDocument } from "../../../lib/workflows/types";
 import { assertWorkflowDocument } from "../../../lib/workflows/validation";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, types as nodeTypes } from "node:util";
 import { applicableWorkflowReviews, assertOwnedWorkflowIssueProgress, assertTerminalWorkflowTask, bindVerifiedWorkflowCandidate, hasCurrentRiskAcknowledgement, workflowEvidenceHash } from "../../../lib/workflows/review-evidence";
 import { readContained } from "../../../lib/harness/source";
 import { inspectCandidateTree } from "../../../runner/worktree";
 import { createWorkflowContextService } from "./workflow-context-service";
-import { validateTaskRecord } from "../../../lib/state/validation";
+import { taskBudgetReadiness, validateTaskRecord } from "../../../lib/state/validation";
 
 export class IssueServiceError extends Error {
   constructor(message: string, readonly status: 400 | 404 | 409 = 400) { super(message); }
@@ -39,6 +39,18 @@ export interface IssueServiceOptions {
   createTask?: typeof createTask;
   projectIds?: () => string[];
   now?: () => Date;
+}
+
+type IssueBudgetReadiness = { task_id: string; availability: "available" | "unavailable"; readiness: ReturnType<typeof taskBudgetReadiness> | null };
+
+function assertDispatchAdmission(value: unknown): void {
+  if (value === undefined) return;
+  const keys = ["role_id", "preview_fingerprint", "client_context_categories"];
+  if (!value || typeof value !== "object" || nodeTypes.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+    || Reflect.ownKeys(value).some((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return typeof key !== "string" || !keys.includes(key) || !descriptor?.enumerable || !Object.hasOwn(descriptor, "value");
+    })) throw new IssueServiceError("Invalid issue dispatch admission fields");
 }
 
 function text(value: unknown, label: string, max: number): string {
@@ -357,7 +369,7 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
       return Object.values(readIssueDocument().issues).sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at));
     },
 
-    get(id: string): IssueLineage {
+    get(id: string): IssueLineage & { budget_readiness: IssueBudgetReadiness[] } {
       const document = readIssueDocument();
       const issue = requireIssue(document, id);
       const tasks = listTasks().filter((task) => taskIssueId(task) === id);
@@ -375,7 +387,14 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
       const evidence = issue.evidence_ids.map((evidenceId) => document.evidence[evidenceId]).filter((entry): entry is IssueEvidenceReference => Boolean(entry));
       const gaps = evidenceGaps(issue, evidence, candidates);
       if (tasks.length === 0) gaps.push("No task execution is linked yet.");
-      return { issue, tasks: taskLineage, candidates, evidence, evidence_gaps: gaps, sessions } as IssueLineage;
+      // P-only inspection never backfills envelopes or changes the O execution gate.
+      const budget_readiness: IssueBudgetReadiness[] = [...new Set([...issue.task_ids, ...tasks.map((task) => task.envelope.id)])].map((task_id) => {
+        try {
+          const task = readTask(task_id);
+          return { task_id, availability: task ? "available" : "unavailable", readiness: task ? taskBudgetReadiness(task) : null };
+        } catch { return { task_id, availability: "unavailable", readiness: null }; }
+      });
+      return { issue, tasks: taskLineage, candidates, evidence, evidence_gaps: gaps, sessions, budget_readiness };
     },
 
     create(raw: IssueCreateInput): WorkIssue {
@@ -467,6 +486,8 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
     },
 
     dispatch(id: string, expectedRevision: number, agent: string, admission?: { role_id?: string; preview_fingerprint?: string; client_context_categories?: unknown }): { issue: WorkIssue; taskId: string } {
+      // Reject injected authority before the issue lock, preview or task effect.
+      assertDispatchAdmission(admission);
       return mutateIssueDocument((document) => {
         const issue = requireIssue(document, id);
         if (issue.revision !== expectedRevision) throw new IssueServiceError("issue changed; refresh before dispatch", 409);
@@ -757,7 +778,7 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
       });
     },
 
-    lineage(id: string): IssueLineage { return this.get(id); },
+    lineage(id: string): IssueLineage & { budget_readiness: IssueBudgetReadiness[] } { return this.get(id); },
 
     executionGate(input: { issueId: string; taskId: string; executionId: string; scopeRevision: number }): "allowed" | "candidate-ready" | "decision-required" {
       const document = readIssueDocument();

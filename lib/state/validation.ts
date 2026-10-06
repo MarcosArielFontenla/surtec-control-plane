@@ -7,11 +7,16 @@ import taskEventSchema from "../../schemas/task-event.schema.json";
 import contextManifestSchema from "../../schemas/context-manifest.schema.json";
 import contextAdmissionSchema from "../../schemas/context-admission.schema.json";
 import contextAdmissionV2Schema from "../../schemas/context-admission-v2.schema.json";
+import budgetPolicySchema from "../../schemas/budget-policy.schema.json";
+import budgetAdmissionSchema from "../../schemas/budget-admission.schema.json";
 import workflowRecordSchema from "../../schemas/workflow-record.schema.json";
 import workflowOutputSchema from "../../schemas/workflow-role-output.schema.json";
 import testingEvidenceSchema from "../../schemas/testing-evidence.schema.json";
 import { assertTestingEvidenceBinding } from "../context/testing-evidence";
 import { createHash } from "node:crypto";
+import { types as nodeTypes } from "node:util";
+import { assertBudgetAdmission, BudgetContractError } from "../budgets/validation";
+import { budgetTaskIntentId } from "../budgets/reservations";
 import { assertContextManifest } from "../context/validation";
 import projectProfileSchema from "../../schemas/project-profile.schema.json";
 import portfolioProfilesSchema from "../../schemas/portfolio-profiles.schema.json";
@@ -82,6 +87,8 @@ ajv.addSchema(workflowRecordSchema);
 ajv.addSchema(workflowOutputSchema);
 ajv.addSchema(contextAdmissionV2Schema);
 ajv.addSchema(testingEvidenceSchema);
+ajv.addSchema(budgetPolicySchema);
+ajv.addSchema(budgetAdmissionSchema);
 ajv.addSchema(taskEnvelopeSchema);
 ajv.addSchema(agentResultSchema);
 ajv.addSchema(projectProfileSchema);
@@ -111,6 +118,115 @@ export function contextAdmissionVersion(value: unknown): "legacy" | 1 | 2 {
   }
   throw new Error("Invalid or unsupported context admission");
 }
+
+/** Independent version dispatch; only the envelope can establish actual absence. */
+export function budgetAdmissionVersion(value: unknown): "legacy" | 1 {
+  if (value === undefined) return "legacy";
+  assertBudgetAdmission(value);
+  return 1;
+}
+function budgetBindingInvariant(ok: boolean, message: string): asserts ok {
+  if (!ok) throw new BudgetContractError(message);
+}
+// Never let AJV/serialization invoke accessors, proxies or toJSON on a newly bound
+// task. Legacy absence does not adopt a new whole-task storage format.
+function plainBudgetTask(value: unknown, ancestors = new Set<object>(), depth = 0): void {
+  budgetBindingInvariant(depth <= 32, "Budget task nesting exceeds limit");
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") { budgetBindingInvariant(Number.isFinite(value), "Budget task contains a non-finite number"); return; }
+  budgetBindingInvariant(typeof value === "object" && !nodeTypes.isProxy(value), "Budget task must be plain JSON");
+  budgetBindingInvariant(!ancestors.has(value), "Budget task contains a cycle");
+  const array = Array.isArray(value), prototype = Object.getPrototypeOf(value);
+  budgetBindingInvariant(array ? prototype === Array.prototype : prototype === Object.prototype || prototype === null, "Budget task has an unsupported prototype");
+  const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
+  budgetBindingInvariant(keys.length <= 10000 && keys.every((key) => typeof key === "string"), "Budget task has invalid properties");
+  if (array) {
+    budgetBindingInvariant(keys.length === value.length + 1, "Budget task has a sparse or decorated array");
+    for (let index = 0; index < value.length; index++) budgetBindingInvariant(Object.hasOwn(descriptors, String(index)), "Budget task has a sparse array");
+  }
+  ancestors.add(value);
+  try {
+    for (const key of keys as string[]) {
+      if (array && key === "length") continue;
+      const descriptor = descriptors[key]!;
+      budgetBindingInvariant(descriptor.enumerable === true && Object.hasOwn(descriptor, "value")
+        && !["__proto__", "constructor", "prototype"].includes(key), "Budget task contains hidden properties or hooks");
+      plainBudgetTask(descriptor.value, ancestors, depth + 1);
+    }
+  } finally { ancestors.delete(value); }
+}
+
+/** Pure immutable binding only: not current policy, reservation or live ownership. */
+export function assertTaskBudgetAdmissionBinding(task: TaskRecord): void {
+  budgetBindingInvariant(!!task && typeof task === "object" && !nodeTypes.isProxy(task), "Invalid budget task");
+  const envelopeDescriptor = Object.getOwnPropertyDescriptor(task, "envelope");
+  budgetBindingInvariant(!!envelopeDescriptor && Object.hasOwn(envelopeDescriptor, "value"), "Budget task requires an own envelope");
+  const envelope = envelopeDescriptor.value as TaskRecord["envelope"];
+  budgetBindingInvariant(!!envelope && typeof envelope === "object" && !nodeTypes.isProxy(envelope), "Invalid budget task envelope");
+  budgetBindingInvariant(Object.getPrototypeOf(envelope) === Object.prototype || Object.getPrototypeOf(envelope) === null,
+    "Budget task envelope has an unsupported prototype");
+  const descriptor = Object.getOwnPropertyDescriptor(envelope, "budget_admission");
+  if (!descriptor) {
+    budgetBindingInvariant(!("budget_admission" in envelope), "Inherited budget admission is invalid");
+    return;
+  }
+  budgetBindingInvariant(descriptor.enumerable === true && Object.hasOwn(descriptor, "value"), "Budget admission must be own plain data");
+  assertBudgetAdmission(descriptor.value); // Undefined/null/future cannot take legacy fallback.
+  budgetBindingInvariant(descriptor.value.intent_id === budgetTaskIntentId(descriptor.value), "Budget immutable intent fingerprint differs");
+  plainBudgetTask(task);
+  const budget = descriptor.value, manifest = envelope.context_manifest, context = envelope.context_admission;
+  budgetBindingInvariant(!!manifest && !!context && contextAdmissionVersion(context) !== "legacy", "Budget admission requires governed context");
+  assertContextManifest(manifest);
+  const { fingerprint, ...unsignedManifest } = manifest;
+  budgetBindingInvariant(createHash("sha256").update(JSON.stringify(unsignedManifest)).digest("hex") === fingerprint
+    && envelope.project === manifest.project_id && envelope.agent === manifest.agent_id && envelope.task_type === manifest.task_kind
+    && envelope.sandbox === manifest.sandbox, "Budget task manifest binding differs");
+  const orchestration = task.orchestration;
+  budgetBindingInvariant(budget.task_id === envelope.id && budget.project_id === envelope.project
+    && budget.agent_id === envelope.agent && budget.role_id === manifest.role_id
+    && budget.manifest_fingerprint === manifest.fingerprint && budget.manifest_fingerprint === context.manifest_fingerprint
+    && budget.context_admission_version === context.schema_version
+    && budget.execution_mode === (envelope.sandbox === "workspace-write" ? "write" : "read"), "Budget task/context identity differs");
+  budgetBindingInvariant(!!orchestration && budget.caps.attempts <= manifest.budget.max_attempts
+    && budget.caps.runtime_ms <= manifest.budget.max_runtime_ms && budget.caps.total_tokens <= manifest.budget.max_total_tokens
+    && orchestration.max_attempts <= budget.caps.attempts && orchestration.max_runtime_ms <= budget.caps.runtime_ms
+    && orchestration.max_total_tokens <= budget.caps.total_tokens, "Budget task caps differ from admitted ceilings");
+  const review = manifest.role_id === "reviewer" || manifest.role_id === "qa-evaluator";
+  budgetBindingInvariant(review ? budget.caps.review_attempts > 0 && budget.caps.review_runtime_ms > 0 && budget.caps.review_total_tokens > 0
+    : budget.caps.review_attempts === 0 && budget.caps.review_runtime_ms === 0 && budget.caps.review_total_tokens === 0, "Budget review labels differ from task role");
+  if (context.schema_version === 2) {
+    const workflow = budget.workflow;
+    budgetBindingInvariant(!!workflow && workflow.workflow_id === context.workflow_id && workflow.stage_id === context.stage_id
+      && workflow.stage_generation === context.stage_generation && workflow.grant_id === context.grant_id
+      && context.task_id === envelope.id && context.role_id === budget.role_id
+      && budget.issue_id === context.issue_id && budget.scope_revision === context.scope_revision
+      && budget.scope_fingerprint === context.scope_fingerprint
+      && budget.caps.corrections === (context.stage_kind === "correction" ? 1 : 0), "Budget workflow/scope binding differs");
+  } else {
+    budgetBindingInvariant(budget.workflow === null && budget.caps.corrections === 0, "V1 budget cannot invent workflow correction authority");
+    if (context.kind === "issue") {
+      const scope = envelope.metadata.issue_authorized_scope;
+      budgetBindingInvariant(manifest.task_kind === "implementation" && !!scope && typeof scope === "object" && !Array.isArray(scope)
+        && budget.issue_id === context.issue_id && budget.issue_id === envelope.metadata.issue_id
+        && budget.scope_revision === envelope.metadata.issue_scope_revision
+        && budget.scope_fingerprint === createHash("sha256").update(JSON.stringify(scope)).digest("hex"), "Budget issue scope binding differs");
+    } else budgetBindingInvariant(manifest.task_kind === "analysis" && budget.issue_id === null && budget.scope_revision === null && budget.scope_fingerprint === null
+      && !["issue_id", "issue_scope_revision", "issue_authorized_scope"].some((key) => Object.hasOwn(envelope.metadata, key)), "Analysis budget cannot invent issue scope");
+  }
+}
+
+/** P readiness only, never the still-independent historical O execution gate. */
+export function taskBudgetReadiness(task: TaskRecord): {
+  phase: "scaffold"; executable: false; status: "historical" | "bound";
+  reason: "budget-admission-required" | "budget-cutover-unavailable"; next_action: string;
+} {
+  assertTaskBudgetAdmissionBinding(task);
+  const bound = Object.hasOwn(task.envelope, "budget_admission");
+  return Object.freeze({ phase: "scaffold", executable: false, status: bound ? "bound" : "historical",
+    reason: bound ? "budget-cutover-unavailable" : "budget-admission-required",
+    next_action: bound ? "Wait for the proven cooperative boundary and exact operator-confirmed P cutover."
+      : "Keep historical bytes; obtain a fresh normal admission after the exact operator-confirmed P cutover." });
+}
 function assertWorkflowStageBinding(binding: ContextAdmissionV2, envelope: TaskRecord["envelope"], manifest: ContextManifest): void {
   const roles: Record<WorkflowStageKind, string[]> = { analysis: ["portfolio-analyst", "planner"], planning: ["planner"], implementation: ["software-engineer"], correction: ["software-engineer"], review: ["reviewer"], qa: ["qa-evaluator"], operations: ["operations-observer"] };
   const kinds: Record<ContextAdmissionV2["template_id"], WorkflowStageKind[]> = { analysis: ["analysis"], implementation: ["planning", "implementation", "review", "qa", "correction"], "quality-review": ["review", "qa"], "operations-investigation": ["operations"], "trivial-change": ["implementation", "review", "qa", "correction"] };
@@ -132,6 +248,11 @@ function assertWorkflowStageBinding(binding: ContextAdmissionV2, envelope: TaskR
 }
 const taskRecordShape = ajv.compile(taskRecordSchema) as ValidateFunction<TaskRecord>;
 export const validateTaskRecord: ValidateFunction<TaskRecord> = Object.assign((value: unknown): value is TaskRecord => {
+  try { assertTaskBudgetAdmissionBinding(value as TaskRecord); }
+  catch {
+    validateTaskRecord.errors = [{ instancePath: "/envelope/budget_admission", schemaPath: "#/properties/envelope/budget_admission", keyword: "budgetBinding", params: {}, message: "budget admission or its task/context/scope/cap binding is invalid" }];
+    return false;
+  }
   if (!taskRecordShape(value)) { validateTaskRecord.errors = taskRecordShape.errors; return false; }
   validateTaskRecord.errors = null;
   const envelope = value.envelope;

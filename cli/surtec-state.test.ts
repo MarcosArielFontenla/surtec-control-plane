@@ -1,12 +1,33 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { runSeed, runRecord, runSetStatus } from "./surtec-state";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { runBudgetReadiness, runSeed, runRecord, runSetStatus } from "./surtec-state";
 import { mutateWorkflowDocument } from "../lib/state/workflows";
 import { assembleContext, contextHash } from "../lib/context/assemble";
 import { defaultTaskOrchestration } from "../lib/state/orchestration";
 import { validateTaskRecord } from "../lib/state/validation";
+import type { TaskRecord } from "../lib/state/types";
+import type { ContextService } from "../dashboard/src/server/context-service";
+import { prepareTaskBudgetAdmission } from "../dashboard/src/server/dispatch";
+import { BUDGET_DIMENSIONS, type BudgetLimits } from "../lib/budgets/types";
+import type { BudgetPolicySource } from "../lib/budgets/policy";
+
+function syntheticBoundTask(): TaskRecord {
+  const at = "2026-10-05T12:00:00.000Z", budget = { max_attempts: 2, max_runtime_ms: 60000, max_total_tokens: 10000 };
+  const task: TaskRecord = {
+    envelope: { id: "T-budget-fixture", source: "cli", project: "synthetic", task_type: "analysis", agent: "backend-engineer", title: "Synthetic", instructions: "Synthetic", repo_path: "/synthetic", branch: "agent/T-budget-fixture", sandbox: "read-only", expected_outputs: [], requires_human_approval: true, metadata: {} },
+    revision: 1, lifecycle: "queued", outcome: null, created_at: at, started_at: null, updated_at: at, finished_at: null, result: null, logs_path: null,
+    orchestration: { ...defaultTaskOrchestration(), ...budget },
+  };
+  task.envelope.context_manifest = assembleContext({ schema_version: 1, project_id: "synthetic", agent_id: "backend-engineer", role_id: "planner", task_kind: "analysis", sandbox: "read-only", tools: ["inspect"], approval_rules: [], budget,
+    limits: { max_lines: 500, max_bytes: 60000, max_sources: 64 }, selected_categories: [], excluded_categories: [], omitted_sources: [], routing: { work_scale: "bounded", action: "direct", review_depth: "focused", qa_required: false, reasons: ["Synthetic fixture"], delegation: { admitted: false, executable: false, reasons: ["Unavailable"] } },
+    testing: { mode: "functional", minimum_review_depth: "focused", runner_ids: [], commands: [], reasons: ["Functional fixture"], requires_red_evidence: false } }, [{ id: "runtime/safety", layer: "runtime-safety", source_type: "policy", text: "Synthetic safety", reason: "Fixture", sensitivity: "public" }]).manifest;
+  task.envelope.context_admission = { schema_version: 1, kind: "analysis", manifest_fingerprint: task.envelope.context_manifest.fingerprint, instructions_length: 9, instructions_hash: contextHash("Synthetic") };
+  const source: BudgetPolicySource = { fingerprint: "a".repeat(64), policy: { schema_version: 1, revision: 1, pricing: { status: "unavailable", reason: "no-versioned-source" }, rules: [{ id: "synthetic-company", revision: 1, scope: { kind: "company", id: "surtec" }, period: "none", warning_percent: 80, limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "unconfigured" }])) as BudgetLimits }] } };
+  return structuredClone(prepareTaskBudgetAdmission(task, { source, attribution: { company_id: "surtec", objective_ids: [], project_ids: ["synthetic"], issue_id: null, role_id: "planner", execution_id: task.envelope.id } }).task);
+}
 
 function retainWorkflow(taskId: string | null): void {
   const at = "2026-10-04T00:00:00Z", hash = "a".repeat(64), budget = { max_tasks: 7, max_attempts: 10, max_runtime_ms: 900000, max_total_tokens: 100000 };
@@ -37,6 +58,59 @@ describe("cli seed", () => {
     delete process.env.SURTEC_STATE_DIR;
     delete process.env.SURTEC_FIXTURES_DIR;
     rmSync(root, { recursive: true, force: true });
+    expect(existsSync(root)).toBe(false); vi.unstubAllEnvs(); vi.restoreAllMocks();
+  });
+
+  it.each(["budget_admission", "budget", "reservation_id", "reservation", "intent_id", "budget_cutover", "cutover", "execution_enabled"])("rejects caller %s before preview or confirmation", async (key) => {
+    const path = join(root, "request.json"), preview = vi.fn(), confirm = vi.fn();
+    writeFileSync(path, JSON.stringify({ kind: "analysis", project: "synthetic", agent: "backend-engineer", role_id: "planner", instructions: "Synthetic request", [key]: {} }));
+    const before = readFileSync(path), inventory = readdirSync(root, { recursive: true });
+    await expect(runRecord(path, { repoRoot: root, context: { preview } as unknown as ContextService, confirm })).rejects.toThrow(/caller budget authority/);
+    expect(preview).not.toHaveBeenCalled(); expect(confirm).not.toHaveBeenCalled(); expect(readFileSync(path)).toEqual(before);
+    expect(readdirSync(root, { recursive: true })).toEqual(inventory); expect(existsSync(join(root, "state"))).toBe(false);
+  });
+  it.each([null, {}, { schema_version: 99 }, "forged"])("refuses every present budget authority in seed before any state copy: %#", (budget) => {
+    const path = join(root, "fixtures/tasks/T-1.json"), task = JSON.parse(readFileSync(path, "utf8")); task.envelope.budget_admission = budget;
+    writeFileSync(path, JSON.stringify(task)); const before = readFileSync(path);
+    expect(() => runSeed()).toThrow(/cannot import budget authority/); expect(readFileSync(path)).toEqual(before); expect(existsSync(join(root, "state"))).toBe(false);
+  });
+  it("refuses even valid terminal BudgetAdmission v1 fixture import rather than manufacturing budget authority", () => {
+    const task = syntheticBoundTask(); task.lifecycle = "finished"; task.outcome = "completed"; task.finished_at = task.updated_at;
+    expect(validateTaskRecord(task)).toBe(true);
+    const path = join(root, "fixtures/tasks/T-budget-fixture.json"); writeFileSync(path, JSON.stringify(task)); const before = readFileSync(path);
+    expect(() => runSeed()).toThrow(/cannot import budget authority/); expect(readFileSync(path)).toEqual(before); expect(existsSync(join(root, "state"))).toBe(false);
+  });
+  it("inspects legacy history as P-only blocked readiness without backfill or environment activation", () => {
+    runSeed(); const path = join(root, "state/tasks/T-1.json"), before = readFileSync(path), inventory = readdirSync(join(root, "state"), { recursive: true });
+    vi.stubEnv("SURTEC_BUDGET_CUTOVER", "1"); vi.stubEnv("SURTEC_BUDGET_ENABLED", "true");
+    expect(runBudgetReadiness("T-1")).toMatchObject({ phase: "scaffold", executable: false, status: "historical", reason: "budget-admission-required" });
+    expect(readFileSync(path)).toEqual(before); expect(readdirSync(join(root, "state"), { recursive: true })).toEqual(inventory);
+    expect(JSON.parse(before.toString()).envelope).not.toHaveProperty("budget_admission"); expect(existsSync(join(root, "state/budgets"))).toBe(false);
+  });
+  it("inspects valid synthetic bound data without reserving or activating P", () => {
+    const task = syntheticBoundTask(), path = join(root, `state/tasks/${task.envelope.id}.json`); mkdirSync(join(root, "state/tasks"), { recursive: true }); writeFileSync(path, JSON.stringify(task));
+    const before = readFileSync(path), inventory = readdirSync(join(root, "state"), { recursive: true });
+    const diagnostic = runBudgetReadiness(task.envelope.id); expect(diagnostic).toMatchObject({ phase: "scaffold", executable: false, status: "bound", reason: "budget-cutover-unavailable" });
+    expect(Object.isFrozen(diagnostic)).toBe(true); expect(readFileSync(path)).toEqual(before); expect(readdirSync(join(root, "state"), { recursive: true })).toEqual(inventory);
+  });
+  it("exposes the actual read-only CLI command and rejects caller cutover flags before state effects", () => {
+    runSeed(); const path = join(root, "state/tasks/T-1.json"), bytes = readFileSync(path), inventory = readdirSync(join(root, "state"), { recursive: true });
+    const env: NodeJS.ProcessEnv = { SURTEC_STATE_DIR: join(root, "state"), SURTEC_FIXTURES_DIR: join(root, "fixtures"), SURTEC_BUDGET_CUTOVER: "1" };
+    for (const key of ["SystemRoot", "WINDIR", "TEMP", "TMP", "PATH"]) if (process.env[key] !== undefined) env[key] = process.env[key];
+    const invoke = (...args: string[]) => spawnSync(process.execPath, [resolve("node_modules/tsx/dist/cli.mjs"), resolve("cli/surtec-state.ts"), ...args], { cwd: root, env, encoding: "utf8", timeout: 15000, maxBuffer: 32768, windowsHide: true });
+    const actual = invoke("budget-readiness", "T-1"); expect(actual.error).toBeUndefined(); expect(actual.status).toBe(0);
+    expect(JSON.parse(actual.stdout)).toMatchObject({ phase: "scaffold", executable: false, status: "historical", reason: "budget-admission-required" });
+    for (const args of [["budget-readiness", "T-1", "--cutover", "1"], ["record", "--from", join(root, "missing.json"), "--budget-cutover", "1"], ["seed", "--cutover", "1"], ["set-status", "T-1", "finished", "--result", join(root, "missing.json"), "--cutover", "1"], ["seed", "--__proto__", "injected"], ["record", "--from", "first.json", "--from", "second.json"], ["budget-readiness", "T-1", "--cutover"]]) {
+      const denied = invoke(...args); expect(denied.error).toBeUndefined(); expect(denied.status).toBe(1); expect(denied.stdout).toBe(""); expect(denied.stderr).toContain("State command failed"); expect(denied.stderr).not.toContain(root);
+    }
+    expect(readFileSync(path)).toEqual(bytes); expect(readdirSync(join(root, "state"), { recursive: true })).toEqual(inventory);
+  }, 30000);
+  it.each(["missing", "malformed", "future-budget", "null-budget"])("refuses %s budget inspection with unchanged bytes and no fake readiness", (kind) => {
+    const path = join(root, "state/tasks/T-invalid.json");
+    if (kind !== "missing") { mkdirSync(join(root, "state/tasks"), { recursive: true }); const task = JSON.parse(readFileSync(join(root, "fixtures/tasks/T-1.json"), "utf8")); task.envelope.id = "T-invalid"; task.envelope.branch = "agent/T-invalid"; task.envelope.budget_admission = kind === "future-budget" ? { schema_version: 99 } : null; writeFileSync(path, kind === "malformed" ? "{" : JSON.stringify(task)); }
+    const before = existsSync(path) ? readFileSync(path) : null;
+    expect(() => runBudgetReadiness("T-invalid")).toThrow(); expect(existsSync(path) ? readFileSync(path) : null).toEqual(before);
+    expect(existsSync(join(root, "state/budgets"))).toBe(false); expect(existsSync(join(root, "state/locks"))).toBe(false);
   });
 
   it("copies fixtures into the state dir", () => {

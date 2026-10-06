@@ -9,12 +9,103 @@ import { createContextService, ContextPreviewError, type ContextService } from "
 import { contextHash } from "../../../lib/context/assemble";
 import { readWorkflowDocument } from "../../../lib/state/workflows";
 import { readIssueDocument } from "../../../lib/state/issues";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, types as nodeTypes } from "node:util";
 import { isSafeIdentifier } from "../../../lib/security/identifiers";
 import type { WorkflowContextService } from "./workflow-context-service";
+import { contextAdmissionVersion, validateTaskRecord } from "../../../lib/state/validation";
+import { resolveBudgetPolicy, type BudgetPolicySource, type ExistingBudgetConstraint } from "../../../lib/budgets/policy";
+import { budgetTaskIntentId } from "../../../lib/budgets/reservations";
+import { BUDGET_LIMITS, type BudgetAdmission, type BudgetAttribution } from "../../../lib/budgets/types";
+import { budgetAmounts } from "./budget-service";
 
 export class ValidationError extends Error {
   constructor(message: string, readonly status: 400 | 403 | 404 | 409 = 400) { super(message); }
+}
+
+function plainFields(value: unknown, allowed: string[], required: string[] = []): void {
+  if (!value || typeof value !== "object" || Array.isArray(value) || nodeTypes.isProxy(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+    || required.some((key) => !Object.hasOwn(value, key)) || Reflect.ownKeys(value).some((key) => typeof key !== "string" || !allowed.includes(key)
+      || !Object.hasOwn(Object.getOwnPropertyDescriptor(value, key)!, "value") || !Object.getOwnPropertyDescriptor(value, key)!.enumerable)) throw new ValidationError("Invalid task admission fields");
+}
+
+// Inspect before cloning/hashing: no getters, proxies or serialization hooks.
+function plainDraft(value: unknown, seen = new Set<object>(), depth = 0): void {
+  if (depth > 32) throw new ValidationError("Invalid budget admission draft", 409);
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string" && Buffer.byteLength(value) <= BUDGET_LIMITS.documentBytes) return;
+  if (typeof value === "number" && Number.isFinite(value)) return;
+  if (!value || typeof value !== "object" || nodeTypes.isProxy(value) || seen.has(value)) throw new ValidationError("Invalid budget admission draft", 409);
+  const array = Array.isArray(value), prototype = Object.getPrototypeOf(value);
+  if (!(array ? prototype === Array.prototype : prototype === Object.prototype || prototype === null)) throw new ValidationError("Invalid budget admission draft", 409);
+  const keys = Reflect.ownKeys(value), descriptors = Object.getOwnPropertyDescriptors(value);
+  if (keys.length > BUDGET_LIMITS.records + (array ? 1 : 0) || array && (value.length > BUDGET_LIMITS.records || keys.length !== value.length + 1
+    || Array.from({ length: value.length }, (_, i) => Object.hasOwn(descriptors, String(i))).some((present) => !present))) throw new ValidationError("Invalid budget admission draft", 409);
+  seen.add(value);
+  try {
+    for (const key of keys) {
+      if (array && key === "length") continue;
+      const descriptor = descriptors[key as string];
+      if (typeof key !== "string" || ["constructor", "prototype", "__proto__"].includes(key) || !descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new ValidationError("Invalid budget admission draft", 409);
+      plainDraft(descriptor.value, seen, depth + 1);
+    }
+  } finally { seen.delete(value); }
+}
+function frozen<T>(value: T): T {
+  if (value !== null && typeof value === "object") { Object.values(value).forEach(frozen); Object.freeze(value); }
+  return value;
+}
+
+/** Data-only construction for a NEW application draft, not an admission endpoint.
+ * No reads, locks, reservations, persistence, readiness capability or execution.
+ * Production must not call this until T015-T017's separately confirmed cutover.
+ * IDs name a prospective allocation; only real T003 reserve/persist/commit and
+ * current private runtime/controller/lease gates can establish its authority.
+ */
+export function prepareTaskBudgetAdmission(record: TaskRecord, options: {
+  source: BudgetPolicySource; attribution: BudgetAttribution; constraints?: ExistingBudgetConstraint[];
+}): { task: TaskRecord; admission: BudgetAdmission; phase: "scaffold"; executable: false; reserves_capacity: false } {
+  let phase: "draft" | "policy" | "intent" | "binding" = "draft";
+  try {
+    plainDraft(record); plainDraft(options); plainFields(options, ["source", "attribution", "constraints"], ["source", "attribution"]);
+    if (Buffer.byteLength(JSON.stringify(record)) > BUDGET_LIMITS.documentBytes || !validateTaskRecord(record)
+      || Object.hasOwn(record.envelope, "budget_admission") || record.lifecycle !== "queued" || record.outcome !== null || record.revision !== 1
+      || record.started_at !== null || record.finished_at !== null || record.result !== null || record.logs_path !== null
+      || record.created_at !== record.updated_at || !record.orchestration || record.orchestration.attempts !== 0 || record.orchestration.lease
+      || record.orchestration.cumulative_tokens !== 0 || record.orchestration.retry_at || record.orchestration.cancel_requested_at || record.orchestration.last_failure
+      || record.testing_evidence || record.decision || Object.keys(record.envelope.metadata).some((key) => !["created_by", "client_context_share", "issue_id", "issue_scope_revision", "issue_authorized_scope"].includes(key))) throw new Error("Not a new governed draft");
+    const envelope = record.envelope, manifest = envelope.context_manifest!, context = envelope.context_admission!;
+    const version = contextAdmissionVersion(context);
+    if (!manifest || version === "legacy") throw new Error("Missing current context binding");
+    const kind = context.schema_version === 2 ? context.stage_kind : manifest.role_id === "reviewer" ? "review" : manifest.role_id === "qa-evaluator" ? "qa" : undefined;
+    const base = budgetAmounts({ max_attempts: record.orchestration.max_attempts, max_runtime_ms: record.orchestration.max_runtime_ms, max_total_tokens: record.orchestration.max_total_tokens }, envelope.sandbox, kind);
+    const at = new Date(record.created_at).toISOString();
+    const constraints = options.constraints === undefined ? {} : { constraints: options.constraints };
+    phase = "policy";
+    const caps = resolveBudgetPolicy({ source: options.source, attribution: options.attribution, at, base_caps: base, ...constraints }).ceilings;
+    // T003 revalidates with the final immutable caps, not the pre-intersection
+    // draft. Availability is deliberately neither persisted nor hashed here.
+    const staticBinding = resolveBudgetPolicy({ source: options.source, attribution: options.attribution, at, base_caps: caps, ...constraints });
+    phase = "binding";
+    const issueId = context.schema_version === 2 ? context.issue_id : context.kind === "issue" ? context.issue_id! : null;
+    const admission: BudgetAdmission = {
+      schema_version: 1, id: `budget-admission-${envelope.id}`, subject_id: `budget-subject-${envelope.id}`, task_id: envelope.id,
+      project_id: envelope.project, role_id: manifest.role_id, agent_id: envelope.agent, issue_id: issueId,
+      scope_revision: context.schema_version === 2 ? context.scope_revision : issueId === null ? null : envelope.metadata.issue_scope_revision as number,
+      scope_fingerprint: context.schema_version === 2 ? context.scope_fingerprint : issueId === null ? null : contextHash(JSON.stringify(envelope.metadata.issue_authorized_scope)),
+      context_admission_version: version, workflow: context.schema_version === 2 ? { workflow_id: context.workflow_id, stage_id: context.stage_id, stage_generation: context.stage_generation, grant_id: context.grant_id } : null,
+      attribution: structuredClone(options.attribution), execution_mode: envelope.sandbox === "read-only" ? "read" : "write", manifest_fingerprint: manifest.fingerprint,
+      admitted_cap_fingerprint: staticBinding.cap_fingerprint, reservation_id: `budget-reservation-${envelope.id}`, intent_id: "intent-placeholder", created_at: at,
+      policy_bindings: structuredClone(staticBinding.policy_bindings), caps: structuredClone(caps),
+    };
+    phase = "intent";
+    admission.intent_id = budgetTaskIntentId(admission);
+    const task = structuredClone(record);
+    task.envelope.budget_admission = admission;
+    Object.assign(task.orchestration!, { max_attempts: caps.attempts, max_runtime_ms: caps.runtime_ms, max_total_tokens: caps.total_tokens });
+    phase = "binding";
+    if (!validateTaskRecord(task)) throw new Error("Budget draft differs from context");
+    return frozen({ task, admission, phase: "scaffold", executable: false, reserves_capacity: false });
+  } catch { throw new ValidationError(`Budget admission draft is invalid or unavailable (${phase}); no capacity was reserved and no task was persisted`, 409); }
 }
 
 export interface CreateTaskInput {
@@ -37,7 +128,9 @@ export interface TrustedIssueTaskContext {
 }
 
 export function createTask(input: CreateTaskInput, repoRoot: string = process.cwd(), trustedIssue?: TrustedIssueTaskContext, options: { context?: ContextService; source?: "dashboard" | "cli" } = {}): { id: string } {
-  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["project", "agent", "instructions", "sandbox", "self_verify", "role_id", "preview_fingerprint", "client_context_categories"].includes(key))) throw new ValidationError("Invalid task admission fields");
+  plainFields(input, ["project", "agent", "instructions", "sandbox", "self_verify", "role_id", "preview_fingerprint", "client_context_categories"], ["project", "agent", "instructions"]);
+  plainFields(options, ["context", "source"]);
+  if (options.source !== undefined && !["dashboard", "cli"].includes(options.source)) throw new ValidationError("Invalid task admission source");
   if (typeof input.project !== "string" || typeof input.agent !== "string" || typeof input.instructions !== "string" || (input.self_verify !== undefined && typeof input.self_verify !== "boolean")) throw new ValidationError("Invalid task admission field types");
   const project = String(input?.project ?? "");
   const agent = String(input?.agent ?? "");
@@ -160,9 +253,13 @@ export interface TrustedWorkflowTaskInput {
 
 // Not reachable through generic API/CLI task input. References are resolved
 // from a durable reserved intent, never a caller envelope, grant or manifest.
-// Creating a queued snapshot grants no execution: T004 still denies all v2
-// attempts and T008 must separately fence scheduler claims on committed intent.
+// Creating a queued snapshot grants no execution: current controller, committed
+// intent and lease gates remain independent. P admission is still scaffolding;
+// no budget draft or environment flag activates its production cutover here.
 export function createWorkflowTask(input: TrustedWorkflowTaskInput, repoRoot: string, options: { context: WorkflowContextService }): { id: string } {
+  try { plainFields(input, ["workflow_id", "stage_id", "expected_workflow_revision", "expected_issue_revision"], ["workflow_id", "stage_id", "expected_workflow_revision", "expected_issue_revision"]); }
+  catch { throw new ValidationError("Invalid trusted workflow task references"); }
+  plainFields(options, ["context"], ["context"]);
   if (!input || typeof input !== "object" || ![Object.prototype, null].includes(Object.getPrototypeOf(input))
     || Reflect.ownKeys(input).length !== 4 || Reflect.ownKeys(input).some((key) => typeof key !== "string" || !["workflow_id", "stage_id", "expected_workflow_revision", "expected_issue_revision"].includes(key))
     || !isSafeIdentifier(input.workflow_id) || !isSafeIdentifier(input.stage_id) || !Number.isSafeInteger(input.expected_workflow_revision) || input.expected_workflow_revision < 1

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://surtec.dev/schemas/task-envelope.schema.json",
   "title": "TaskEnvelope",
-  "description": "Named legacy unversioned task envelope with an optional strict version-1 context manifest. Absence preserves legacy history and never grants governed admission.",
+  "description": "Named legacy unversioned task envelope with optional independently strict context and BudgetAdmission v1 documents. Absence preserves historical bytes and never grants new admission or cutover authority.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -88,6 +88,9 @@
         { "$ref": "https://surtec.dev/schemas/context-admission.schema.json" },
         { "$ref": "https://surtec.dev/schemas/context-admission-v2.schema.json" }
       ]
+    },
+    "budget_admission": {
+      "$ref": "https://surtec.dev/schemas/budget-admission.schema.json"
     }
   }
 }

@@ -8,7 +8,7 @@ import { createContextService, type ContextPreview, type ContextPreviewRequest, 
 import { createTask } from "../dashboard/src/server/dispatch";
 import { createIssueService } from "../dashboard/src/server/issue-service";
 import { readTask, writeTask, withStateLock } from "../lib/state/store";
-import { validateTaskRecord } from "../lib/state/validation";
+import { taskBudgetReadiness, validateTaskRecord } from "../lib/state/validation";
 import { stateDir, fixturesDir, projectsDir } from "../lib/state/paths";
 import { assertTaskOutsideActiveWorkflow } from "../runner/task-orchestrator";
 import { readWorkflowDocument } from "../lib/state/workflows";
@@ -19,9 +19,12 @@ function now(): string {
 
 export async function runRecord(requestFile: string, options: { repoRoot?: string; context?: ContextService; confirm?: (preview: ContextPreview) => Promise<string> } = {}): Promise<string> {
   const root = options.repoRoot ?? process.cwd();
-  const context = options.context ?? createContextService(root);
   // Raw envelopes/manifests are not dispatch authority. Parsing and preview are no-effect.
   const input = JSON.parse(readFileSync(requestFile, "utf8")) as ContextPreviewRequest;
+  const keys = ["kind", "project", "agent", "role_id", "instructions", "issue_id", "expected_revision", "client_context_categories"];
+  if (!input || typeof input !== "object" || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input))
+    || Reflect.ownKeys(input).some((key) => typeof key !== "string" || !keys.includes(key))) throw new Error("Invalid context request fields; caller budget authority and cutover are not accepted");
+  const context = options.context ?? createContextService(root);
   const preview = context.preview(input);
   if (!preview.allowed) throw new Error("Context preview is blocked; no task was created");
   const confirmation = options.confirm ?? (async (current: ContextPreview) => {
@@ -35,6 +38,13 @@ export async function runRecord(requestFile: string, options: { repoRoot?: strin
   const admission = { role_id: input.role_id, preview_fingerprint: preview.fingerprint, client_context_categories: input.client_context_categories };
   if (input.kind === "issue") return createIssueService(root, { context, source: "cli" }).dispatch(input.issue_id!, input.expected_revision!, input.agent, admission).taskId;
   return createTask({ project: input.project, agent: input.agent, instructions: input.instructions!, ...admission }, root, undefined, { context, source: "cli" }).id;
+}
+
+/** Read-only P scaffold inspection; neither flags nor environment activate cutover. */
+export function runBudgetReadiness(id: string): ReturnType<typeof taskBudgetReadiness> {
+  const task = readTask(id);
+  if (!task) throw new Error("Task not found; no budget admission was invented");
+  return taskBudgetReadiness(task);
 }
 
 export function runSetStatus(id: string, status: string, resultFile?: string): string {
@@ -82,6 +92,10 @@ export function runSeed(): { tasks: number; projects: number } {
   for (const name of existsSync(source) ? readdirSync(source) : []) {
     if (!name.endsWith(".json")) continue;
     const record: unknown = JSON.parse(readFileSync(join(source, name), "utf8"));
+    if (record && typeof record === "object" && !Array.isArray(record)) {
+      const envelope = (record as { envelope?: unknown }).envelope;
+      if (envelope && typeof envelope === "object" && Object.hasOwn(envelope, "budget_admission")) throw new Error("Seed cannot import budget authority; use a fresh application-owned admission after cutover");
+    }
     if (!validateTaskRecord(record) || record.lifecycle !== "finished" || record.orchestration?.lease) throw new Error("Seed accepts only valid terminal task history; dispatch new work through confirmed context admission");
     if (record.envelope.context_admission?.schema_version === 2) throw new Error("Seed cannot import workflow authority or evidence; use its current workflow");
     assertTaskOutsideActiveWorkflow(record);
@@ -115,10 +129,14 @@ export function runSeed(): { tasks: number; projects: number } {
 }
 
 function parseFlags(args: string[]): { flags: Record<string, string>; pos: string[] } {
-  const flags: Record<string, string> = {};
+  const flags: Record<string, string> = Object.create(null);
   const pos: string[] = [];
   for (let i = 0; i < args.length; i++) {
-    if (args[i].startsWith("--")) { flags[args[i].slice(2)] = args[i + 1]; i++; }
+    if (args[i].startsWith("--")) {
+      const key = args[i].slice(2), value = args[i + 1];
+      if (!key || Object.hasOwn(flags, key) || value === undefined || value.startsWith("--")) throw new Error("Invalid, duplicate or missing state command flag");
+      flags[key] = value; i++;
+    }
     else pos.push(args[i]);
   }
   return { flags, pos };
@@ -128,23 +146,30 @@ async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2);
   const { flags, pos } = parseFlags(rest);
   switch (cmd) {
+    case "budget-readiness": {
+      if (pos.length !== 1 || Object.keys(flags).length) throw new Error("usage: surtec-state budget-readiness <task-id> (read-only; no cutover flags)");
+      console.log(JSON.stringify(runBudgetReadiness(pos[0]), null, 2));
+      break;
+    }
     case "record": {
-      if (!flags.from) throw new Error("usage: surtec-state record --from <context-request.json>");
+      if (!flags.from || pos.length || Object.keys(flags).some((key) => key !== "from")) throw new Error("usage: surtec-state record --from <context-request.json>");
       console.log(`recorded ${await runRecord(flags.from)} (queued; governed execution remains gated until integration)`);
       break;
     }
     case "set-status": {
+      if (pos.length !== 2 || Object.keys(flags).some((key) => key !== "result")) throw new Error("usage: surtec-state set-status <legacy-id> finished --result <file>");
       const lifecycle = runSetStatus(pos[0], pos[1], flags.result);
       console.log(`updated ${pos[0]} -> ${lifecycle}`);
       break;
     }
     case "seed": {
+      if (pos.length || Object.keys(flags).length) throw new Error("usage: surtec-state seed (no authority or cutover flags)");
       const { tasks, projects } = runSeed();
       console.log(`seeded ${tasks} task(s) and ${projects} project override(s) into ${stateDir()}`);
       break;
     }
     default:
-      throw new Error("usage: surtec-state <record --from <context-request.json> | set-status <legacy-id> finished --result <file> | seed>");
+      throw new Error("usage: surtec-state <record --from <context-request.json> | budget-readiness <task-id> | set-status <legacy-id> finished --result <file> | seed>");
   }
 }
 

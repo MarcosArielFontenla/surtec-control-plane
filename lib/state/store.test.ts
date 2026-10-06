@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { writeTask, readTask, listTasks, upsertProjectOverride, listProjectOverrides, updateTask, withStateLock, StateLockConflictError } from "./store";
 import type { TaskRecord } from "./types";
 import { assembleContext, contextHash } from "../context/assemble";
 import { defaultTaskOrchestration } from "./orchestration";
 import { createTestingEvidence, sealTestingEvidence } from "../context/testing-evidence";
 import type { ContextAdmissionV2 } from "../context/types";
-import { contextAdmissionVersion, validateTaskRecord } from "./validation";
+import { assertTaskBudgetAdmissionBinding, budgetAdmissionVersion, contextAdmissionVersion, taskBudgetReadiness, validateTaskRecord } from "./validation";
+import { BUDGET_DIMENSIONS, type BudgetAdmission, type BudgetLimits } from "../budgets/types";
+import { budgetTaskIntentId } from "../budgets/reservations";
 
 function makeRecord(id: string): TaskRecord {
   return {
@@ -60,6 +62,39 @@ function workflowRecord(id = "WORKFLOW-TASK", kind: ContextAdmissionV2["stage_ki
   };
   return record;
 }
+function budgetRecord(id = "BUDGET-TASK", kind: "analysis" | "issue" | "workflow" | "correction" = "analysis"): TaskRecord {
+  const record = kind === "workflow" || kind === "correction" ? workflowRecord(id, kind === "correction" ? "correction" : "review", "trivial-change") : governedRecord(id, kind === "analysis");
+  if (kind === "issue") {
+    const { fingerprint: _fingerprint, ...unsigned } = record.envelope.context_manifest!;
+    const manifest = { ...unsigned, task_kind: "implementation" }; record.envelope.task_type = "implementation";
+    record.envelope.context_manifest = { ...manifest, fingerprint: contextHash(JSON.stringify(manifest)) };
+    Object.assign(record.envelope.metadata, { issue_id: "issue-1", issue_scope_revision: 2, issue_authorized_scope: { allowed_paths: ["src/fixture.ts"], excluded_paths: ["src/private.ts"] } });
+  }
+  const manifest = record.envelope.context_manifest!;
+  if (!record.envelope.context_admission) record.envelope.context_admission = kind === "issue"
+    ? { schema_version: 1, kind: "issue", issue_id: "issue-1", issue_revision: 3, issue_status: "authorized", manifest_fingerprint: manifest.fingerprint, instructions_length: record.envelope.instructions.length, instructions_hash: contextHash(record.envelope.instructions) }
+    : { schema_version: 1, kind: "analysis", manifest_fingerprint: manifest.fingerprint, instructions_length: record.envelope.instructions.length, instructions_hash: contextHash(record.envelope.instructions) };
+  const context = record.envelope.context_admission, review = kind === "workflow", writer = record.envelope.sandbox === "workspace-write";
+  const budget: BudgetAdmission = {
+    schema_version: 1, id: `budget-${id}`, subject_id: `subject-${id}`, task_id: id, project_id: record.envelope.project,
+    role_id: manifest.role_id, agent_id: record.envelope.agent, issue_id: context.issue_id ?? null,
+    scope_revision: context.schema_version === 2 ? context.scope_revision : kind === "issue" ? 2 : null,
+    scope_fingerprint: context.schema_version === 2 ? context.scope_fingerprint : kind === "issue" ? contextHash(JSON.stringify(record.envelope.metadata.issue_authorized_scope)) : null,
+    context_admission_version: context.schema_version,
+    workflow: context.schema_version === 2 ? { workflow_id: context.workflow_id, stage_id: context.stage_id, stage_generation: context.stage_generation, grant_id: context.grant_id } : null,
+    attribution: { company_id: "surtec", objective_ids: [], project_ids: [record.envelope.project], issue_id: context.issue_id ?? null, role_id: manifest.role_id, execution_id: id },
+    execution_mode: writer ? "write" : "read", manifest_fingerprint: manifest.fingerprint, admitted_cap_fingerprint: "a".repeat(64),
+    reservation_id: `reservation-${id}`, intent_id: `intent-${id}`, created_at: "2026-10-05T12:00:00.000Z",
+    policy_bindings: [{ policy_id: "company", policy_revision: 1, policy_fingerprint: "b".repeat(64), scope: { kind: "company", id: "surtec" }, period: "none", bucket: "none", limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "unconfigured" }])) as BudgetLimits }],
+    caps: { attempts: manifest.budget.max_attempts, runtime_ms: manifest.budget.max_runtime_ms, total_tokens: manifest.budget.max_total_tokens,
+      concurrent_reads: writer ? 0 : 1, concurrent_writes: writer ? 1 : 0,
+      review_attempts: review ? manifest.budget.max_attempts : 0, review_runtime_ms: review ? manifest.budget.max_runtime_ms : 0,
+      review_total_tokens: review ? manifest.budget.max_total_tokens : 0, corrections: kind === "correction" ? 1 : 0 },
+  };
+  budget.intent_id = budgetTaskIntentId(budget);
+  record.envelope.budget_admission = budget;
+  return record;
+}
 
 describe("store", () => {
   let dir: string;
@@ -71,12 +106,149 @@ describe("store", () => {
     tasks = join(dir, "tasks");
     projects = join(dir, "projects");
   });
-  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  afterEach(() => {
+    expect(dirname(resolve(dir))).toBe(resolve(tmpdir()));
+    expect(dir.split(/[\\/]/).at(-1)).toMatch(/^surtec-store-/);
+    expect(lstatSync(dir).isSymbolicLink()).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+    expect(existsSync(dir)).toBe(false);
+  });
 
   it("roundtrips a task write -> read", () => {
     const rec = makeRecord("STK-1");
     writeTask(rec, tasks);
     expect(readTask("STK-1", tasks)).toEqual(rec);
+  });
+  it.each(["analysis", "issue", "workflow", "correction"] as const)("roundtrips exact immutable BudgetAdmission v1 with %s context and no effect proof", (kind) => {
+    const record = budgetRecord("BUDGET-TASK", kind); writeTask(record, tasks);
+    const path = join(tasks, "BUDGET-TASK.json"), before = readFileSync(path);
+    expect(budgetAdmissionVersion(record.envelope.budget_admission)).toBe(1);
+    expect(readTask("BUDGET-TASK", tasks)).toEqual(record); expect(readFileSync(path)).toEqual(before);
+    const readiness = taskBudgetReadiness(record);
+    expect(readiness).toMatchObject({ phase: "scaffold", status: "bound", executable: false, reason: "budget-cutover-unavailable" });
+    expect(Object.isFrozen(readiness)).toBe(true);
+    const updated = updateTask("BUDGET-TASK", (task) => { task.orchestration!.max_runtime_ms -= 1; }, tasks)!;
+    expect(updated.envelope.budget_admission).toEqual(record.envelope.budget_admission);
+    expect(updated.envelope.context_manifest).toEqual(record.envelope.context_manifest);
+    expect(updated.envelope).not.toHaveProperty("controller_proof");
+    expect(existsSync(join(dir, "budgets"))).toBe(false);
+    expect(readFileSync(path, "utf8")).not.toContain("Synthetic policy body");
+  });
+  it.each(["legacy", "v1", "v2"] as const)("keeps %s historical task bytes readable and explicitly P-non-executable without backfill", (kind) => {
+    const record = kind === "legacy" ? makeRecord("HISTORICAL") : kind === "v1" ? budgetRecord("HISTORICAL") : workflowRecord("HISTORICAL");
+    delete record.envelope.budget_admission;
+    writeTask(record, tasks); const path = join(tasks, "HISTORICAL.json"), before = readFileSync(path);
+    const restored = readTask("HISTORICAL", tasks)!;
+    expect(taskBudgetReadiness(restored)).toMatchObject({ phase: "scaffold", status: "historical", executable: false, reason: "budget-admission-required" });
+    expect(restored.envelope).not.toHaveProperty("budget_admission"); expect(readFileSync(path)).toEqual(before);
+    expect(budgetAdmissionVersion(undefined)).toBe("legacy");
+  });
+  it.each([null, false, 0, "1", [], {}, { schema_version: 2 }, { schema_version: 99 }])("rejects present invalid budget %j before the supported legacy return and preserves raw bytes", (admission) => {
+    const original = makeRecord("LEGACY-BUDGET"); writeTask(original, tasks);
+    const path = join(tasks, "LEGACY-BUDGET.json"), before = readFileSync(path), invalid = structuredClone(original);
+    Object.assign(invalid.envelope, { budget_admission: admission });
+    expect(validateTaskRecord(invalid)).toBe(false); expect(() => taskBudgetReadiness(invalid)).toThrow();
+    expect(() => writeTask(invalid, tasks)).toThrow(/invalid task record/); expect(readFileSync(path)).toEqual(before);
+    const serialized = JSON.stringify(invalid, null, 1); writeFileSync(path, serialized);
+    expect(() => readTask("LEGACY-BUDGET", tasks)).toThrow(/invalid task record/); expect(readFileSync(path, "utf8")).toBe(serialized);
+  });
+  it.each([undefined, null, 0, "1", 2, 99])("rejects a present BudgetAdmission version %s without downgrading context v2 or rewriting its source", (version) => {
+    const record = budgetRecord("BUDGET-TASK", "workflow"); writeTask(record, tasks); const path = join(tasks, "BUDGET-TASK.json"), before = readFileSync(path);
+    const invalid = structuredClone(record); Object.assign(invalid.envelope.budget_admission!, { schema_version: version });
+    expect(() => budgetAdmissionVersion(invalid.envelope.budget_admission)).toThrow();
+    expect(() => writeTask(invalid, tasks)).toThrow(/invalid task record/); expect(readFileSync(path)).toEqual(before);
+    const serialized = JSON.stringify(invalid); writeFileSync(path, serialized);
+    expect(() => readTask("BUDGET-TASK", tasks)).toThrow(/invalid task record/); expect(readFileSync(path, "utf8")).toBe(serialized);
+    expect(invalid.envelope.context_admission!.schema_version).toBe(2);
+  });
+  it.each(["undefined", "inherited", "inherited-proxy", "getter", "hidden", "proxy", "toJSON", "nested-getter", "sparse", "array-getter", "context-getter", "task-getter"])("rejects budget %s hooks without invoking user code or replacing bytes", (kind) => {
+    const record = budgetRecord(); writeTask(record, tasks); const path = join(tasks, "BUDGET-TASK.json"), before = readFileSync(path);
+    const invalid = structuredClone(record); let invoked = 0;
+    const hook = () => { invoked++; return record.envelope.budget_admission; };
+    if (kind === "undefined") invalid.envelope.budget_admission = undefined;
+    if (kind === "inherited") { delete invalid.envelope.budget_admission; Object.setPrototypeOf(invalid.envelope, { budget_admission: record.envelope.budget_admission }); }
+    if (kind === "inherited-proxy") { delete invalid.envelope.budget_admission; Object.setPrototypeOf(invalid.envelope, new Proxy({}, { has: () => { invoked++; return false; }, get: hook })); }
+    if (kind === "getter") Object.defineProperty(invalid.envelope, "budget_admission", { get: hook, enumerable: true });
+    if (kind === "hidden") Object.defineProperty(invalid.envelope, "budget_admission", { value: record.envelope.budget_admission, enumerable: false });
+    if (kind === "proxy") invalid.envelope.budget_admission = new Proxy(record.envelope.budget_admission!, { get: () => { invoked++; return 1; } });
+    if (kind === "toJSON") Object.assign(invalid.envelope.budget_admission!, { toJSON: hook });
+    if (kind === "nested-getter") Object.defineProperty(invalid.envelope.budget_admission!.caps, "attempts", { get: () => { invoked++; return 2; }, enumerable: true });
+    if (kind === "sparse") invalid.envelope.budget_admission!.attribution.objective_ids = new Array(1) as string[];
+    if (kind === "array-getter") { invalid.envelope.budget_admission!.attribution.objective_ids = ["objective-1"]; Object.defineProperty(invalid.envelope.budget_admission!.attribution.objective_ids, "0", { get: () => { invoked++; return "objective-1"; }, enumerable: true }); }
+    if (kind === "context-getter") Object.defineProperty(invalid.envelope.context_manifest!, "fingerprint", { get: () => { invoked++; return record.envelope.context_manifest!.fingerprint; }, enumerable: true });
+    if (kind === "task-getter") Object.defineProperty(invalid, "orchestration", { get: () => { invoked++; return record.orchestration; }, enumerable: true });
+    expect(validateTaskRecord(invalid)).toBe(false); expect(() => writeTask(invalid, tasks)).toThrow(/invalid task record/);
+    expect(() => assertTaskBudgetAdmissionBinding(invalid)).toThrow(); expect(invoked).toBe(0); expect(readFileSync(path)).toEqual(before);
+  });
+  it.each(Object.keys(budgetRecord().envelope.budget_admission!))("requires own BudgetAdmission %s without schema defaults or prototype fallback", (key) => {
+    const record = budgetRecord(), binding = record.envelope.budget_admission! as unknown as Record<string, unknown>;
+    const original = binding[key]; delete binding[key];
+    expect(validateTaskRecord(record)).toBe(false); expect(() => assertTaskBudgetAdmissionBinding(record)).toThrow();
+    Object.setPrototypeOf(binding, { [key]: original });
+    expect(validateTaskRecord(record)).toBe(false); expect(() => assertTaskBudgetAdmissionBinding(record)).toThrow();
+  });
+  it.each(["admitted_cap_fingerprint", "reservation_id", "subject_id", "created_at", "id"] as const)("rejects immutable %s drift against its original full intent digest without accepting a copied ID as commitment", (field) => {
+    const record = budgetRecord(); writeTask(record, tasks); const path = join(tasks, "BUDGET-TASK.json"), before = readFileSync(path);
+    const invalid = structuredClone(record);
+    invalid.envelope.budget_admission![field] = field === "admitted_cap_fingerprint" ? "f".repeat(64) : field === "created_at" ? "2026-10-06T12:00:00.000Z" : "different-id";
+    expect(() => assertTaskBudgetAdmissionBinding(invalid)).toThrow(/intent fingerprint/);
+    expect(() => writeTask(invalid, tasks)).toThrow(/invalid task record/); expect(readFileSync(path)).toEqual(before);
+    invalid.envelope.budget_admission!.intent_id = budgetTaskIntentId(invalid.envelope.budget_admission!);
+    expect(validateTaskRecord(invalid)).toBe(true); // Data consistency is not ledger commitment or execution authority.
+    expect(taskBudgetReadiness(invalid).executable).toBe(false);
+  });
+  const invalidBudget: Array<[string, (record: TaskRecord, budget: BudgetAdmission) => void, "analysis" | "issue" | "workflow" | "correction"]> = [
+    ["task", (_task, budget) => { budget.task_id = "other-task"; }, "analysis"],
+    ["project", (_task, budget) => { budget.project_id = "other-project"; }, "analysis"],
+    ["role", (_task, budget) => { budget.role_id = "other-role"; budget.attribution.role_id = "other-role"; }, "analysis"],
+    ["agent", (_task, budget) => { budget.agent_id = "other-agent"; }, "analysis"],
+    ["manifest", (_task, budget) => { budget.manifest_fingerprint = "f".repeat(64); }, "analysis"],
+    ["context version", (_task, budget) => { budget.context_admission_version = 2; }, "analysis"],
+    ["sandbox", (_task, budget) => { budget.execution_mode = "write"; budget.caps.concurrent_reads = 0; budget.caps.concurrent_writes = 1; }, "analysis"],
+    ["missing context", (task) => { delete task.envelope.context_admission; }, "analysis"],
+    ["missing manifest", (task) => { delete task.envelope.context_manifest; }, "analysis"],
+    ["missing counters", (task) => { delete task.orchestration; }, "analysis"],
+    ["issue identity", (_task, budget) => { budget.issue_id = "other-issue"; budget.attribution.issue_id = "other-issue"; }, "issue"],
+    ["scope revision", (_task, budget) => { budget.scope_revision = 3; }, "issue"],
+    ["scope fingerprint", (_task, budget) => { budget.scope_fingerprint = "f".repeat(64); }, "issue"],
+    ["changed scope body", (task) => { task.envelope.metadata.issue_authorized_scope = { allowed_paths: ["other.ts"] }; }, "issue"],
+    ["missing scope body", (task) => { delete task.envelope.metadata.issue_authorized_scope; }, "issue"],
+    ["analysis scope", (task) => { task.envelope.metadata.issue_scope_revision = 1; }, "analysis"],
+    ["workflow identity", (_task, budget) => { budget.workflow!.workflow_id = "other-workflow"; }, "workflow"],
+    ["stage identity", (_task, budget) => { budget.workflow!.stage_id = "other-stage"; }, "workflow"],
+    ["generation", (_task, budget) => { budget.workflow!.stage_generation = 2; }, "workflow"],
+    ["grant", (_task, budget) => { budget.workflow!.grant_id = "other-grant"; }, "workflow"],
+    ["workflow scope revision", (_task, budget) => { budget.scope_revision = 3; }, "workflow"],
+    ["workflow scope fingerprint", (_task, budget) => { budget.scope_fingerprint = "f".repeat(64); }, "workflow"],
+    ["workflow issue", (_task, budget) => { budget.issue_id = "other-issue"; budget.attribution.issue_id = "other-issue"; }, "workflow"],
+    ["review labels", (_task, budget) => { budget.caps.review_attempts = 0; budget.caps.review_runtime_ms = 0; budget.caps.review_total_tokens = 0; }, "workflow"],
+    ["invented review labels", (_task, budget) => { budget.caps.review_attempts = 1; }, "analysis"],
+    ["correction labels", (_task, budget) => { budget.caps.corrections = 0; }, "correction"],
+    ["invented correction", (_task, budget) => { budget.caps.corrections = 1; }, "workflow"],
+    ["caller commitment", (_task, budget) => Object.assign(budget, { committed: true }), "analysis"],
+    ["raw instructions", (_task, budget) => Object.assign(budget, { instructions: "Synthetic forbidden body" }), "analysis"],
+  ];
+  it.each(invalidBudget)("rejects contradictory BudgetAdmission %s and preserves both valid and invalid source bytes", (_name, mutate, kind) => {
+    const record = budgetRecord("BUDGET-TASK", kind); writeTask(record, tasks); const path = join(tasks, "BUDGET-TASK.json"), before = readFileSync(path);
+    const invalid = structuredClone(record); mutate(invalid, invalid.envelope.budget_admission!);
+    try { invalid.envelope.budget_admission!.intent_id = budgetTaskIntentId(invalid.envelope.budget_admission!); } catch { /* Pure schema invalidity is independently rejected. */ }
+    expect(() => writeTask(invalid, tasks)).toThrow(/invalid task record/); expect(readFileSync(path)).toEqual(before);
+    expect(() => assertTaskBudgetAdmissionBinding(invalid)).toThrow();
+    writeFileSync(path, JSON.stringify(invalid)); const corrupt = readFileSync(path);
+    expect(() => readTask("BUDGET-TASK", tasks)).toThrow(/invalid task record/); expect(readFileSync(path)).toEqual(corrupt);
+  });
+  it.each([["attempts", "max_attempts"], ["runtime_ms", "max_runtime_ms"], ["total_tokens", "max_total_tokens"]] as const)("never expands immutable %s caps, allows current tightening and retains the original cap", (dimension, ceiling) => {
+    const record = budgetRecord(); writeTask(record, tasks); const path = join(tasks, "BUDGET-TASK.json"), before = readFileSync(path);
+    const invalid = structuredClone(record); invalid.envelope.budget_admission!.caps[dimension] += 1;
+    invalid.envelope.budget_admission!.intent_id = budgetTaskIntentId(invalid.envelope.budget_admission!);
+    expect(() => writeTask(invalid, tasks)).toThrow(/invalid task record/); expect(readFileSync(path)).toEqual(before);
+    const tighter = structuredClone(record); tighter.orchestration![ceiling] -= 1;
+    writeTask(tighter, tasks); expect(readTask("BUDGET-TASK", tasks)!.envelope.budget_admission).toEqual(record.envelope.budget_admission);
+    const exceeded = structuredClone(record); exceeded.orchestration![ceiling] += 1;
+    expect(() => writeTask(exceeded, tasks)).toThrow(/invalid task record/);
+    const restricted = structuredClone(record); restricted.envelope.budget_admission!.caps[dimension] -= 1; restricted.orchestration![ceiling] -= 1;
+    restricted.envelope.budget_admission!.intent_id = budgetTaskIntentId(restricted.envelope.budget_admission!);
+    writeTask(restricted, tasks); expect(readTask("BUDGET-TASK", tasks)).toEqual(restricted);
   });
   it.each([
     ["analysis", "analysis"], ["planning", "implementation"],

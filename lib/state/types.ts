@@ -1,6 +1,7 @@
 // Canonical TS mirror of schemas/task-envelope.schema.json
 import type { Signal } from "../signals/types";
 import type { ContextAdmissionV2, ContextManifest } from "../context/types";
+import type { BudgetAdmission } from "../budgets/types";
 
 export type SandboxMode = "read-only" | "workspace-write";
 export interface ContextAdmissionV1 {
@@ -33,6 +34,9 @@ export interface TaskEnvelope {
   // Absent identifies the supported legacy envelope; reads never fabricate history.
   context_manifest?: ContextManifest;
   context_admission?: ContextAdmission;
+  // Independent immutable v1 data; absence stays readable historical state.
+  // Presence is not proof of ledger commitment or permission to execute.
+  budget_admission?: BudgetAdmission;
 }
 
 // Canonical TS mirror of schemas/agent-result.schema.json
