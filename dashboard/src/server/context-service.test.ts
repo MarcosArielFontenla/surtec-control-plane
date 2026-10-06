@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { createContextService, type ContextPreviewRequest, RUNTIME_READ_LIMITATION } from "./context-service";
+import { createContextService, type ContextPreview, type ContextPreviewRequest, RUNTIME_READ_LIMITATION } from "./context-service";
 import { createIssueService } from "./issue-service";
+import { createApp } from "./index";
 import { emptyProjectProfile } from "../../../lib/portfolio-profile";
 import type { AgentRoleRegistry, ContextConfig } from "../../../lib/context/types";
 import type { IssueDocument, WorkIssue } from "../../../lib/issues/types";
@@ -12,6 +13,11 @@ import type { HarnessSource } from "../../../lib/harness/types";
 import type { TaskRecord } from "../../../lib/state/types";
 import { createTask } from "./dispatch";
 import { readTask } from "../../../lib/state/store";
+import { readBudgetPolicy } from "../../../lib/budgets/policy";
+import { BUDGET_DIMENSIONS, type BudgetAmounts, type BudgetLedger, type BudgetLimits } from "../../../lib/budgets/types";
+import { assertBudgetLedger } from "../../../lib/budgets/validation";
+import { budgetStatePath } from "../../../lib/state/paths";
+import { contextHash } from "../../../lib/context/assemble";
 
 let root: string;
 let project: string;
@@ -23,6 +29,7 @@ beforeEach(() => {
   cpSync("registry/agents.yml", join(root, "registry/agents.yml"));
   cpSync("registry/agent-roles.yml", join(root, "registry/agent-roles.yml"));
   cpSync("registry/context-policy.yml", join(root, "registry/context-policy.yml"));
+  cpSync("registry/budget-policy.yml", join(root, "registry/budget-policy.yml"));
   const roles = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
   for (const path of new Set(roles.roles.flatMap((role) => role.required_evaluation_ids))) {
     mkdirSync(join(root, ...path.split("/").slice(0, -1)), { recursive: true }); cpSync(path, join(root, path));
@@ -39,6 +46,21 @@ function issueFixture(): WorkIssue {
   return service.authorize(issue.id, issue.revision, "synthetic-human-approval");
 }
 const issueRequest = (issue: WorkIssue): ContextPreviewRequest => ({ kind: "issue", project: "alpha", agent: "backend-engineer", role_id: "software-engineer", issue_id: issue.id, expected_revision: issue.revision });
+const budgetAt = "2026-10-06T12:00:00Z";
+const budgetAmountsFixture = (values: Partial<BudgetAmounts> = {}): BudgetAmounts => Object.assign(Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, 0])), values) as BudgetAmounts;
+function heldBudget(tokens: number, taskId = "held-task"): BudgetLedger {
+  const source = readBudgetPolicy(root), id = "budget-subject", reservation = "budget-reservation", intent = "budget-intent";
+  const value: BudgetLedger = { schema_version: 1, revision: 1, created_at: budgetAt, updated_at: budgetAt,
+    subjects: { [id]: { id, kind: "task", task_id: taskId, project_id: "alpha", role_id: "planner", agent_id: "tech-lead", issue_id: null, workflow: null,
+      attribution: { company_id: "surtec", objective_ids: [], project_ids: ["alpha"], issue_id: null, role_id: "planner", execution_id: taskId } } },
+    reservations: { [reservation]: { id: reservation, revision: 1, subject_id: id, intent_id: intent, status: "committed", policy_bindings: [{ policy_id: "surtec-default", policy_revision: 1, policy_fingerprint: source.fingerprint, scope: { kind: "company", id: "surtec" }, period: "none", bucket: "none", limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "unconfigured" }])) as BudgetLimits }], held: budgetAmountsFixture({ attempts: 1, runtime_ms: 1000, total_tokens: tokens, concurrent_reads: 1 }), uncertain_dimensions: [], run_ids: [], created_at: budgetAt, updated_at: budgetAt } },
+    admission_intents: { [intent]: { id: intent, subject_id: id, reservation_id: reservation, admission_id: "synthetic-admission", status: "committed", created_at: budgetAt, updated_at: budgetAt } }, charges: {} };
+  assertBudgetLedger(value); return value;
+}
+function configuredBudget(tokens: number): void {
+  const source = structuredClone(readBudgetPolicy(root)); source.policy.rules[0]!.limits.total_tokens = { status: "configured", hard_cap: tokens };
+  writeFileSync(join(root, "registry/budget-policy.yml"), JSON.stringify(source.policy));
+}
 
 describe("trusted no-effect context previews", () => {
   it("shares issue sources with workflow read-only roles without the v1 writer guard or verification capability", () => {
@@ -236,5 +258,100 @@ describe("trusted no-effect context previews", () => {
     time += 5 * 60_000; expect(() => service.admit(request(), preview.fingerprint)).toThrow(/expired/);
     const renewed = service.preview(request()); expect(() => service.admit(request(), renewed.fingerprint)).not.toThrow();
     expect(existsSync(state)).toBe(false);
+  });
+  it("adds a neutral informational budget preview without reserving or changing legacy instructions", () => {
+    const service = createContextService(root, { clock: () => new Date(budgetAt) }); const result = service.assemble(request()); const preview = result.preview.budget_preview!;
+    expect(preview).toMatchObject({ status: "available", can_admit: true, executable: false, reserves_capacity: false, ledger: { status: "absent", revision: null } });
+    expect(preview.binding!.attribution).toEqual({ company_id: "surtec", objective_ids: [], project_ids: ["alpha"], issue_id: null, role_id: "planner", execution_id: `preview-${contextHash(JSON.stringify(["alpha", "planner", null]))}` });
+    expect(preview.resolution!.sources.map((source) => source.id)).toEqual(["policy:surtec-default", "existing:project-alpha", "existing:role-planner", "existing:worker"]);
+    expect(result.budgetConstraints!.map((constraint) => constraint.kind)).toEqual(["worker", "role", "project"]); expect(result.preview).not.toHaveProperty("budgetConstraints");
+    expect(result.preview.allowed).toBe(true); expect(result.preview.blocked_reasons).toEqual([]); expect(result.preview.manifest).not.toHaveProperty("budget_preview");
+    expect(result.rendered).not.toContain(preview.binding!.cap_fingerprint); expect(result.rendered).not.toContain(preview.limitation);
+    expect(existsSync(state)).toBe(false); expect(service.assemble(request()).preview.fingerprint).toBe(result.preview.fingerprint);
+  });
+  it("keeps exhausted or unknown budget data informative rather than activating P admission gates", () => {
+    configuredBudget(100); const ledger = heldBudget(100); const service = createContextService(root, { readBudgetLedger: () => ledger, clock: () => new Date(budgetAt) });
+    const exhausted = service.assemble(request()); expect(exhausted.preview.budget_preview!.status).toBe("exhausted"); expect(exhausted.preview.budget_preview!.can_admit).toBe(false);
+    expect(exhausted.preview.allowed).toBe(true); expect(exhausted.preview.blocked_reasons).toEqual([]);
+    ledger.reservations["budget-reservation"]!.status = "unknown"; ledger.reservations["budget-reservation"]!.uncertain_dimensions = ["total_tokens"]; ledger.admission_intents["budget-intent"]!.status = "unknown";
+    const unknown = service.assemble(request()); expect(unknown.preview.budget_preview!.status).toBe("unavailable"); expect(unknown.preview.budget_preview!.resolution!.dimensions.total_tokens.remaining).toBeNull();
+    expect(unknown.preview.manifest).toEqual(exhausted.preview.manifest); expect(unknown.rendered).toBe(exhausted.rendered); expect(unknown.preview.allowed).toBe(true); expect(existsSync(state)).toBe(false);
+  });
+  it("keeps policy, balances, clock and rollover outside context fingerprints and rendered instructions", () => {
+    configuredBudget(100); const source = structuredClone(readBudgetPolicy(root)); source.policy.rules[0]!.period = "utc-day"; writeFileSync(join(root, "registry/budget-policy.yml"), JSON.stringify(source.policy));
+    let ledger: BudgetLedger | null = null, time = new Date(budgetAt); const service = createContextService(root, { readBudgetLedger: () => ledger, clock: () => time });
+    const first = service.assemble(request()); ledger = heldBudget(50); const held = service.assemble(request());
+    expect(held.preview.budget_preview!.resolution!.dimensions.total_tokens.remaining).toBe(50); expect(held.preview.budget_preview!.binding!.cap_fingerprint).toBe(first.preview.budget_preview!.binding!.cap_fingerprint);
+    time = new Date("2026-10-07T12:00:00Z"); configuredBudget(80); const changed = service.assemble(request());
+    expect(changed.preview.budget_preview!.binding!.policy_bindings[0]!.bucket).toBe("2026-10-07"); expect(first.preview.budget_preview!.binding!.policy_bindings[0]!.bucket).toBe("2026-10-06");
+    expect(changed.preview.budget_preview!.binding!.cap_fingerprint).not.toBe(held.preview.budget_preview!.binding!.cap_fingerprint); expect(changed.preview.budget_preview!.resolution!.dimensions.total_tokens.remaining).toBe(30);
+    for (const result of [held, changed]) { expect(result.preview.fingerprint).toBe(first.preview.fingerprint); expect(result.preview.manifest).toEqual(first.preview.manifest); expect(result.rendered).toBe(first.rendered); expect(result.preview.allowed).toBe(first.preview.allowed); expect(result.preview.blocked_reasons).toEqual(first.preview.blocked_reasons); }
+    expect(existsSync(state)).toBe(false);
+  });
+  it("never excludes an existing task's own ledger hold while revalidating its unchanged legacy context", () => {
+    configuredBudget(100); let ledger: BudgetLedger | null = null;
+    const service = createContextService(root, { readBudgetLedger: () => ledger, clock: () => new Date(budgetAt) }); const record = admittedAnalysis(service); const taskPath = join(state, "tasks", `${record.envelope.id}.json`); const bytes = readFileSync(taskPath);
+    ledger = heldBudget(100, record.envelope.id); const result = service.revalidateTask(record);
+    expect(result.preview.fingerprint).toBe(record.envelope.context_manifest!.fingerprint); expect(result.preview.allowed).toBe(true); expect(result.preview.budget_preview!.status).toBe("exhausted");
+    expect(result.preview.budget_preview!.binding!.attribution.execution_id).toBe(record.envelope.id); expect(result.preview.budget_preview!.resolution!.sources[0]!.dimensions.total_tokens.reserved).toBe(100);
+    expect(readFileSync(taskPath)).toEqual(bytes); expect(JSON.parse(bytes.toString("utf8"))).not.toHaveProperty("budget_preview"); expect(existsSync(join(state, "budgets"))).toBe(false);
+  });
+  it("preserves malformed budget bytes and sanitizes diagnostic failure without changing context or locks", () => {
+    const service = createContextService(root, { clock: () => new Date(budgetAt) }); const baseline = service.assemble(request()); const path = budgetStatePath(state); mkdirSync(join(state, "budgets"), { recursive: true });
+    const bytes = '{"schema_version":999,"private":"SYNTHETIC-PRIVATE-BUDGET"}'; writeFileSync(path, bytes); const inventory = readdirSync(state);
+    const result = service.assemble(request()); expect(result.preview.budget_preview!).toMatchObject({ status: "unavailable", can_admit: false, executable: false, reserves_capacity: false, ledger: { status: "unavailable" } });
+    expect(result.preview.budget_preview!.denials[0]!.code).toBe("budget-ledger-unavailable"); expect(JSON.stringify(result.preview)).not.toContain("SYNTHETIC-PRIVATE-BUDGET");
+    expect(result.preview.manifest).toEqual(baseline.preview.manifest); expect(result.rendered).toBe(baseline.rendered); expect(result.preview.allowed).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(bytes); expect(readdirSync(state)).toEqual(inventory); expect(existsSync(join(state, "locks"))).toBe(false);
+  });
+  it("returns sanitized unavailable for budget-only policy or attribution failures without changing legacy gates", () => {
+    const plain = createContextService(root, { clock: () => new Date(budgetAt) }).assemble(request());
+    const failed = createContextService(root, { readBudgetPolicy: () => { throw new Error(`SYNTHETIC-PRIVATE ${root}`); }, clock: () => new Date(budgetAt) }).assemble(request());
+    expect(failed.preview.budget_preview!.denials[0]!.code).toBe("budget-policy-unavailable"); expect(JSON.stringify(failed.preview)).not.toContain("SYNTHETIC-PRIVATE"); expect(failed.rendered).toBe(plain.rendered); expect(failed.preview.manifest).toEqual(plain.preview.manifest);
+    const invalidOrganization = { company: { id: "surtec", mission: null, operating_principles: [] }, objectives: [], project_objectives: {} } as never;
+    const invalid = createContextService(root, { readOrganization: () => invalidOrganization, clock: () => new Date(budgetAt) }).assemble(request());
+    expect(invalid.preview.budget_preview!.denials[0]!.code).toBe("budget-preview-unavailable"); expect(invalid.preview.budget_preview!.binding).toBeNull(); expect(invalid.preview.manifest).toEqual(plain.preview.manifest); expect(invalid.rendered).toBe(plain.rendered); expect(invalid.preview.allowed).toBe(true); expect(existsSync(state)).toBe(false);
+  });
+  it("uses global worker occupancy for both modes without hashing active task balances into cap provenance", () => {
+    const active = { lifecycle: "running", envelope: { id: "active-task", project: "other", sandbox: "workspace-write", metadata: {} } } as TaskRecord;
+    let tasks: TaskRecord[] = []; const service = createContextService(root, { readTasks: () => tasks, maxConcurrent: () => 2, clock: () => new Date(budgetAt) }); const first = service.assemble(request()).preview.budget_preview!;
+    tasks = [active]; const occupied = service.assemble(request()).preview.budget_preview!;
+    expect(occupied.resolution!.sources.find((source) => source.id === "existing:worker")!.dimensions.concurrent_reads.remaining).toBe(1);
+    expect(occupied.resolution!.sources.find((source) => source.id === "existing:worker")!.dimensions.concurrent_writes.remaining).toBe(1); expect(occupied.binding!.cap_fingerprint).toBe(first.binding!.cap_fingerprint);
+    tasks = [active, { ...active, envelope: { ...active.envelope, id: "active-read", sandbox: "read-only" } }]; const full = service.assemble(request());
+    expect(full.preview.budget_preview!.status).toBe("exhausted"); expect(full.preview.budget_preview!.binding!.cap_fingerprint).toBe(first.binding!.cap_fingerprint); expect(full.preview.allowed).toBe(false);
+    expect(existsSync(state)).toBe(false);
+  });
+  it("reflects the existing project writer exclusion without limiting read-only previews or hashing occupancy", () => {
+    const issue = issueFixture(); const inventory = readdirSync(state, { recursive: true }).sort(); const active = { lifecycle: "running", envelope: { id: "active-task", project: "other", sandbox: "workspace-write", metadata: {} } } as TaskRecord;
+    let tasks: TaskRecord[] = []; const service = createContextService(root, { readTasks: () => tasks, maxConcurrent: () => 3, clock: () => new Date(budgetAt) }); const first = service.assemble(issueRequest(issue));
+    const projectView = (preview: ContextPreview) => preview.budget_preview!.resolution!.sources.find((source) => source.id === "existing:project-alpha")!;
+    expect(projectView(first.preview).dimensions.concurrent_writes.remaining).toBe(1);
+    tasks = [active]; const other = service.assemble(issueRequest(issue)); expect(projectView(other.preview).dimensions.concurrent_writes.remaining).toBe(1); expect(other.preview.budget_preview!.status).toBe("available");
+    tasks = [{ ...active, envelope: { ...active.envelope, project: "alpha" } }]; const same = service.assemble(issueRequest(issue));
+    expect(projectView(same.preview).dimensions.concurrent_writes.remaining).toBe(0); expect(same.preview.budget_preview!.status).toBe("exhausted"); expect(same.preview.allowed).toBe(false);
+    expect(same.preview.budget_preview!.binding!.cap_fingerprint).toBe(first.preview.budget_preview!.binding!.cap_fingerprint); expect(other.preview.budget_preview!.binding!.cap_fingerprint).toBe(first.preview.budget_preview!.binding!.cap_fingerprint);
+    const read = service.assemble(request()); expect(projectView(read.preview).dimensions.concurrent_writes.remaining).toBe(0); expect(read.preview.budget_preview!.status).toBe("available"); expect(read.preview.allowed).toBe(true);
+    tasks = [{ ...active, envelope: { ...active.envelope, project: "alpha", sandbox: "read-only" } }]; const reader = service.assemble(issueRequest(issue));
+    expect(projectView(reader.preview).dimensions.concurrent_writes.remaining).toBe(1); expect(reader.preview.budget_preview!.status).toBe("available"); expect(reader.preview.allowed).toBe(true);
+    expect(existsSync(join(state, "tasks"))).toBe(false); expect(existsSync(join(state, "budgets"))).toBe(false); expect(readdirSync(state, { recursive: true }).sort()).toEqual(inventory);
+  });
+  it.each(["absent", "present"] as const)("returns additive informational budget data through protected HTTP with %s ledger and no effects", async (ledgerStatus) => {
+    configuredBudget(100); const path = budgetStatePath(state);
+    if (ledgerStatus === "present") { mkdirSync(join(state, "budgets"), { recursive: true }); writeFileSync(path, JSON.stringify(heldBudget(50))); }
+    const bytes = ledgerStatus === "present" ? readFileSync(path) : null;
+    const inventory = existsSync(state) ? readdirSync(state, { recursive: true }).sort() : [];
+    const service = createContextService(root, { clock: () => new Date(budgetAt) }); const preview = vi.spyOn(service, "preview"); const dispatch = vi.fn(); const app = createApp(root, dispatch, undefined, undefined, { context: service });
+    const init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request()) };
+    const denied = await app.request("/api/context/preview", init); expect(denied.status).toBe(403); expect(preview).not.toHaveBeenCalled();
+    const session = await app.request("/api/session"); const { token } = await session.json() as { token: string };
+    const response = await app.request("/api/context/preview", { ...init, headers: { ...init.headers, "X-Surtec-Session": token } }); const payload = await response.json() as ContextPreview;
+    expect(response.status).toBe(200); expect(response.headers.get("Cache-Control")).toBe("no-store"); expect(preview).toHaveBeenCalledTimes(1);
+    expect(payload.budget_preview).toMatchObject({ executable: false, reserves_capacity: false, ledger: { status: ledgerStatus === "present" ? "available" : "absent" }, status: ledgerStatus === "present" ? "exhausted" : "available" });
+    expect(payload.budget_preview!.resolution!.dimensions.total_tokens.remaining).toBe(ledgerStatus === "present" ? 50 : 100); expect(payload.allowed).toBe(true); expect(payload.blocked_reasons).toEqual([]);
+    expect(payload.manifest).not.toHaveProperty("budget_preview"); expect(payload).not.toHaveProperty("budgetConstraints"); expect(dispatch).not.toHaveBeenCalled();
+    if (bytes) expect(readFileSync(path)).toEqual(bytes); else expect(existsSync(state)).toBe(false);
+    expect(existsSync(state) ? readdirSync(state, { recursive: true }).sort() : []).toEqual(inventory);
+    for (const directory of ["tasks", "locks", "workflows", "backups"]) expect(existsSync(join(state, directory))).toBe(false);
   });
 });

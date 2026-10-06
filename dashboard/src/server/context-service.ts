@@ -21,6 +21,9 @@ import { loadHarnessSource, readContained } from "../../../lib/harness/source";
 import type { HarnessSource } from "../../../lib/harness/types";
 import { createClientPortfolioService, type ClientTaskContext } from "./client-portfolio-service";
 import type { WorkflowStageKind } from "../../../lib/workflows/types";
+import { resolveTaskBudgetAttribution, type ExistingBudgetConstraint } from "../../../lib/budgets/policy";
+import { BUDGET_DIMENSIONS, type BudgetLimits } from "../../../lib/budgets/types";
+import { budgetAmounts, createBudgetService, existingBudgetConstraint, previewBudgetExecutionId, unavailableBudgetPreview, type BudgetPreview, type BudgetServiceDependencies } from "./budget-service";
 
 export const RUNTIME_READ_LIMITATION = "Application-selected project sources are contained and bounded. Subsequent agent filesystem reads are not guaranteed project-only. The existing sandbox, network and approval controls remain in force.";
 const CLIENT_CATEGORIES = ["client-identity", "project-outcome", "active-commitments", "service-context", "confidential-notes"] as const;
@@ -44,9 +47,13 @@ export interface ContextPreview {
   blocked_reasons: string[];
   runtime_read_limitation: string;
   manifest: ContextManifest;
+  // Informational only; independent from instructions, context and live authority.
+  budget_preview?: BudgetPreview;
 }
 export interface AdmittedContext {
   testingPlan: TestingPlan;
+  // Server-only diagnostic constraints; never instruction or admission sources.
+  budgetConstraints?: ExistingBudgetConstraint[];
   // Workflow read-only roles inspect captured requirements, not run commands.
   requiredTestingPlan?: TestingPlan;
   request: ContextPreviewRequest;
@@ -55,7 +62,7 @@ export interface AdmittedContext {
   clientContext: ClientTaskContext | null;
   issue: WorkIssue | null;
 }
-export interface ContextServiceDependencies {
+export interface ContextServiceDependencies extends BudgetServiceDependencies {
   policy?: PolicyService;
   readConfig?: () => ContextConfig;
   readProfiles?: () => ProjectProfile[];
@@ -66,7 +73,6 @@ export interface ContextServiceDependencies {
   currentBudget?: () => ExecutionBudget;
   maxConcurrent?: () => number;
   readHarnessSource?: () => HarnessSource;
-  clock?: () => Date;
 }
 
 // The ordinary profile reader migrates v1 and acquires a file lock. Preview must do neither.
@@ -131,6 +137,7 @@ export function createContextService(repoRoot: string, dependencies: ContextServ
   const issues = dependencies.readIssues ?? readIssueDocument;
   const tasks = dependencies.readTasks ?? listTasks;
   const config = dependencies.readConfig ?? (() => readContextConfig(repoRoot));
+  const budgetService = createBudgetService(repoRoot, dependencies);
   const issuedPreviews = new Map<string, number>();
   const now = () => (dependencies.clock?.() ?? new Date()).getTime();
   const PREVIEW_TTL_MS = 5 * 60_000;
@@ -198,10 +205,11 @@ export function createContextService(repoRoot: string, dependencies: ContextServ
     const roleBudget = restrictBudget(currentBudget, currentConfig.budgets[allowed.role.default_budget_policy_id]!);
     const budget = workflow?.budget ? restrictBudget(roleBudget, workflow.budget) : roleBudget;
     const active = existingTasks.filter((task) => task.lifecycle === "running");
+    const capacity = dependencies.maxConcurrent?.() ?? workerCapacity();
     const routing = routeWork({ sandbox, workScale: issue?.work_scale ?? "trivial", criticality: workflow && profile?.criticality === "high" ? "high" : issue?.criticality ?? profile?.criticality ?? "low", securityImpact: issue?.classification_inputs.security_impact ?? false,
       requiresMigration: issue?.classification_inputs.requires_migration ?? false, affectedDomains: issue?.classification_inputs.affected_domains ?? [], allowedPathPatterns: issue?.authorized_scope.allowed_path_patterns ?? [], roleId: request.role_id,
       minimumReview: testing.minimum_review_depth, testingMode: testing.mode, authorizationCurrent: blocked.length === 0, requiredContextValid: true, budgetRemaining: budget.max_attempts > 0 && budget.max_runtime_ms > 0 && budget.max_total_tokens > 0,
-      availableConcurrency: Math.max(0, (dependencies.maxConcurrent?.() ?? workerCapacity()) - active.length), activeProjectWriter: active.some((task) => task.envelope.project === request.project && task.envelope.sandbox === "workspace-write"), independentAcceptance: !!issue?.acceptance_criteria.length, isolationBenefit: "none" });
+      availableConcurrency: Math.max(0, capacity - active.length), activeProjectWriter: active.some((task) => task.envelope.project === request.project && task.envelope.sandbox === "workspace-write"), independentAcceptance: !!issue?.acceptance_criteria.length, isolationBenefit: "none" });
     if (routing.action === "needs-decision") blocked.push("Current execution capacity, budget or authorization requires a new decision");
     if (workflow) routing.delegation = { admitted: false, executable: false, reasons: ["Workflow context grants no delegated execution; only the separately admitted finite controller may chain permitted roles."] };
     const selected = readProjectContext(allowed.project.repo_path!, { roleId: request.role_id, taskKind, affectedDomains: issue?.classification_inputs.affected_domains ?? [], routes: currentConfig.routes, requiredSkillIds: allowed.role.required_skill_ids, harnessTaskClasses: harnessClasses(issue) });
@@ -248,7 +256,31 @@ export function createContextService(repoRoot: string, dependencies: ContextServ
     const result = assembleContext({ schema_version: 1, project_id: request.project, role_id: request.role_id, agent_id: request.agent, task_kind: taskKind, sandbox, tools: allowed.tools, approval_rules: allowed.role.approval_rules, budget,
       limits: currentConfig.limits, excluded_categories: CLIENT_CATEGORIES.filter((category) => !categories.includes(category)), selected_categories: categories, omitted_sources: [...new Set(omitted)].sort(), routing, testing }, sources);
     const requiredTestingPlan = resolveTestingPlan(currentConfig, testing);
-    return { request, issue, clientContext, ...(workflow ? { requiredTestingPlan } : {}), testingPlan: workflow && sandbox === "read-only" ? { mode: testing.mode, runners: [] } : requiredTestingPlan, rendered: result.rendered, preview: { schema_version: 1, fingerprint: result.manifest.fingerprint, allowed: blocked.length === 0, blocked_reasons: [...new Set(blocked)], runtime_read_limitation: RUNTIME_READ_LIMITATION, manifest: result.manifest } };
+    // Phase P previews are additive data. Do not feed policy, balances or time
+    // into legacy routing, instruction sources, context fingerprints or gates.
+    let budgetPreview: BudgetPreview;
+    let budgetConstraints: ExistingBudgetConstraint[] | undefined;
+    try {
+      const stageKind = workflow?.kind ?? (request.role_id === "reviewer" ? "review" : request.role_id === "qa-evaluator" ? "qa" : undefined);
+      const caps = budgetAmounts(budget, sandbox, stageKind);
+      const workerBudget = { max_attempts: currentBudget.max_attempts, max_runtime_ms: currentBudget.max_runtime_ms, max_total_tokens: currentBudget.max_total_tokens };
+      const workerCaps = { ...budgetAmounts(workerBudget, sandbox, stageKind), concurrent_reads: capacity, concurrent_writes: capacity };
+      const free = Math.max(0, capacity - active.length);
+      const roleSource = currentConfig.budgets[allowed.role.default_budget_policy_id]!;
+      const attribution = resolveTaskBudgetAttribution({ organization: org, project_id: request.project,
+        issue: issue ? { id: issue.id, project_id: issue.project_id, objective_id: issue.objective_id } : null,
+        role_id: request.role_id, execution_id: execution?.envelope.id ?? previewBudgetExecutionId(request.project, request.role_id, issue?.id ?? null) });
+      budgetConstraints = [
+        existingBudgetConstraint({ id: "worker", kind: "worker", revision: 1, fingerprint: contextHash(JSON.stringify({ budget: workerBudget, capacity })), caps: workerCaps, availability: { concurrent_reads: free, concurrent_writes: free } }),
+        existingBudgetConstraint({ id: `role-${request.role_id}`, kind: "role", revision: currentConfig.schema_version, fingerprint: contextHash(JSON.stringify({ role: allowed.role, budget: roleSource })), caps: budgetAmounts(roleSource, sandbox, stageKind) }),
+        { id: `project-${request.project}`, kind: "project", revision: 1,
+          fingerprint: contextHash(JSON.stringify({ project_id: allowed.project.id, repository_identity: contextHash(allowed.project.repo_path!), concurrent_writes: 1 })),
+          limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, dimension === "concurrent_writes" ? { status: "configured", hard_cap: 1 } : { status: "unconfigured" }])) as BudgetLimits,
+          availability: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "known", remaining: dimension === "concurrent_writes" && !active.some((task) => task.envelope.project === request.project && task.envelope.sandbox === "workspace-write") ? 1 : 0 }])) as ExistingBudgetConstraint["availability"] },
+      ];
+      budgetPreview = budgetService.preview({ attribution, base_caps: caps, constraints: budgetConstraints });
+    } catch { budgetPreview = unavailableBudgetPreview(); }
+    return { request, issue, clientContext, ...(budgetConstraints ? { budgetConstraints } : {}), ...(workflow ? { requiredTestingPlan } : {}), testingPlan: workflow && sandbox === "read-only" ? { mode: testing.mode, runners: [] } : requiredTestingPlan, rendered: result.rendered, preview: { schema_version: 1, fingerprint: result.manifest.fingerprint, allowed: blocked.length === 0, blocked_reasons: [...new Set(blocked)], runtime_read_limitation: RUNTIME_READ_LIMITATION, manifest: result.manifest, budget_preview: budgetPreview } };
   }
   const assemble = (value: unknown, execution?: TaskRecord): AdmittedContext => assembleShared(value, execution);
   return {

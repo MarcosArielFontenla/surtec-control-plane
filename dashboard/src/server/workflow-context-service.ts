@@ -15,8 +15,9 @@ import { readWorkflowPolicy, resolveWorkflowBudget, resolveWorkflowCorrection, r
 import { resolveWorkflowReviewPolicy } from "../../../lib/workflows/review-policy";
 import { resolveWorkflowAssignments, resolveWorkflowTemplate, type TemplateSelection } from "../../../lib/workflows/templates";
 import { assertWorkflowDocument, assertWorkflowPolicy } from "../../../lib/workflows/validation";
-import { WORKFLOW_ROLES, WORKFLOW_TEMPLATES, type WorkflowBudget, type WorkflowCandidateBinding, type WorkflowDocument, type WorkflowPolicy, type WorkflowRoleId, type WorkflowStageKind } from "../../../lib/workflows/types";
+import { WORKFLOW_ROLES, WORKFLOW_TEMPLATES, type GovernedWorkflow, type WorkflowBudget, type WorkflowCandidateBinding, type WorkflowCorrection, type WorkflowDocument, type WorkflowPolicy, type WorkflowRoleId, type WorkflowStageKind } from "../../../lib/workflows/types";
 import { createContextService, ContextPreviewError, type AdmittedContext, type ContextServiceDependencies } from "./context-service";
+import { budgetAmounts, createBudgetService, existingBudgetConstraint, unavailableBudgetPreview, type BudgetPreview } from "./budget-service";
 import { pathsOutsideScope } from "./issue-service";
 
 const CATEGORIES = ["client-identity", "project-outcome", "active-commitments", "service-context", "confidential-notes"] as const;
@@ -81,6 +82,7 @@ export function createWorkflowContextService(repoRoot: string, dependencies: Wor
   const readIssues = dependencies.readIssues ?? readIssueDocument;
   const readWorkflows = dependencies.readWorkflows ?? readWorkflowDocument;
   const taskReader = dependencies.readTask ?? readTask;
+  const budgetService = createBudgetService(repoRoot, dependencies);
   const clock = () => (dependencies.clock?.() ?? new Date()).getTime();
   const issued = new Map<string, number>();
   function snapshots() {
@@ -88,6 +90,56 @@ export function createWorkflowContextService(repoRoot: string, dependencies: Wor
     requireCurrent(validateIssueDocument(issues), "Issue state is invalid; no preview or repair was performed"); assertWorkflowDocument(workflows);
     requireCurrent([issues.issues, issues.candidates, issues.evidence].every((records) => Object.entries(records).every(([id, entry]) => id === entry.id)), "Issue state contains inconsistent record identities");
     return { issues, workflows };
+  }
+  function workflowBudgetPreview(input: {
+    context: AdmittedContext; kind: WorkflowStageKind; document: WorkflowDocument; budget: WorkflowBudget;
+    correction: WorkflowCorrection; policy_fingerprint: string; workflow?: GovernedWorkflow; correction_branch?: boolean; root_stage_count?: number; execution_id?: string;
+  }): BudgetPreview {
+    const rolePreview = input.context.preview.budget_preview;
+    if (!rolePreview?.binding) return rolePreview ?? unavailableBudgetPreview();
+    try {
+      const manifest = input.context.preview.manifest, owner = input.workflow;
+      const caps = (budget: WorkflowBudget) => ({ ...budgetAmounts({ max_attempts: budget.max_attempts, max_runtime_ms: budget.max_runtime_ms, max_total_tokens: budget.max_total_tokens }, manifest.sandbox, input.kind), corrections: input.correction.enabled ? 1 : 0 });
+      const remaining = (cap: number, values: number[]): number | null => {
+        const used = values.reduce((sum, value) => sum + value, 0);
+        return Number.isSafeInteger(used) && used >= 0 ? Math.max(0, cap - used) : null;
+      };
+      const charges = owner ? Object.values(input.document.accounting).filter((entry) => entry.workflow_id === owner.id) : [];
+      const reviews = charges.filter((entry) => ["review", "qa"].includes(input.document.stages[entry.stage_id]!.kind));
+      const isReview = input.kind === "review" || input.kind === "qa";
+      const lineage = owner?.lineage_id ? input.document.lineages[owner.lineage_id]! : null;
+      const available = (budget: WorkflowBudget, selected: typeof charges, known: boolean) => ({
+        attempts: known ? remaining(budget.max_attempts, selected.map(() => 1)) : null,
+        runtime_ms: known ? remaining(budget.max_runtime_ms, selected.map((entry) => entry.active_runtime_ms)) : null,
+        total_tokens: known ? remaining(budget.max_total_tokens, selected.map((entry) => entry.observed_tokens)) : null,
+        review_attempts: !isReview ? 0 : known ? remaining(budget.max_attempts, selected.filter((entry) => reviews.includes(entry)).map(() => 1)) : null,
+        review_runtime_ms: !isReview ? 0 : known ? remaining(budget.max_runtime_ms, selected.filter((entry) => reviews.includes(entry)).map((entry) => entry.active_runtime_ms)) : null,
+        review_total_tokens: !isReview ? 0 : known ? remaining(budget.max_total_tokens, selected.filter((entry) => reviews.includes(entry)).map((entry) => entry.observed_tokens)) : null,
+        corrections: input.correction.enabled ? Math.max(0, 1 - (lineage?.corrections_consumed ?? 0)) : 0,
+      });
+      // Static source identity is separate from counters. These views neither
+      // allocate a root plus each child nor exclude a task's own budget hold.
+      // max_tasks remains the separate normative finite-plan/stage gate above;
+      // tasks and attempts are not interchangeable resource dimensions.
+      const rootAvailability = owner ? { ...available(input.budget, charges, owner.counters.accounting_complete),
+        attempts: owner.counters.accounting_complete ? remaining(input.budget.max_attempts, [owner.counters.attempts]) : null,
+        runtime_ms: owner.counters.accounting_complete ? remaining(input.budget.max_runtime_ms, [owner.counters.runtime_ms]) : null,
+        total_tokens: owner.counters.accounting_complete ? remaining(input.budget.max_total_tokens, [owner.counters.total_tokens]) : null } : undefined;
+      const constraints = [...(input.context.budgetConstraints ?? []), existingBudgetConstraint({ id: owner ? `workflow-${owner.id}` : "workflow-preview", kind: "workflow", revision: owner?.authority_revision ?? 1,
+        fingerprint: input.policy_fingerprint, caps: caps(input.budget), ...(rootAvailability ? { availability: rootAvailability } : {}) })];
+      if (input.correction_branch && input.correction.enabled && input.correction.budget && owner) {
+        const branch = charges.filter((entry) => input.document.stages[entry.stage_id]!.ordinal > input.root_stage_count!);
+        constraints.push(existingBudgetConstraint({ id: `correction-${owner.id}`, kind: "correction", revision: owner.authority_revision,
+          fingerprint: hash({ correction: input.correction, policy_fingerprint: input.policy_fingerprint }), caps: caps(input.correction.budget),
+          availability: available(input.correction.budget, branch, owner.counters.accounting_complete && branch.every((entry) => entry.usage_complete)) }));
+      }
+      // Future role previews retain their clearly marked provisional identity.
+      // Only a validated owned stage supplies its actual server task identity;
+      // this exact scope projection still grants no self-exclusion or authority.
+      const attribution = { ...rolePreview.binding.attribution, ...(input.execution_id === undefined ? {} : { execution_id: input.execution_id }) };
+      return budgetService.preview({ attribution, base_caps: budgetAmounts(manifest.budget, manifest.sandbox, input.kind), constraints,
+        correction_lineages: Object.values(input.document.lineages).map(({ id, project_id, issue_id, workflow_ids }) => ({ id, project_id, issue_id, workflow_ids })) });
+    } catch { return unavailableBudgetPreview(); }
   }
   // Captured reference only: no Git, worktree, verification, provider or model
   // effects here. T007 must separately prove the actual managed candidate tree.
@@ -179,7 +231,13 @@ export function createWorkflowContextService(repoRoot: string, dependencies: Wor
       candidate_reference_limitation: "Captured candidate references are checked here; managed Git tree identity, cleanliness and lease guards remain a separate runtime requirement." };
     // Bind the unredacted internal policy as well as the body-free projection.
     const fingerprint = hash({ preview: unsigned, manifests: manifests.map((entry) => entry.manifest.fingerprint) });
-    return { request, issue: issue!, contexts, preview: { ...unsigned, fingerprint }, grantContext, selection, context, issues, workflows };
+    // Mutable diagnostics are intentionally appended AFTER the historical
+    // instruction/grant hash. T005's independent admission must bind budgets;
+    // these advisory reads cannot change existing Phase O authority or gates.
+    const budget_previews = assignments.map((entry) => ({ role_id: entry.role_id, preview: contexts[entry.role_id]!.preview.budget_preview ?? unavailableBudgetPreview(),
+      workflow_preview: workflowBudgetPreview({ context: contexts[entry.role_id]!, kind: request.template_id === "analysis" && entry.role_id === "planner" ? "analysis" : ROLE_KIND[entry.role_id],
+        document: workflows, budget, correction, policy_fingerprint, ...(ownWorkflowId ? { workflow: workflows.workflows[ownWorkflowId]! } : {}) }) }));
+    return { request, issue: issue!, contexts, preview: { ...unsigned, fingerprint, budget_previews }, grantContext, selection, context, issues, workflows };
   }
   function assembleStage(value: unknown, execution?: TaskRecord, preparationTaskId?: string) {
     const input = object(value, ["workflow_id", "stage_id", "expected_issue_revision"], ["workflow_id", "stage_id", "expected_issue_revision"]);
@@ -283,10 +341,12 @@ export function createWorkflowContextService(repoRoot: string, dependencies: Wor
       template_version: 1, grant_id: grant.id, authority_revision: grant.authority_revision, role_id: stage!.role_id, issue_id: current.issue.id, issue_revision: current.issue.revision, scope_revision: current.issue.scope_revision,
       scope_fingerprint: hash(current.issue.authorized_scope), approved_plan: workflow!.approved_plan, predecessor_stage_id: stage!.predecessor_stage_id, handoff_id: stage!.handoff_id, candidate: stage!.candidate,
       manifest_fingerprint: assembled.preview.fingerprint, instructions_length: instructions.length, instructions_hash: contextHash(instructions) };
-    return { ...assembled, instructions, binding };
+    const workflow_budget_preview = workflowBudgetPreview({ context: assembled, kind: stage!.kind, document, budget: grant.budget, correction: grant.correction,
+      policy_fingerprint: grant.policy_fingerprint, workflow: workflow!, correction_branch: stage!.ordinal > current.preview.plan.stages.length, root_stage_count: current.preview.plan.stages.length, execution_id: stage!.task_id! });
+    return { ...assembled, instructions, binding, workflow_budget_preview };
   }
   return {
-    preview(value: unknown) {
+    preview(value: unknown): Omit<ReturnType<typeof resolve>["preview"], "budget_previews"> & { budget_previews?: ReturnType<typeof resolve>["preview"]["budget_previews"] } {
       const result = resolve(value), now = clock();
       for (const [id, expires] of issued) if (expires <= now) issued.delete(id);
       if (result.preview.allowed) { issued.delete(result.preview.fingerprint); if (issued.size >= 256) issued.delete(issued.keys().next().value!); issued.set(result.preview.fingerprint, now + 300_000); }

@@ -19,6 +19,10 @@ import { emptyProjectProfile } from "../../../lib/portfolio-profile";
 import { contextHash } from "../../../lib/context/assemble";
 import { PolicyService } from "../../../lib/policy/service";
 import { loadHarnessSource } from "../../../lib/harness/source";
+import { BUDGET_DIMENSIONS, type BudgetAmounts, type BudgetLedger, type BudgetPolicy } from "../../../lib/budgets/types";
+import type { BudgetPolicySource } from "../../../lib/budgets/policy";
+import { assertBudgetLedger } from "../../../lib/budgets/validation";
+import type { BudgetPreview } from "./budget-service";
 
 const at = "2026-10-02T12:00:00.000Z";
 const issueId = "I-00000000-0000-0000-0000-000000000001";
@@ -47,7 +51,7 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false); });
 const request = (template: WorkflowPreviewRequest["template_id"] = "analysis"): WorkflowPreviewRequest => ({ template_id: template, template_version: 1, project_id: "alpha", issue_id: issue.id, expected_revision: issue.revision,
   selected_agents: Object.fromEntries((template === "analysis" ? ["portfolio-analyst"] : template === "implementation" ? ["planner", "software-engineer", "reviewer"] : template === "trivial-change" ? ["software-engineer", "reviewer"] : template === "quality-review" ? ["reviewer", "qa-evaluator"] : ["operations-observer"]).map((role) => [role, agents[role as WorkflowRoleId]])), client_context_categories: {}, correction_enabled: false, ...(template === "quality-review" ? { candidate_id: candidateId } : {}) });
-const deps = (): WorkflowContextDependencies => ({ readIssues: () => issues, readWorkflows: () => workflows, readTasks: () => Object.values(records), readTask: (id) => records[id] ?? null, readConfig: () => config });
+const deps = (): WorkflowContextDependencies => ({ readIssues: () => issues, readWorkflows: () => workflows, readTasks: () => Object.values(records), readTask: (id) => records[id] ?? null, readConfig: () => config, clock: () => new Date(at) });
 const service = (overrides: WorkflowContextDependencies = {}) => createWorkflowContextService(root, { ...deps(), ...overrides });
 function reserve(preview: WorkflowContextPreview): void {
   const grant: WorkflowGrant = { schema_version: 1, id: "grant-1", workflow_id: "workflow-1", project_id: "alpha", issue_id: issue.id, issue_revision: issue.revision, scope_revision: issue.scope_revision, authority_revision: 1,
@@ -197,6 +201,151 @@ function correctionReviewerBudget() {
   issue.status = "checking"; const pending = successor("stage-4", correction, "review"); assertWorkflowDocument(workflows);
   return { workflow, grant, correction, input: { workflow_id: workflow.id, stage_id: pending.id, expected_issue_revision: issue.revision }, charge: workflows.accounting[`${correction.id}-charge-1`]! };
 }
+
+function budgetPolicy(caps: Partial<BudgetAmounts> = {}): BudgetPolicySource {
+  const policy: BudgetPolicy = { schema_version: 1, revision: 1, pricing: { status: "unavailable", reason: "no-versioned-source" }, rules: [{
+    id: "synthetic-company", revision: 1, scope: { kind: "company", id: "surtec" }, period: "none", warning_percent: 80,
+    limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, caps[dimension] === undefined ? { status: "unconfigured" } : { status: "configured", hard_cap: caps[dimension] }])) as BudgetPolicy["rules"][number]["limits"],
+  }] };
+  return { policy, fingerprint: contextHash(JSON.stringify(policy)) };
+}
+function heldBudget(preview: BudgetPreview, taskId = "stage-task-1", review = false): BudgetLedger {
+  const binding = preview.binding!, attribution = { ...structuredClone(binding.attribution), execution_id: taskId };
+  const ledger: BudgetLedger = { schema_version: 1, revision: 1, created_at: at, updated_at: at, subjects: { "budget-subject": {
+    id: "budget-subject", kind: "task", task_id: taskId, project_id: "alpha", role_id: attribution.role_id!, agent_id: agents[attribution.role_id! as WorkflowRoleId],
+    issue_id: issue.id, workflow: { workflow_id: "workflow-1", stage_id: "stage-1", stage_generation: 1, grant_id: "grant-1" }, attribution,
+  } }, reservations: { "budget-reservation": { id: "budget-reservation", revision: 1, subject_id: "budget-subject", intent_id: "budget-intent", status: "committed",
+    policy_bindings: structuredClone(binding.policy_bindings), held: { attempts: 1, runtime_ms: 1000, total_tokens: 10000, concurrent_reads: 1, concurrent_writes: 0,
+      review_attempts: review ? 1 : 0, review_runtime_ms: review ? 1000 : 0, review_total_tokens: review ? 10000 : 0, corrections: 0 },
+    uncertain_dimensions: [], run_ids: [], created_at: at, updated_at: at } }, admission_intents: { "budget-intent": {
+    id: "budget-intent", subject_id: "budget-subject", reservation_id: "budget-reservation", admission_id: "budget-admission", status: "committed", created_at: at, updated_at: at,
+  } }, charges: {} };
+  assertBudgetLedger(ledger); return ledger;
+}
+function historicalFingerprint(preview: WorkflowContextPreview): string {
+  const { fingerprint: _fingerprint, budget_previews: _diagnostics, ...unsigned } = preview;
+  return contextHash(JSON.stringify({ preview: unsigned, manifests: Object.keys(preview.request.selected_agents).map((role) => preview.roles.find((entry) => entry.role_id === role)!.manifest.fingerprint) }));
+}
+
+describe("advisory workflow budget diagnostics", () => {
+  it.each(["analysis", "implementation", "trivial-change", "operations-investigation"] as const)("retains the exact historical %s digest with missing optional budget configuration", (template) => {
+    const preview = service().preview(request(template));
+    expect(preview.fingerprint).toBe(historicalFingerprint(preview));
+    expect(preview.budget_previews!.map((entry) => entry.role_id)).toEqual(preview.role_assignments.map((entry) => entry.role_id));
+    for (const diagnostic of preview.budget_previews!) {
+      expect(diagnostic.preview).toMatchObject({ status: "unavailable", can_admit: false, executable: false, reserves_capacity: false, binding: null });
+      expect(diagnostic.workflow_preview).toEqual(diagnostic.preview);
+    }
+    expect(preview.allowed).toBe(true); expect(existsSync(state)).toBe(false);
+  });
+  it("keeps issued context and grant hashes stable when balances, ledger revision and the clock change", () => {
+    const source = budgetPolicy({ total_tokens: 10000 }), input = request(); let ledger: BudgetLedger | null = null, time = new Date(at);
+    const svc = service({ readBudgetPolicy: () => source, readBudgetLedger: () => ledger, clock: () => time });
+    const initial = svc.preview(input), diagnostic = initial.budget_previews![0]!;
+    expect(diagnostic.preview.status).toBe("available"); expect(diagnostic.workflow_preview.resolution!.sources.some((entry) => entry.id === "existing:workflow-preview")).toBe(true);
+    ledger = heldBudget(diagnostic.preview); ledger.revision = 2; const before = JSON.stringify({ issues, workflows, records, ledger });
+    time = new Date("2026-10-02T12:01:00.000Z"); const refreshed = svc.revalidatePreview(input, initial.fingerprint).preview;
+    expect(refreshed.fingerprint).toBe(initial.fingerprint); expect(refreshed.roles).toEqual(initial.roles); expect(refreshed.source_fingerprints).toEqual(initial.source_fingerprints);
+    expect(refreshed.policy_fingerprint).toBe(initial.policy_fingerprint); expect(refreshed.testing_policy_fingerprint).toBe(initial.testing_policy_fingerprint);
+    expect(refreshed.budget_previews[0]!.preview).toMatchObject({ status: "exhausted", ledger: { status: "available", revision: 2 }, executable: false, reserves_capacity: false });
+    expect(refreshed.budget_previews[0]!.workflow_preview.status).toBe("exhausted"); expect(refreshed.budget_previews[0]!.preview.binding).toEqual(diagnostic.preview.binding);
+    expect(refreshed.budget_previews[0]!.preview.observed_at).not.toBe(diagnostic.preview.observed_at);
+    expect(refreshed.allowed).toBe(true); expect(JSON.stringify({ issues, workflows, records, ledger })).toBe(before); expect(existsSync(state)).toBe(false);
+  });
+  it("reports static budget-policy drift separately without changing instruction sources or admitting additional capabilities", () => {
+    let source = budgetPolicy({ total_tokens: 20000 }); const svc = service({ readBudgetPolicy: () => source, readBudgetLedger: () => null }), input = request(), original = svc.preview(input);
+    source = budgetPolicy({ total_tokens: 10000 }); source.policy.revision = 2; source.fingerprint = contextHash(JSON.stringify(source.policy));
+    const changed = svc.revalidatePreview(input, original.fingerprint).preview;
+    expect(changed.fingerprint).toBe(original.fingerprint); expect(changed.roles).toEqual(original.roles); expect(changed.budget).toEqual(original.budget);
+    expect(changed.budget_previews[0]!.preview.binding!.cap_fingerprint).not.toBe(original.budget_previews![0]!.preview.binding!.cap_fingerprint);
+    expect(changed.budget_previews[0]!.workflow_preview.binding!.cap_fingerprint).not.toBe(original.budget_previews![0]!.workflow_preview.binding!.cap_fingerprint);
+    expect(changed.budget_previews[0]!.preview.executable).toBe(false); expect(existsSync(state)).toBe(false);
+  });
+  it("retains worker exhaustion in the combined view even when the workflow root has capacity", () => {
+    records["other-task"] = { lifecycle: "running", envelope: { id: "other-task", project: "other-project", sandbox: "read-only", metadata: {} } } as TaskRecord;
+    const preview = service({ maxConcurrent: () => 1, readBudgetPolicy: () => budgetPolicy(), readBudgetLedger: () => null }).preview(request());
+    const resolution = preview.budget_previews![0]!.workflow_preview.resolution!;
+    expect(resolution.sources.find((entry) => entry.id === "existing:worker")!.dimensions.concurrent_reads.remaining).toBe(0);
+    expect(resolution.sources.find((entry) => entry.id === "existing:workflow-preview")!.dimensions.concurrent_reads.remaining).toBe(1);
+    expect(preview.budget_previews![0]!.workflow_preview.status).toBe("exhausted"); expect(preview.allowed).toBe(false); expect(existsSync(state)).toBe(false);
+  });
+  it("keeps worker source drift in static budget provenance while equal effective leaf caps retain the historical context", () => {
+    let capacity = 2; const svc = service({ maxConcurrent: () => capacity, readBudgetPolicy: () => budgetPolicy(), readBudgetLedger: () => null }), original = svc.preview(request());
+    capacity = 3; const changed = svc.revalidatePreview(request(), original.fingerprint).preview;
+    expect(changed.roles).toEqual(original.roles); expect(changed.fingerprint).toBe(original.fingerprint);
+    expect(changed.budget_previews[0]!.workflow_preview.binding!.ceilings).toEqual(original.budget_previews![0]!.workflow_preview.binding!.ceilings);
+    expect(changed.budget_previews[0]!.workflow_preview.binding!.cap_fingerprint).not.toBe(original.budget_previews![0]!.workflow_preview.binding!.cap_fingerprint);
+    expect(changed.budget_previews[0]!.workflow_preview.resolution!.sources.find((entry) => entry.id === "existing:worker")!.fingerprint)
+      .not.toBe(original.budget_previews![0]!.workflow_preview.resolution!.sources.find((entry) => entry.id === "existing:worker")!.fingerprint);
+    expect(existsSync(state)).toBe(false);
+  });
+  it.each(["policy-error", "future-policy", "corrupt-ledger", "future-ledger"])("reports %s honestly without disrupting historical context issuance or leaking source errors", (failure) => {
+    const source = budgetPolicy(), ledger: BudgetLedger = { schema_version: 1, revision: 1, created_at: at, updated_at: at, subjects: {}, reservations: {}, admission_intents: {}, charges: {} };
+    const svc = service({ readBudgetPolicy: () => { if (failure === "policy-error") throw new Error("SYNTHETIC_PRIVATE_MARKER and private path"); if (failure === "future-policy") return { ...source, policy: { ...source.policy, schema_version: 2 } as unknown as BudgetPolicy }; return source; },
+      readBudgetLedger: () => failure === "corrupt-ledger" ? { ...ledger, reservations: null } as unknown as BudgetLedger : failure === "future-ledger" ? { ...ledger, schema_version: 2 } as unknown as BudgetLedger : null });
+    const input = request(), preview = svc.preview(input), before = JSON.stringify({ issues, workflows, records, source, ledger });
+    expect(preview.allowed).toBe(true); expect(preview.fingerprint).toBe(historicalFingerprint(preview));
+    expect(preview.budget_previews![0]!.preview).toMatchObject({ status: "unavailable", can_admit: false, executable: false, reserves_capacity: false, resolution: null });
+    expect(preview.budget_previews![0]!.workflow_preview.status).toBe("unavailable"); expect(JSON.stringify(preview)).not.toContain("SYNTHETIC_PRIVATE_MARKER");
+    expect(svc.revalidatePreview(input, preview.fingerprint).preview).toEqual(preview); expect(JSON.stringify({ issues, workflows, records, source, ledger })).toBe(before); expect(existsSync(state)).toBe(false);
+  });
+  it("keeps unknown accounting unavailable instead of presenting it as complete zero", () => {
+    const source = budgetPolicy({ total_tokens: 10000 }); let ledger: BudgetLedger | null = null;
+    const svc = service({ readBudgetPolicy: () => source, readBudgetLedger: () => ledger }), initial = svc.preview(request()); ledger = heldBudget(initial.budget_previews![0]!.preview);
+    const reservation = ledger.reservations["budget-reservation"]!; reservation.status = "unknown"; reservation.uncertain_dimensions = ["total_tokens"]; reservation.run_ids = ["unknown-run"];
+    ledger.admission_intents["budget-intent"]!.status = "unknown";
+    ledger.charges["unknown-charge"] = { id: "unknown-charge", subject_id: "budget-subject", reservation_id: reservation.id, run_id: "unknown-run", attempts: 1, runtime_ms: 0,
+      observed_total_tokens: null, runtime_state: "complete", usage_state: "unknown", status: "terminal", review: false, correction: false, created_at: at, updated_at: at };
+    assertBudgetLedger(ledger); const before = JSON.stringify(ledger), changed = svc.revalidatePreview(request(), initial.fingerprint).preview;
+    expect(changed.budget_previews[0]!.preview.status).toBe("unavailable"); expect(changed.budget_previews[0]!.preview.resolution!.sources.find((entry) => entry.id === "policy:synthetic-company")!.dimensions.total_tokens.consumed).toBeNull();
+    expect(changed.fingerprint).toBe(initial.fingerprint); expect(JSON.stringify(ledger)).toBe(before); expect(existsSync(state)).toBe(false);
+  });
+  it("exposes independent Reviewer and QA overlap diagnostics without adding their resources to the canonical total", () => {
+    capturedCandidate(); const source = budgetPolicy(), preview = service({ readBudgetPolicy: () => source, readBudgetLedger: () => null }).preview(request("quality-review"));
+    expect(preview.fingerprint).toBe(historicalFingerprint(preview)); expect(preview.budget_previews!.map((entry) => entry.role_id)).toEqual(["reviewer", "qa-evaluator"]);
+    for (const entry of preview.budget_previews!) {
+      const ceilings = entry.workflow_preview.binding!.ceilings;
+      expect(ceilings.review_attempts).toBe(ceilings.attempts); expect(ceilings.review_runtime_ms).toBe(ceilings.runtime_ms); expect(ceilings.review_total_tokens).toBe(ceilings.total_tokens);
+      expect(ceilings.concurrent_reads).toBe(1); expect(ceilings.concurrent_writes).toBe(0); expect(ceilings.corrections).toBe(0);
+      expect(entry.workflow_preview).toMatchObject({ executable: false, reserves_capacity: false });
+    }
+  });
+  it("revalidates an actual retained v2 task after an own hold exhausts the new diagnostic, without exclusion or authority rewrites", () => {
+    reserve(service().preview(request())); const record = stageTask(), source = budgetPolicy({ total_tokens: 10000 }); let ledger: BudgetLedger | null = null;
+    const svc = service({ readBudgetPolicy: () => source, readBudgetLedger: () => ledger }), original = svc.revalidateTask(record);
+    ledger = heldBudget(original.preview.budget_preview!, record.envelope.id); const before = JSON.stringify({ workflows, issues, records, ledger });
+    const result = service({ readBudgetPolicy: () => source, readBudgetLedger: () => ledger }).revalidateTask(record);
+    expect(result.preview.budget_preview!.status).toBe("exhausted"); expect(result.workflow_budget_preview.status).toBe("exhausted");
+    expect(result.binding).toEqual(original.binding); expect(result.binding).toEqual(record.envelope.context_admission); expect(result.rendered).toBe(original.rendered);
+    expect(result.preview.manifest).toEqual(original.preview.manifest); expect(result.preview.allowed).toBe(true); expect(JSON.stringify({ workflows, issues, records, ledger })).toBe(before); expect(existsSync(state)).toBe(false);
+  });
+  it("applies the exact execution-scoped policy to a retained v2 task without turning diagnostics into context authority", () => {
+    reserve(service().preview(request())); const record = stageTask(), baseline = service().revalidateTask(record), source = budgetPolicy();
+    source.policy.rules.push({ ...structuredClone(source.policy.rules[0]!), id: "synthetic-exact-execution", scope: { kind: "execution", id: record.envelope.id },
+      limits: { ...structuredClone(source.policy.rules[0]!.limits), total_tokens: { status: "configured", hard_cap: 0 } } });
+    source.fingerprint = contextHash(JSON.stringify(source.policy)); const before = JSON.stringify({ workflows, issues, records, source });
+    const result = service({ readBudgetPolicy: () => source, readBudgetLedger: () => null }).revalidateTask(record);
+    expect(result.preview.budget_preview!.binding!.attribution.execution_id).toMatch(/^preview-/);
+    expect(result.preview.budget_preview!.status).toBe("available");
+    expect(result.workflow_budget_preview.binding!.attribution.execution_id).toBe(record.envelope.id);
+    expect(result.workflow_budget_preview.binding!.policy_bindings.some((entry) => entry.scope.kind === "execution" && entry.scope.id === record.envelope.id)).toBe(true);
+    expect(result.workflow_budget_preview).toMatchObject({ status: "exhausted", can_admit: false, executable: false, reserves_capacity: false });
+    expect(result.binding).toEqual(baseline.binding); expect(result.rendered).toBe(baseline.rendered); expect(result.preview.manifest).toEqual(baseline.preview.manifest);
+    expect(result.preview.allowed).toBe(true); expect(JSON.stringify({ workflows, issues, records, source })).toBe(before); expect(existsSync(state)).toBe(false);
+  });
+  it("shows root and correction counters separately while preserving the original current-stage manifest and bindings", () => {
+    const fixture = correctionReviewerBudget(), source = budgetPolicy(), before = JSON.stringify({ workflows, issues, records });
+    const prepared = service({ readBudgetPolicy: () => source, readBudgetLedger: () => null }).prepareStage(fixture.input, "budget-reviewer-task");
+    const resolution = prepared.workflow_budget_preview.resolution!, rootSource = resolution.sources.find((entry) => entry.id === "existing:workflow-workflow-1")!, branchSource = resolution.sources.find((entry) => entry.id === "existing:correction-workflow-1")!;
+    expect(rootSource.dimensions.total_tokens.consumed).toBeNull(); expect(rootSource.dimensions.review_total_tokens.consumed).toBeNull();
+    expect(rootSource.dimensions.total_tokens.remaining).toBe(fixture.grant.budget.max_total_tokens - 300); expect(rootSource.dimensions.review_total_tokens.remaining).toBe(fixture.grant.budget.max_total_tokens - 100);
+    expect(branchSource.dimensions.total_tokens.consumed).toBeNull(); expect(branchSource.dimensions.review_total_tokens.consumed).toBeNull();
+    expect(branchSource.dimensions.total_tokens.remaining).toBe(fixture.grant.correction.budget!.max_total_tokens - 100); expect(branchSource.dimensions.review_total_tokens.remaining).toBe(fixture.grant.correction.budget!.max_total_tokens);
+    expect(rootSource.dimensions.corrections.remaining).toBe(0); expect(branchSource.dimensions.corrections.remaining).toBe(0);
+    expect(prepared.preview.manifest.routing.delegation.executable).toBe(false); expect(prepared.workflow_budget_preview.executable).toBe(false);
+    expect(JSON.stringify({ workflows, issues, records })).toBe(before);
+  });
+});
 
 describe("effect-free issued workflow previews", () => {
   it.each(["analysis", "implementation", "trivial-change", "operations-investigation"] as const)("resolves %s without store writes, client bodies or runtime effects", (template) => {
