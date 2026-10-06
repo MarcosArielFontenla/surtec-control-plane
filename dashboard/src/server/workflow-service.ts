@@ -9,11 +9,11 @@ import { mutateWorkflowDocument, readWorkflowDocument } from "../../../lib/state
 import type { GovernedWorkflow, WorkflowDocument, WorkflowEvent, WorkflowGrant, WorkflowStage } from "../../../lib/workflows/types";
 import { assertWorkflowDocument } from "../../../lib/workflows/validation";
 import { createWorkflowTask } from "./dispatch";
-import { createIssueService, projectWorkflowIssueLink } from "./issue-service";
+import { createIssueService, inspectWorkflowBudgetStopFacts, projectWorkflowIssueLink, workflowBudgetStopSummary } from "./issue-service";
 import { createWorkflowContextService, type WorkflowContextDependencies, type WorkflowContextService } from "./workflow-context-service";
 import { applicableWorkflowReviews, assertOwnedWorkflowIssueProgress, assertTerminalWorkflowTask, sealWorkflowHandoff, sealWorkflowReviewReceipt, workflowReviewAllowsContinuation } from "../../../lib/workflows/review-evidence";
 import { resolveWorkflowTemplate } from "../../../lib/workflows/templates";
-import { evaluateCorrectionEligibility, hasConcreteCorrectionFinding, readWorkflowPolicy } from "../../../lib/workflows/policy";
+import { evaluateCorrectionEligibility, evaluateWorkflowBudgetStop, hasConcreteCorrectionFinding, projectWorkflowConsumption, readWorkflowPolicy, type WorkflowBudgetStopOperation, type WorkflowConsumptionView } from "../../../lib/workflows/policy";
 import { readContextConfig } from "../../../lib/policy/roles";
 import { PolicyService } from "../../../lib/policy/service";
 
@@ -48,8 +48,8 @@ function findWorkflow(document: WorkflowDocument, id: unknown): GovernedWorkflow
   identifier(id); if (!Object.hasOwn(document.workflows, id)) throw new WorkflowServiceError("Workflow not found", 404);
   return document.workflows[id]!;
 }
-function event(document: WorkflowDocument, workflow: GovernedWorkflow, type: WorkflowEvent["type"], at: string, summary: string, stageId: string | null = null): void {
-  document.events.push({ schema_version: 1, id: `WE-${randomUUID()}`, workflow_id: workflow.id, stage_id: stageId, execution_id: null, revision: workflow.revision, type, summary, at });
+function event(document: WorkflowDocument, workflow: GovernedWorkflow, type: WorkflowEvent["type"], at: string, summary: string, stageId: string | null = null, executionId: string | null = null): void {
+  document.events.push({ schema_version: 1, id: `WE-${randomUUID()}`, workflow_id: workflow.id, stage_id: stageId, execution_id: executionId, revision: workflow.revision, type, summary, at });
 }
 function safeProjection<T>(value: T): T {
   if (typeof value === "string") return redactContextText(value) as T;
@@ -85,7 +85,9 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
       } catch { return { stage_id: stage.id, task_id: stage.task_id!, availability: "unavailable" as const, readiness: null }; }
     });
     // Historical typed clients may omit additive diagnostics; the service always emits them.
-    const budgetProjection: { budget_readiness?: typeof budget_readiness } = { budget_readiness };
+    const budgetProjection: { budget_readiness?: typeof budget_readiness; budget_consumption?: WorkflowConsumptionView } = {
+      budget_readiness, budget_consumption: projectWorkflowConsumption(document, id),
+    };
     return safeProjection({ schema_version: 1 as const, workflow, grant: publicGrant,
       stages, ...budgetProjection,
       decisions: Object.values(document.decisions).filter((entry) => entry.workflow_id === id),
@@ -172,9 +174,43 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
     requireCurrent(options.execution?.available(), "Workflow controller is unavailable; no control action was inferred");
     return { snapshot, workflow, issues };
   }
+  function stopForBudget(id: string, operation: WorkflowBudgetStopOperation, expectedSnapshot?: WorkflowDocument): boolean {
+    const snapshot = readWorkflowDocument(), workflow = findWorkflow(snapshot, id);
+    if (expectedSnapshot && !isDeepStrictEqual(snapshot, expectedSnapshot)) throw new WorkflowServiceError("Workflow budget snapshot is stale");
+    if (["completed", "cancelled", "waiting-human"].includes(workflow.status) || workflow.stop_requested_at || workflow.pending_decision_id) return false;
+    const stop = evaluateWorkflowBudgetStop(snapshot, id, operation);
+    if (!stop || !stop.denials.some((denial) => denial.code === "budget-exhausted" || denial.code === "budget-accounting-unavailable")) return false;
+    const summary = workflowBudgetStopSummary(stop), retained = snapshot.events.filter((entry) => entry.workflow_id === id && entry.type === "budget-stopped").at(-1);
+    const sameStop = retained?.summary === summary && retained.stage_id === stop.binding.stage_id && retained.execution_id === stop.binding.execution_id;
+    if (workflow.status === "needs-decision") {
+      if (!sameStop) return false; // Never relabel a human or unrelated stop.
+      evidenceIssues.recordWorkflowBudgetExhaustion(id, operation); return true;
+    }
+    const issueDocument = readIssueDocument(), issue = issueDocument.issues[workflow.issue_id];
+    const qualityReview = workflow.template_id === "quality-review" && issue?.status === "ready-for-review"
+      && !!workflow.current_stage_id && snapshot.stages[workflow.current_stage_id]?.sandbox === "read-only";
+    if (!issue || !["authorized", "working", "checking"].includes(issue.status) && !qualityReview) return false;
+    const facts = inspectWorkflowBudgetStopFacts(snapshot, issueDocument, id, now().getTime()), at = now().toISOString();
+    mutateWorkflowDocument((document) => {
+      requireCurrent(isDeepStrictEqual(document, snapshot) && isDeepStrictEqual(readIssueDocument(), issueDocument)
+        && isDeepStrictEqual(readTask(facts.task.envelope.id), facts.task), "Workflow budget authority changed before durable stop");
+      const owner = document.workflows[id]!; owner.status = "needs-decision"; owner.recovery_state = "awaiting-human";
+      owner.blocked_reason = stop.denials.some((denial) => denial.dimension === "corrections")
+        ? "The single correction allowance or workflow budget is exhausted; a human decision is required."
+        : "Workflow budget is exhausted; a human decision is required.";
+      owner.next_action = "Inspect exact retained budget and candidate evidence; no successor, extra correction or publication is admitted.";
+      owner.revision++; owner.updated_at = at;
+      event(document, owner, "budget-stopped", at, summary, stop.binding.stage_id, stop.binding.execution_id);
+    });
+    // Separate stores are intentionally not transactional. A fault retains the
+    // durable workflow stop; only this exact issue evidence may be retried.
+    evidenceIssues.recordWorkflowBudgetExhaustion(id, operation);
+    return true;
+  }
   function admitSuccessor(id: string) {
     const snapshot = readWorkflowDocument(), workflow = findWorkflow(snapshot, id), issueDocument = readIssueDocument();
     const predecessor = snapshot.stages[workflow.current_stage_id!]!, task = predecessor?.task_id ? readTask(predecessor.task_id) : null;
+    if (predecessor?.status === "completed" && stopForBudget(id, "admit", snapshot)) throw new WorkflowServiceError("Workflow budget exhaustion requires a human decision");
     requireCurrent(workflow.status === "running" && !workflow.stop_requested_at && workflow.recovery_state === "none" && !workflow.pending_decision_id
       && predecessor?.status === "completed" && workflow.counters.tasks < workflow.budget.max_tasks && workflow.counters.attempts < workflow.budget.max_attempts
       && workflow.counters.runtime_ms < workflow.budget.max_runtime_ms && workflow.counters.total_tokens < workflow.budget.max_total_tokens, "No bounded successor admission is available");
@@ -260,6 +296,7 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
     const invalid = currentReviews.filter((entry) => !workflowReviewAllowsContinuation(entry.output) && !hasConcreteCorrectionFinding(entry.output));
     if (!requested.length && !invalid.length) return { handled: false, admitted: false };
     const deny = (reasons: string[]) => {
+      if (stopForBudget(id, "correction", snapshot)) return { handled: true, admitted: false };
       const at = now().toISOString(), reason = `Bounded correction requires a human decision: ${[...new Set(reasons)].join("; ")}`.slice(0, 1000);
       mutateWorkflowDocument((document) => {
         requireCurrent(isDeepStrictEqual(document, snapshot) && isDeepStrictEqual(readIssueDocument(), issueDocument), "Correction decision facts changed before retention");
@@ -378,6 +415,7 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
       return safeProjection(Object.values(readWorkflowDocument().workflows).filter((entry) => (!input.issue_id || entry.issue_id === input.issue_id) && (!input.project_id || entry.project_id === input.project_id)));
     },
     detail,
+    stopForBudget,
     reconcileAdmission,
     admitSuccessor,
     admitCorrection,

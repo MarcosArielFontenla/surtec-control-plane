@@ -150,6 +150,8 @@ describe("createProjectIntegrationsService", () => {
     const noManifest = createProjectIntegrationsService("/repo", {
       policy: { project: () => project() },
       readLocalGit: () => ({ branch: null, dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: false }),
+      readGithub: () => ({ ok: true, prs: 0, issues: 0 }),
+      readCi: () => ({ state: "none" }),
       readDependencies: () => ({ ok: false, outdated: 0, error: "sin package.json", observed_at: observedAt }),
       deploymentProviders: [],
       clock: () => new Date(observedAt),
@@ -157,6 +159,8 @@ describe("createProjectIntegrationsService", () => {
     const missingInstall = createProjectIntegrationsService("/repo", {
       policy: { project: () => project() },
       readLocalGit: () => ({ branch: null, dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: false }),
+      readGithub: () => ({ ok: true, prs: 0, issues: 0 }),
+      readCi: () => ({ state: "none" }),
       readDependencies: () => ({ ok: false, outdated: 0, error: "n/a (npm install)", observed_at: observedAt }),
       deploymentProviders: [],
       clock: () => new Date(observedAt),
@@ -175,6 +179,8 @@ describe("createProjectIntegrationsService", () => {
     const service = createProjectIntegrationsService("/repo", {
       policy: { project: () => project() },
       readLocalGit: () => ({ branch: "main", dirty: false, uncommitted: 0, ahead: 0, behind: 0, last_commit: null, ok: true }),
+      readGithub: () => ({ ok: true, prs: 0, issues: 0 }),
+      readCi: () => ({ state: "none" }),
       readDependencies,
       deploymentProviders: [],
       clock: () => new Date(observedAt),

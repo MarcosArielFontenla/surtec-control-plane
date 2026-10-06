@@ -498,7 +498,13 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
       while (facts.workflow.status !== "needs-decision" && Date.now() < deadline) { await delay(250); facts = await detail(id); }
       assert.equal(facts.workflow.status, "needs-decision"); assert.equal(facts.stages.filter((stage) => stage.kind === "correction").length, 1);
       assert.ok(facts.workflow.blocked_reason?.includes("single correction"), `only exhausted correction may block this scenario: ${facts.workflow.blocked_reason}`);
-      const panel = await refresh(issue, facts); await panel.locator(".workflow-facts dd").filter({ hasText: /needs-decision/ }).waitFor();
+      const panel = await refresh(issue, facts);
+      // Workflow and issue intentionally share needs-decision after an exact
+      // budget stop. Assert both semantic fields without an ambiguous match.
+      await panel.locator(".workflow-facts dt").filter({ hasText: /^Template$/ }).locator("xpath=following-sibling::dd[1]")
+        .filter({ hasText: /needs-decision/ }).waitFor();
+      await panel.locator(".workflow-facts dt").filter({ hasText: /^Issue$/ }).locator("xpath=following-sibling::dd[1]")
+        .filter({ hasText: /^needs-decision ·/ }).waitFor();
       assert.equal(await panel.getByRole("button", { name: "Aprobar decisión exacta" }).count(), 0);
     } else {
       facts = await wait(id, gate, 180_000); assert.equal(facts.decisions.at(-1)!.kind, "candidate-acceptance");

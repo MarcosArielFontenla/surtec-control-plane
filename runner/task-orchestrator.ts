@@ -8,7 +8,7 @@ import { cancelledResult, failureResult } from "./result";
 import { codexExecutor } from "./codex-executor";
 import { runTask, type TaskRunCompletion, type TaskRunOptions } from "./run-task";
 import type { Tracer } from "../lib/observability/tracing";
-import { redactContextText } from "../lib/context/assemble";
+import { contextHash, redactContextText } from "../lib/context/assemble";
 import type { WorkflowOrchestrator } from "./workflow-orchestrator";
 import { readWorkflowDocument } from "../lib/state/workflows";
 import { canonicalPath } from "../lib/security/paths";
@@ -19,8 +19,9 @@ import { budgetStatePath } from "../lib/state/paths";
 import { mutateBudgetLedger, readBudgetLedger, readBudgetTransaction } from "../lib/state/budgets";
 import { claimTaskBudget, markBudgetUnknown, observeBudgetRun, settleBudgetReservation, topUpTaskBudget } from "../lib/budgets/reservations";
 import { resolveBudgetPolicy, type BudgetPolicySource, type ExistingBudgetConstraint, type BudgetCorrectionLineage } from "../lib/budgets/policy";
-import { BUDGET_DIMENSIONS, type BudgetAdmission, type BudgetAmounts, type BudgetLedger } from "../lib/budgets/types";
+import { BUDGET_DIMENSIONS, type BudgetAdmission, type BudgetAmounts, type BudgetDimension, type BudgetLedger } from "../lib/budgets/types";
 import { assertBudgetLedger } from "../lib/budgets/validation";
+import type { IndependentBudgetStopData } from "../lib/workflows/policy";
 
 export interface BudgetExecutionPolicy {
   source: BudgetPolicySource;
@@ -49,8 +50,44 @@ interface BudgetExecutionIdentity {
 }
 const budgetExecutions = new WeakMap<object, BudgetExecutionIdentity>();
 const budgetControllers = new WeakSet<object>();
+interface BudgetStopFacts { task: TaskRecord; ledger: BudgetLedger; policy: BudgetExecutionPolicy; data: IndependentBudgetStopData }
+interface BudgetStopIdentity { owner: BudgetExecutionScaffold; facts: BudgetStopFacts; reread: () => BudgetStopFacts | null }
+const budgetStops = new WeakMap<object, BudgetStopIdentity>();
 const hasBudgetAdmission = (task: TaskRecord) => Object.getOwnPropertyDescriptor(task.envelope, "budget_admission") !== undefined;
 const budgetZero = (): BudgetAmounts => Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, 0])) as BudgetAmounts;
+function inertBudgetStopData(value: unknown, ancestors = new Set<object>(), depth = 0): boolean {
+  if (depth > 32) return false;
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "string") return value.length <= 16 * 1024 * 1024;
+  if (typeof value === "number") return Number.isSafeInteger(value);
+  if (typeof value !== "object" || nodeTypes.isProxy(value) || ancestors.has(value)) return false;
+  const array = Array.isArray(value), prototype = Object.getPrototypeOf(value);
+  if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value), names = Reflect.ownKeys(descriptors);
+  if (names.length > 10001 || names.some((name) => typeof name !== "string")) return false;
+  if (array && (names.length !== value.length + 1 || value.length > 10000
+    || Array.from({ length: value.length }, (_, index) => Object.hasOwn(descriptors, String(index))).some((present) => !present))) return false;
+  ancestors.add(value);
+  try { return (names as string[]).every((name) => array && name === "length" || !["constructor", "prototype", "__proto__"].includes(name)
+    && descriptors[name]!.enumerable && Object.hasOwn(descriptors[name]!, "value") && inertBudgetStopData(descriptors[name]!.value, ancestors, depth + 1)); }
+  finally { ancestors.delete(value); }
+}
+function frozenBudgetStopData<T>(value: T): T {
+  if (value && typeof value === "object") { for (const child of Object.values(value)) frozenBudgetStopData(child); Object.freeze(value); }
+  return value;
+}
+
+/** Evidence-only inspector. A receipt is process-private and never an execution identity. */
+export function inspectBudgetStopReceipt(receipt: unknown, task: TaskRecord): IndependentBudgetStopData | null {
+  if (!receipt || typeof receipt !== "object" || nodeTypes.isProxy(receipt) || !inertBudgetStopData(task)) return null;
+  const identity = budgetStops.get(receipt);
+  if (!identity || !budgetControllers.has(identity.owner) || !isDeepStrictEqual(task, identity.facts.task)) return null;
+  try {
+    const current = identity.reread();
+    if (!current || !isDeepStrictEqual(current, identity.facts)) return null;
+    return frozenBudgetStopData(structuredClone(current.data));
+  } catch { return null; }
+}
 
 /** Private application composition only. No production caller enables this scaffold. */
 export function budgetExecutionOwner(proof: unknown, taskId: string, runId: string): BudgetExecutionScaffold | null {
@@ -130,6 +167,121 @@ export class BudgetExecutionScaffold {
       || !isDeepStrictEqual(reservation.policy_bindings, admission.policy_bindings)) this.refuse();
     return ledger;
   }
+  private observationLedger(identity: BudgetExecutionIdentity, ledger: BudgetLedger): void {
+    const admission = identity.admission, reserve = ledger.reservations[admission.reservation_id], intent = ledger.admission_intents[admission.intent_id];
+    const charge = Object.values(ledger.charges).find((entry) => entry.run_id === identity.runId);
+    const subject = { id: admission.subject_id, kind: "task", task_id: admission.task_id, project_id: admission.project_id,
+      role_id: admission.role_id, agent_id: admission.agent_id, issue_id: admission.issue_id, workflow: admission.workflow, attribution: admission.attribution };
+    if (!reserve || !intent || !charge || !["active", "unknown"].includes(reserve.status) || !["committed", "unknown"].includes(intent.status)
+      || intent.admission_id !== admission.id || intent.reservation_id !== reserve.id || reserve.intent_id !== admission.intent_id
+      || reserve.subject_id !== admission.subject_id || reserve.created_at !== admission.created_at || reserve.run_ids.at(-1) !== identity.runId
+      || charge.reservation_id !== admission.reservation_id || charge.subject_id !== admission.subject_id
+      || charge.review !== (admission.caps.review_attempts > 0) || charge.correction !== (admission.caps.corrections > 0)
+      || !isDeepStrictEqual(ledger.subjects[admission.subject_id], subject) || !isDeepStrictEqual(reserve.policy_bindings, admission.policy_bindings)) this.refuse();
+  }
+  private stopFacts(taskId: string, proof?: object): BudgetStopFacts | null {
+    try {
+      // Durable evidence uses the one code-owned ledger, never a caller-selected store.
+      if (this.filePath !== budgetStatePath()) return null;
+      const task = readTask(taskId);
+      if (!task || !hasBudgetAdmission(task) || !inertBudgetStopData(task)) return null;
+      assertTaskBudgetAdmissionBinding(task);
+      const identity = proof ? this.identity(proof) : undefined;
+      if (identity && (identity.taskId !== taskId || !isDeepStrictEqual(identity.admission, task.envelope.budget_admission))) return null;
+      const phase = identity?.kind === "run" ? "run" : "before-claim";
+      if (phase === "run") this.current(identity!);
+      else if (task.orchestration!.cancel_requested_at) return null;
+      else if (identity && task.lifecycle === "running") {
+        this.current(identity);
+        if (task.revision !== identity.snapshot.revision! + 1 || !isDeepStrictEqual(task.envelope, identity.snapshot.envelope)) return null;
+      } else if (task.lifecycle !== "queued" || identity && !isDeepStrictEqual(identity.snapshot, task)) return null;
+      const admission = task.envelope.budget_admission!, policy = this.policy(task), ledger = readBudgetLedger(this.filePath);
+      const reserve = ledger?.reservations[admission.reservation_id], intent = ledger?.admission_intents[admission.intent_id];
+      const subject = { id: admission.subject_id, kind: "task", task_id: admission.task_id, project_id: admission.project_id,
+        role_id: admission.role_id, agent_id: admission.agent_id, issue_id: admission.issue_id, workflow: admission.workflow, attribution: admission.attribution };
+      if (!ledger || !reserve || !intent || !["committed", "active", "unknown"].includes(reserve.status)
+        || !["committed", "unknown"].includes(intent.status) || intent.admission_id !== admission.id || intent.reservation_id !== reserve.id
+        || reserve.subject_id !== admission.subject_id || reserve.intent_id !== admission.intent_id || reserve.created_at !== admission.created_at
+        || !isDeepStrictEqual(ledger.subjects[admission.subject_id], subject) || !isDeepStrictEqual(reserve.policy_bindings, admission.policy_bindings)) return null;
+      const runs = Object.values(ledger.charges).filter((charge) => charge.reservation_id === reserve.id);
+      if (runs.some((charge) => charge.subject_id !== admission.subject_id || charge.review !== (admission.caps.review_attempts > 0)
+        || charge.correction !== (admission.caps.corrections > 0))) return null;
+      const charge = identity ? runs.find((entry) => entry.run_id === identity.runId) : undefined;
+      if (identity && (!charge || reserve.run_ids.at(-1) !== identity.runId || charge.status !== "running"
+        && !(phase === "run" && charge.status === "terminal" && identity.terminal && isDeepStrictEqual(identity.terminal, task)))) return null;
+      if (!identity && task.orchestration!.attempts > 0 && !this.canRetry(task, task.orchestration!.last_failure?.run_id ?? "")) return null;
+      if (!identity && runs.some((entry) => entry.status !== "terminal")) return null;
+      const staticPolicy = resolveBudgetPolicy({ ...policy, attribution: admission.attribution, at: admission.created_at, base_caps: admission.caps });
+      if (staticPolicy.cap_fingerprint !== admission.admitted_cap_fingerprint || !isDeepStrictEqual(staticPolicy.policy_bindings, admission.policy_bindings)) return null;
+      const denials = new Map<BudgetDimension | "accounting", IndependentBudgetStopData["denials"][number]>();
+      const deny = (entry: IndependentBudgetStopData["denials"][number]): void => {
+        const old = denials.get(entry.dimension);
+        if (!old || entry.code === "budget-accounting-unavailable" && old.code !== entry.code
+          || entry.code === old.code && (entry.cap ?? 0) - entry.proven_consumed < (old.cap ?? 0) - old.proven_consumed) denials.set(entry.dimension, entry);
+      };
+      if (reserve.status === "unknown" || intent.status === "unknown" || reserve.uncertain_dimensions.length
+        || runs.some((entry) => entry.runtime_state === "unknown" || entry.usage_state === "unknown")) {
+        deny({ dimension: "accounting", cap: null, proven_consumed: 0, required: 0, code: "budget-accounting-unavailable" });
+      }
+      const tokens = runs.reduce((sum, entry) => sum + (entry.observed_total_tokens ?? 0), 0);
+      if (!Number.isSafeInteger(tokens)) return null;
+      const leaf = (dimension: BudgetDimension, cap: number, consumed: number, required: number): void => {
+        if (consumed + required > cap || required === 0 && consumed >= cap) deny({ dimension, cap, proven_consumed: consumed, required, code: "budget-exhausted" });
+      };
+      if (phase === "before-claim" && !identity) {
+        leaf("attempts", Math.min(admission.caps.attempts, task.orchestration!.max_attempts), Math.max(runs.length, task.orchestration!.attempts), 1);
+        if (admission.caps.review_attempts > 0) leaf("review_attempts", admission.caps.review_attempts, runs.length, 1);
+        leaf("total_tokens", Math.min(admission.caps.total_tokens, task.orchestration!.max_total_tokens), Math.max(tokens, task.orchestration!.cumulative_tokens), 1);
+        if (admission.caps.review_attempts > 0) leaf("review_total_tokens", admission.caps.review_total_tokens, tokens, 1);
+      } else if (phase === "run") {
+        leaf("runtime_ms", Math.min(identity!.runtimeCap, task.orchestration!.max_runtime_ms), charge!.runtime_ms, 0);
+        if (charge!.review) leaf("review_runtime_ms", Math.min(identity!.runtimeCap, admission.caps.review_runtime_ms, task.orchestration!.max_runtime_ms), charge!.runtime_ms, 0);
+        leaf("total_tokens", Math.min(admission.caps.total_tokens, task.orchestration!.max_total_tokens), Math.max(tokens, task.orchestration!.cumulative_tokens), 0);
+        if (charge!.review) leaf("review_total_tokens", admission.caps.review_total_tokens, tokens, 0);
+      }
+      const projection = structuredClone(ledger); projection.reservations[reserve.id]!.held = budgetZero();
+      if (!runs.some((entry) => entry.status === "running") && reserve.status !== "unknown") projection.reservations[reserve.id]!.status = "settled";
+      assertBudgetLedger(projection);
+      for (const at of [admission.created_at, this.now().toISOString()]) {
+        const resolved = resolveBudgetPolicy({ ...policy, attribution: admission.attribution, at, base_caps: admission.caps, ledger: projection });
+        for (const dimension of BUDGET_DIMENSIONS) {
+          const live = ["runtime_ms", "total_tokens", "review_runtime_ms", "review_total_tokens"].includes(dimension);
+          const required = phase === "run" ? reserve.held[dimension] : identity ? reserve.held[dimension]
+            : dimension === "attempts" || dimension === "review_attempts" && admission.caps.review_attempts > 0 ? 1
+            : (dimension === "runtime_ms" || dimension === "review_runtime_ms") && runs.length ? (admission.caps[dimension] > 0 ? 1 : 0) : reserve.held[dimension];
+          if (admission.caps[dimension] === 0) continue;
+          for (const source of resolved.sources) {
+            const view = source.dimensions[dimension]; if (view.status !== "configured") continue;
+            if (view.remaining === null) deny({ dimension, cap: view.cap, proven_consumed: view.proven_consumed, required, code: "budget-accounting-unavailable" });
+            else if ((phase === "before-claim" || live) && (required > view.remaining || phase === "run" && live && view.proven_consumed >= view.cap!)) {
+              // Existing availability does not expose its consumption/hold split.
+              deny({ dimension, cap: view.cap, proven_consumed: view.proven_consumed, required,
+                code: view.consumed === null ? "budget-accounting-unavailable" : "budget-exhausted" });
+            }
+          }
+        }
+      }
+      if (!denials.size) return null;
+      return { task, ledger, policy, data: { admission_fingerprint: contextHash(JSON.stringify(admission)),
+        policy_fingerprint: policy.source.fingerprint, cap_fingerprint: staticPolicy.cap_fingerprint,
+        run_id: identity?.runId ?? null, phase, denials: [...denials.values()] } };
+    } catch { return null; }
+  }
+  /** Mint only from current private composition and exact retained accounting. */
+  stopReceipt(taskId: string, proof?: object): object | null {
+    const facts = this.stopFacts(taskId, proof); if (!facts) return null;
+    const receipt = Object.freeze({});
+    budgetStops.set(receipt, { owner: this, facts: structuredClone(facts), reread: () => this.stopFacts(taskId, proof) });
+    return receipt;
+  }
+  /** Heartbeat debits measured runtime without inventing a new token receipt. */
+  async observeHeartbeat(proof: object, elapsedMs: number): Promise<{ exhausted: boolean; unknown: boolean }> {
+    const identity = this.identity(proof);
+    if (identity.kind !== "run") this.refuse(); this.current(identity);
+    const ledger = readBudgetLedger(this.filePath); if (!ledger) this.refuse(); this.observationLedger(identity, ledger);
+    const charge = Object.values(ledger.charges).find((entry) => entry.run_id === identity.runId)!;
+    return this.observe(proof, charge.usage_state === "complete" ? charge.observed_total_tokens : null, elapsedMs);
+  }
   private retainLateObservation(proof: object, totalTokens: number | null, elapsedMs: number): void {
     const identity = budgetExecutions.get(proof);
     if (!identity || identity.owner !== this || identity.kind !== "run" || !Number.isSafeInteger(elapsedMs) || elapsedMs < 0
@@ -207,8 +359,12 @@ export class BudgetExecutionScaffold {
       if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0 || totalTokens !== null && (!Number.isSafeInteger(totalTokens) || totalTokens < 0)) this.refuse();
       if (totalTokens !== null) identity.tokens = Math.max(identity.tokens, totalTokens);
       const unknown = totalTokens === null;
-      const charge = mutateBudgetLedger((tx) => observeBudgetRun(tx, { reservation_id: identity.admission.reservation_id, run_id: identity.runId,
-        runtime_ms: elapsedMs, total_tokens: unknown ? null : identity.tokens, terminal }), this.filePath, this.now().toISOString());
+      const charge = mutateBudgetLedger((tx) => {
+        this.observationLedger(identity, readBudgetTransaction(tx).ledger);
+        if (!isDeepStrictEqual(readTask(identity.taskId), task)) this.refuse();
+        return observeBudgetRun(tx, { reservation_id: identity.admission.reservation_id, run_id: identity.runId,
+          runtime_ms: elapsedMs, total_tokens: unknown ? null : identity.tokens, terminal });
+      }, this.filePath, this.now().toISOString());
       if (terminal) { identity.terminal = structuredClone(task); identity.terminalUnknown = unknown; }
       return { unknown: unknown || charge.usage_state === "unknown" || charge.runtime_state === "unknown",
         exhausted: charge.runtime_ms >= Math.min(identity.runtimeCap, task.orchestration!.max_runtime_ms)
@@ -339,6 +495,8 @@ export interface TaskOrchestratorOptions {
 interface ActiveAttempt {
   runId: string;
   budgetProof?: object;
+  workflowProof?: object;
+  heartbeatInFlight?: boolean;
   controller: AbortController;
   heartbeat: ReturnType<typeof setInterval>;
   promise: Promise<void>;
@@ -625,6 +783,7 @@ export class TaskOrchestrator implements TaskControl {
                 && task.envelope.sandbox === "workspace-write" && candidate.envelope.sandbox === "workspace-write");
             });
             if (!eligible) continue;
+            if (this.stopIndependentBudget(candidate.envelope.id)) continue;
             const runId = randomUUID();
             proof = this.budgets!.prepareClaim(candidate.envelope.id, runId, this.workerId);
             const expected = this.budgets!.claimSnapshot(proof);
@@ -635,10 +794,11 @@ export class TaskOrchestrator implements TaskControl {
               if (expected.envelope.context_admission?.schema_version === 2 && (!this.workflows || !this.workflows.canClaim(expected, proof))) return null;
               return this.claim(expected.envelope.id, now, runId, expected, proof);
             });
-            if (!claimed) { this.budgets!.abandon(proof); continue; }
+            if (!claimed) { this.stopIndependentBudget(candidate.envelope.id, proof); this.budgets!.abandon(proof); continue; }
             this.budgets!.bindClaim(proof);
             this.launch(claimed, proof); budgetCount++;
           } catch {
+            this.stopIndependentBudget(candidate.envelope.id, proof);
             if (proof) this.budgets!.abandon(proof);
             // Cross-store gaps retain charges/holds; no effects or blind retry.
           }
@@ -692,12 +852,13 @@ export class TaskOrchestrator implements TaskControl {
     const taskId = record.envelope.id;
     const runId = record.orchestration!.lease!.run_id;
     const controller = new AbortController();
-    const heartbeat = setInterval(() => this.heartbeat(taskId, runId, controller), this.heartbeatMs);
+    const heartbeat = setInterval(() => { void this.heartbeat(taskId, runId, controller); }, this.heartbeatMs);
     heartbeat.unref?.();
     let proof: object | undefined;
     const promise = Promise.resolve().then(() => {
       if (budgetProof) this.budgets!.prepare(budgetProof);
       if (record.envelope.context_admission?.schema_version === 2 && this.workflows) proof = this.workflows.claimRun(taskId, runId, budgetProof);
+      const active = this.active.get(taskId); if (active) active.workflowProof = proof;
       return this.runAttempt(taskId, { signal: controller.signal, runId, workerId: this.workerId, workflowExecution: proof, budgetExecution: budgetProof });
     })
       .then((completion) => {
@@ -706,9 +867,10 @@ export class TaskOrchestrator implements TaskControl {
       })
       .catch((error: unknown) => {
         if (budgetProof) {
+          const stopped = this.stopIndependentBudget(taskId, budgetProof, proof);
           this.budgets!.abandon(budgetProof);
           try { this.finalizeWorkflowFailure(taskId, runId, record); } catch { /* Retain an ambiguous owned snapshot for review. */ }
-          if (record.envelope.context_admission?.schema_version === 2) {
+          if (!stopped && record.envelope.context_admission?.schema_version === 2) {
             try { this.workflows?.block(record.envelope.context_admission.workflow_id, "Budget attempt completion is unavailable; retained holds require review.", true); } catch { /* No authority repair. */ }
           }
           return;
@@ -739,46 +901,63 @@ export class TaskOrchestrator implements TaskControl {
     this.active.set(taskId, { runId, budgetProof, controller, heartbeat, promise });
   }
 
-  private heartbeat(taskId: string, runId: string, controller: AbortController): void {
-    let cancelRequested = false;
-    let stillOwned = false;
-    const now = this.now();
-    const budgetProof = this.active.get(taskId)?.budgetProof;
-    if (budgetProof) {
-      try {
-        const caps = this.budgets!.prepare(budgetProof), current = readTask(taskId);
-        if (!current?.orchestration?.lease || now.getTime() - Date.parse(current.orchestration.lease.acquired_at) >= caps.maxRuntimeMs) {
-          controller.abort(new Error("owned budget runtime is exhausted")); return;
-        }
-      } catch { controller.abort(new Error("owned budget facts require review")); return; }
-    }
+  private stopIndependentBudget(taskId: string, budgetProof?: object, workflowProof?: object): boolean {
+    if (!this.budgets || !this.workflows) return false;
     try {
-      updateTask(taskId, (record) => {
-        if (hasBudgetAdmission(record)) {
-          if (!budgetProof || budgetExecutionOwner(budgetProof, taskId, runId) !== this.budgets) return false;
-          // Recheck private lease identity under the task lock, without policy or
-          // ledger work: a same-run foreign worker must never receive renewal.
-          assertBudgetWorkflowExecution(record, budgetProof);
-          if (record.orchestration?.lease?.worker_id !== this.workerId) return false;
-        }
-        const orchestration = ensureTaskOrchestration(record);
-        if (record.lifecycle !== "running" || orchestration.lease?.run_id !== runId) return false;
-        orchestration.lease.heartbeat_at = now.toISOString();
-        orchestration.lease.expires_at = new Date(now.getTime() + this.leaseMs).toISOString();
-        record.updated_at = now.toISOString();
-        cancelRequested = orchestration.cancel_requested_at !== null;
-        stillOwned = true;
-      });
-    } catch (error) {
-      if (budgetProof && error instanceof TaskControlError) {
-        controller.abort(new Error("owned budget lease identity changed")); return;
+      const receipt = this.budgets.stopReceipt(taskId, budgetProof);
+      return receipt ? this.workflows.stopForIndependentBudget(taskId, receipt, workflowProof) : false;
+    } catch { return false; }
+  }
+
+  private async heartbeat(taskId: string, runId: string, controller: AbortController): Promise<void> {
+    const active = this.active.get(taskId);
+    if (active?.heartbeatInFlight) return;
+    if (active) active.heartbeatInFlight = true;
+    try {
+      let cancelRequested = false;
+      let stillOwned = false;
+      const now = this.now();
+      const budgetProof = this.active.get(taskId)?.budgetProof;
+      if (budgetProof) {
+        try {
+          const current = readTask(taskId);
+          if (!current?.orchestration?.lease) throw new TaskControlError("Budget lease is unavailable", 409);
+          const observed = await this.budgets!.observeHeartbeat(budgetProof, Math.max(0, now.getTime() - Date.parse(current.orchestration.lease.acquired_at)));
+          const stopped = this.stopIndependentBudget(taskId, budgetProof, active?.workflowProof);
+          if (observed.exhausted || observed.unknown || stopped) {
+            controller.abort(new Error("owned budget runtime is exhausted")); return;
+          }
+          this.budgets!.prepare(budgetProof);
+        } catch { this.stopIndependentBudget(taskId, budgetProof, active?.workflowProof); controller.abort(new Error("owned budget facts require review")); return; }
       }
-      if (!(error instanceof StateLockConflictError)) console.error(`[orchestrator] heartbeat failed for ${taskId}:`, error);
-      return;
-    }
-    if ((!stillOwned || cancelRequested) && !controller.signal.aborted) {
-      controller.abort(new Error(cancelRequested ? "task cancellation requested" : "attempt lease is no longer current"));
-    }
+      try {
+        updateTask(taskId, (record) => {
+          if (hasBudgetAdmission(record)) {
+            if (!budgetProof || budgetExecutionOwner(budgetProof, taskId, runId) !== this.budgets) return false;
+            // Recheck private lease identity under the task lock, without policy or
+            // ledger work: a same-run foreign worker must never receive renewal.
+            assertBudgetWorkflowExecution(record, budgetProof);
+            if (record.orchestration?.lease?.worker_id !== this.workerId) return false;
+          }
+          const orchestration = ensureTaskOrchestration(record);
+          if (record.lifecycle !== "running" || orchestration.lease?.run_id !== runId) return false;
+          orchestration.lease.heartbeat_at = now.toISOString();
+          orchestration.lease.expires_at = new Date(now.getTime() + this.leaseMs).toISOString();
+          record.updated_at = now.toISOString();
+          cancelRequested = orchestration.cancel_requested_at !== null;
+          stillOwned = true;
+        });
+      } catch (error) {
+        if (budgetProof && error instanceof TaskControlError) {
+          controller.abort(new Error("owned budget lease identity changed")); return;
+        }
+        if (!(error instanceof StateLockConflictError)) console.error(`[orchestrator] heartbeat failed for ${taskId}:`, error);
+        return;
+      }
+      if ((!stillOwned || cancelRequested) && !controller.signal.aborted) {
+        controller.abort(new Error(cancelRequested ? "task cancellation requested" : "attempt lease is no longer current"));
+      }
+    } finally { if (active) active.heartbeatInFlight = false; }
   }
 
   private finalizeUnexpectedFailure(taskId: string, runId: string, reason: string): void {

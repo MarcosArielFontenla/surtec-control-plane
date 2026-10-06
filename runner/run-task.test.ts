@@ -37,6 +37,10 @@ import { mutateBudgetLedger, readBudgetLedger } from "../lib/state/budgets";
 import { budgetStatePath } from "../lib/state/paths";
 import { reserveTaskBudget, commitTaskBudget } from "../lib/budgets/reservations";
 import type { BudgetPolicySource } from "../lib/budgets/policy";
+import { readIssueDocument } from "../lib/state/issues";
+import * as issueState from "../lib/state/issues";
+import { readWorkflowDocument } from "../lib/state/workflows";
+import { WorkflowOrchestrator } from "./workflow-orchestrator";
 
 let root: string;
 let repo: string;
@@ -262,6 +266,74 @@ describe("runTask", () => {
     budgets.bindClaim(proof);
     return { id, budgets, runId, proof };
   }
+  function governedBudgetFixture() {
+    contextFixture(); cpSync("registry/workflow-policy.yml", join(root, "registry/workflow-policy.yml"));
+    writeFileSync(join(root, "registry/projects.yml"), "projects:\n  stock-control:\n    allowed_agents: [backend-engineer, product-manager]\n    sandbox: { default: workspace-write }\n");
+    const issues = createIssueService(root, { projectIds: () => ["stock-control"] });
+    const proposed = issues.create({ project_id: "stock-control", title: "Synthetic budget evidence", expected_outcome: "Retain exact evidence", acceptance_criteria: ["No successor"],
+      authorized_scope: { expected_outcome: "Retain exact evidence", acceptance_criteria: ["No successor"], allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["implementation"], explicit_exclusions: [] } });
+    const issue = issues.authorize(proposed.id, proposed.revision, "synthetic-budget-scope-human");
+    const controller = new WorkflowOrchestrator(root); controller.connect({ enqueue: vi.fn(), cancel: vi.fn() }, "budget-fixture-worker");
+    const request = { template_id: "analysis", template_version: 1, project_id: "stock-control", issue_id: issue.id, expected_revision: issue.revision,
+      selected_agents: { "portfolio-analyst": "product-manager" } };
+    const preview = controller.service.preview(request); expect(preview.allowed, preview.blocked_reasons.join("; ")).toBe(true);
+    const started = controller.service.start({ request, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-budget-workflow-human" });
+    const bound = budgetFixture(true, started.stages[0]!.task_id!);
+    const workflowProof = controller.claimRun(bound.id, bound.runId, bound.proof);
+    return { ...bound, controller, workflowProof, workflowId: started.workflow.id, issueId: issue.id };
+  }
+  it.each(["tokens", "runtime", "unknown"] as const)("T007 relays independently proven %s stop before terminal task ownership is released", async (dimension) => {
+    const f = governedBudgetFixture();
+    if (dimension === "tokens") updateTask(f.id, (task) => { task.orchestration!.max_total_tokens = 5; });
+    if (dimension === "runtime") { updateTask(f.id, (task) => { task.orchestration!.max_runtime_ms = 1000; }); vi.useFakeTimers({ toFake: ["Date"] }); }
+    run.mockImplementation(async () => {
+      if (dimension === "runtime") vi.setSystemTime(Date.now() + 1500);
+      return agentRun({ structuredOutput: { schema_version: 1, kind: "analysis", status: "completed", summary: "Synthetic bounded analysis", recommendations: [],
+        evidence_ids: [], unresolved_questions: [], risks: [], recommended_next_action: "Human inspection", requested_decision: null }, ...(dimension === "unknown" ? { usageComplete: false } : {}) });
+    });
+    const stop = vi.spyOn(f.controller, "stopForIndependentBudget");
+    await runTask(f.id, root, executor, { runId: f.runId, budgetExecution: f.proof, workflowExecution: f.workflowProof });
+    expect(stop).toHaveBeenCalled(); expect(f.controller.service.detail(f.workflowId).workflow.status).toBe("needs-decision");
+    const document = readIssueDocument(); expect(document.issues[f.issueId]!.status).toBe("needs-decision");
+    expect(document.events.at(-1)).toMatchObject({ type: "authorization-stale", payload: { workflow_id: f.workflowId, task_id: f.id, execution_id: f.runId,
+      independent_budget_exhaustion: { run_id: f.runId } } });
+    expect(readTask(f.id)!.lifecycle).toBe("finished"); expect(readTask(f.id)!.orchestration!.lease).toBeNull();
+    expect(Object.values(readBudgetLedger()!.charges)).toHaveLength(1); expect(run).toHaveBeenCalledOnce();
+    for (const effect of [createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
+    f.controller.release(f.workflowProof); f.budgets.release(f.proof!);
+  });
+  it("T007 retains the first independent stop across an issue-write fault and later global high-water", async () => {
+    const f = governedBudgetFixture();
+    updateTask(f.id, (task) => { task.orchestration!.max_total_tokens = 5; });
+    await f.budgets.observe(f.proof!, 5, 10);
+    const receipt = f.budgets.stopReceipt(f.id, f.proof!)!;
+    const issueBefore = readFileSync(join(root, "state/issues/issues.json"));
+    const fault = vi.spyOn(issueState, "mutateIssueDocument").mockImplementationOnce(() => { throw new Error("Synthetic independent issue-write fault"); });
+    expect(() => f.controller.stopForIndependentBudget(f.id, receipt, f.workflowProof)).toThrow(/issue-write fault/);
+    fault.mockRestore();
+    const initial = readWorkflowDocument(), owner = initial.workflows[f.workflowId]!;
+    const marker = initial.events.filter((entry) => entry.workflow_id === f.workflowId && entry.type === "budget-stopped").at(-1)!;
+    expect(marker.summary).toMatch(/^Independent workflow budget stop v1:/);
+    expect(readFileSync(join(root, "state/issues/issues.json"))).toEqual(issueBefore);
+    expect(f.controller.observe(f.workflowProof, owner.budget.max_total_tokens, 20)).toBe(true);
+    const later = readWorkflowDocument();
+    expect(later.events.filter((entry) => entry.workflow_id === f.workflowId && entry.type === "budget-stopped")).toEqual([marker]);
+    expect(later.workflows[f.workflowId]!.blocked_reason).toBe(owner.blocked_reason);
+    expect(later.workflows[f.workflowId]!.counters.total_tokens).toBe(owner.budget.max_total_tokens);
+    expect(readFileSync(join(root, "state/issues/issues.json"))).toEqual(issueBefore);
+    expect(f.controller.stopForIndependentBudget(f.id, receipt, f.workflowProof)).toBe(true);
+    const issues = readIssueDocument();
+    expect(issues.issues[f.issueId]!.status).toBe("needs-decision");
+    expect(issues.events.at(-1)).toMatchObject({ type: "authorization-stale", payload: { independent_budget_exhaustion: {
+      denials: expect.arrayContaining([expect.objectContaining({ dimension: "total_tokens", cap: 5, proven_consumed: 5, required: 0 })]) } } });
+    const issueBytes = readFileSync(join(root, "state/issues/issues.json")), workflowBytes = readFileSync(join(root, "state/workflows/workflows.json"));
+    f.controller.reconcile(); new WorkflowOrchestrator(root).reconcile();
+    expect(readFileSync(join(root, "state/issues/issues.json"))).toEqual(issueBytes);
+    expect(readFileSync(join(root, "state/workflows/workflows.json"))).toEqual(workflowBytes);
+    expect(Object.values(readBudgetLedger()!.charges)).toHaveLength(1); expect(run).not.toHaveBeenCalled();
+    for (const effect of [createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
+    f.controller.release(f.workflowProof); f.budgets.release(f.proof!);
+  });
   it.each(["absent", "forged", "copied", "wrong-run", "revoked"])("denies %s budget proof before any task/report/model effects", async (kind) => {
     const { id, budgets, runId, proof } = budgetFixture(kind !== "absent");
     const path = join(root, "state/tasks", `${id}.json`), before = readFileSync(path), ledgerBefore = readBudgetLedger(), eventsBefore = readTaskEvents(id);

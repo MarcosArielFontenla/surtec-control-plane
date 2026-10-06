@@ -11,12 +11,13 @@ import { ContextContractError } from "../lib/context/validation";
 import { failureResult } from "./result";
 import type { TaskControl } from "./task-orchestrator";
 import { createWorkflowService } from "../dashboard/src/server/workflow-service";
-import { createIssueService } from "../dashboard/src/server/issue-service";
+import { createIssueService, inspectIndependentWorkflowBudgetStopFacts, workflowBudgetStopSummary } from "../dashboard/src/server/issue-service";
 import { createWorkflowContextService } from "../dashboard/src/server/workflow-context-service";
 import { resolveWorkflowTemplate } from "../lib/workflows/templates";
-import { hasConcreteCorrectionFinding } from "../lib/workflows/policy";
+import { evaluateWorkflowBudgetStop, hasConcreteCorrectionFinding, independentWorkflowBudgetStopSummary, INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX, projectWorkflowConsumption } from "../lib/workflows/policy";
 import { prepareWorkflowStage, validateWorkflowStageOutput } from "./workflow-stage";
-import { assertBudgetWorkflowExecution, budgetExecutionOwner } from "./task-orchestrator";
+import { assertBudgetWorkflowExecution, budgetExecutionOwner, inspectBudgetStopReceipt } from "./task-orchestrator";
+import { readBudgetLedger } from "../lib/state/budgets";
 
 // Process-local identity, never persisted, accepted from JSON or inferred from
 // a live task lease alone. Durable authority is rechecked independently.
@@ -27,10 +28,10 @@ export function workflowExecutionOwner(proof: unknown, taskId: string, runId: st
 }
 const terminal = (workflow: GovernedWorkflow) => ["completed", "cancelled"].includes(workflow.status);
 const hash = (value: unknown) => contextHash(JSON.stringify(value));
-function change(document: WorkflowDocument, workflow: GovernedWorkflow, at: string, type: WorkflowDocument["events"][number]["type"], summary: string) {
+function change(document: WorkflowDocument, workflow: GovernedWorkflow, at: string, type: WorkflowDocument["events"][number]["type"], summary: string, executionId: string | null = null) {
   workflow.revision++; workflow.updated_at = at;
   document.events.push({ schema_version: 1, id: `WE-${randomUUID()}`, workflow_id: workflow.id, stage_id: workflow.current_stage_id,
-    execution_id: null, revision: workflow.revision, type, summary, at });
+    execution_id: executionId, revision: workflow.revision, type, summary, at });
 }
 
 /** Finite state reconciliation only. TaskOrchestrator remains the sole worker. */
@@ -65,11 +66,10 @@ export class WorkflowOrchestrator {
   }
   canClaim(task: TaskRecord, budgetProof?: object): boolean {
     assertBudgetWorkflowExecution(task, budgetProof);
-    const { workflow, stage } = this.facts(task);
+    const { document, workflow, stage } = this.facts(task);
     const supportedStages = ["analysis", "planning", "implementation", "review", "qa", "operations", "correction"];
     if (workflow.status !== "running" || workflow.stop_requested_at || workflow.pending_decision_id || workflow.recovery_state !== "none"
-      || !workflow.counters.accounting_complete || workflow.counters.attempts >= workflow.budget.max_attempts
-      || workflow.counters.runtime_ms >= workflow.budget.max_runtime_ms || workflow.counters.total_tokens >= workflow.budget.max_total_tokens
+      || evaluateWorkflowBudgetStop(document, workflow.id, "claim") !== null
       || !supportedStages.includes(stage.kind) || (["implementation", "correction"].includes(stage.kind)) !== (stage.sandbox === "workspace-write")
       || !["queued", "running"].includes(stage.status)) return false;
     this.context.revalidateTask(task);
@@ -107,30 +107,73 @@ export class WorkflowOrchestrator {
     if (live.budgetProof) budgetExecutionOwner(live.budgetProof, live.taskId, live.runId)!.prepare(live.budgetProof);
     return prepareWorkflowStage(live.taskId, live.runId, this.repoRoot, { context: this.context, now: () => this.now().getTime() });
   }
+  stopForIndependentBudget(taskId: string, receipt: object, workflowProof?: object): boolean {
+    const task = readTask(taskId), admission = task?.envelope.context_admission;
+    if (!task || admission?.schema_version !== 2) throw new ContextContractError("Independent budget evidence requires the exact workflow task");
+    const data = inspectBudgetStopReceipt(receipt, task);
+    if (!data) throw new ContextContractError("Independent budget stop receipt is unavailable or stale");
+    const snapshot = readWorkflowDocument(), owner = snapshot.workflows[admission.workflow_id], stage = snapshot.stages[admission.stage_id];
+    if (!owner || !stage || terminal(owner) || owner.stop_requested_at || owner.pending_decision_id || owner.status === "waiting-human") return false;
+    if (data.phase === "run" && stage.execution_id !== null
+      && workflowExecutionOwner(workflowProof, taskId, data.run_id ?? "") !== this) throw new ContextContractError("Independent budget stop also requires its workflow execution identity");
+    const retained = snapshot.events.filter((entry) => entry.workflow_id === owner.id && entry.type === "budget-stopped").at(-1);
+    if (owner.status === "needs-decision") {
+      if (!retained?.summary.startsWith(INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX)) return false;
+      createIssueService(this.repoRoot, { now: this.now }).recordIndependentWorkflowBudgetExhaustion(owner.id, receipt);
+      return true;
+    }
+    const issues = readIssueDocument(), facts = inspectIndependentWorkflowBudgetStopFacts(snapshot, issues, owner.id, data, this.now().getTime(), receipt, this.repoRoot);
+    const summary = independentWorkflowBudgetStopSummary(projectWorkflowConsumption(snapshot, owner.id).binding, data), at = this.now().toISOString();
+    mutateWorkflowDocument((document) => {
+      if (!isDeepStrictEqual(document, snapshot) || !isDeepStrictEqual(readTask(taskId), task) || !isDeepStrictEqual(readIssueDocument(), issues)
+        || !isDeepStrictEqual(readBudgetLedger(facts.ledgerPath), facts.ledger)) throw new ContextContractError("Independent budget stop lost its exact facts before persistence");
+      const current = document.workflows[owner.id]!;
+      current.status = "needs-decision"; current.recovery_state = "awaiting-human";
+      if (data.denials.some((entry) => entry.code === "budget-accounting-unavailable")) current.counters.accounting_complete = false;
+      current.blocked_reason = "Independent task or review budget is exhausted or unknown; a human decision is required.";
+      current.next_action = "Inspect exact independent budget evidence; no successor, extra correction, refund or publication is admitted.";
+      // A P charge before the O claim is not an O charge. Keep the event's O
+      // execution null and retain its separate P run in the compact receipt.
+      change(document, current, at, "budget-stopped", summary, stage.execution_id);
+    });
+    createIssueService(this.repoRoot, { now: this.now }).recordIndependentWorkflowBudgetExhaustion(owner.id, receipt);
+    return true;
+  }
   observe(proof: object, tokens: number, elapsed: number, complete = false): boolean {
     if (!Number.isSafeInteger(tokens) || tokens < 0 || !Number.isSafeInteger(elapsed) || elapsed < 0) throw new ContextContractError("Invalid bounded workflow usage observation");
     const live = this.live(proof), at = this.now().toISOString();
-    let stopped = false;
+    let stopped = false, retainedDecision = false;
     mutateWorkflowDocument((document) => {
       const owner = document.workflows[live.workflow.id]!, stage = document.stages[live.stage.id]!, charge = document.accounting[live.runId];
-      if (terminal(owner) || stage.execution_id !== live.runId || !charge || !isDeepStrictEqual(readTask(live.taskId), live.task)) throw new ContextContractError("Workflow usage lost its owner");
+      if (terminal(owner) || owner.status === "waiting-human" || owner.pending_decision_id || !isDeepStrictEqual(document, live.document) || stage.execution_id !== live.runId || !charge
+        || !isDeepStrictEqual(readTask(live.taskId), live.task)) throw new ContextContractError("Workflow usage lost its owner");
       if (charge.usage_complete) return;
       const nextTokens = Math.max(charge.observed_tokens, tokens), nextElapsed = Math.max(charge.active_runtime_ms, elapsed);
       if (nextTokens === charge.observed_tokens && nextElapsed === charge.active_runtime_ms && !complete) return;
       owner.counters.total_tokens += nextTokens - charge.observed_tokens; owner.counters.runtime_ms += nextElapsed - charge.active_runtime_ms;
       charge.observed_tokens = nextTokens; charge.active_runtime_ms = nextElapsed; charge.usage_complete = complete; charge.captured_at = at;
-      stopped = owner.counters.total_tokens >= owner.budget.max_total_tokens || owner.counters.runtime_ms >= owner.budget.max_runtime_ms;
-      const lineage = owner.lineage_id ? document.lineages[owner.lineage_id] : null;
-      const correction = lineage?.consumed_stage_id ? document.stages[lineage.consumed_stage_id] : null;
-      const cap = document.grants[owner.current_grant_id]!.correction.budget;
-      if (correction && cap && stage.ordinal >= correction.ordinal) {
-        const branch = Object.values(document.accounting).filter((entry) => entry.workflow_id === owner.id && document.stages[entry.stage_id]!.ordinal >= correction.ordinal);
-        stopped ||= branch.reduce((sum, entry) => sum + entry.observed_tokens, 0) >= cap.max_total_tokens
-          || branch.reduce((sum, entry) => sum + entry.active_runtime_ms, 0) >= cap.max_runtime_ms;
+      // Above-cap observations must stop in the same atomic workflow write.
+      // Project the stopped status only for contract validation; no second
+      // charge, issue write or budget transaction occurs under this lock.
+      const projected = structuredClone(document);
+      projected.workflows[owner.id]!.status = "needs-decision";
+      projected.workflows[owner.id]!.blocked_reason = "Projected budget observation; not persisted unless exhaustion is proven.";
+      const stop = evaluateWorkflowBudgetStop(projected, owner.id, "observe");
+      retainedDecision = owner.status === "needs-decision";
+      stopped = retainedDecision || stop !== null;
+      if (stop && !retainedDecision) {
+        owner.status = "needs-decision"; owner.recovery_state = "awaiting-human";
+        owner.blocked_reason = "Aggregate or correction token or active-runtime budget is exhausted.";
+        owner.next_action = "Inspect retained accounting and the exact issue decision; no successor is admitted.";
       }
-      if (stopped) { owner.status = "needs-decision"; owner.blocked_reason = "Aggregate or correction token or active-runtime budget is exhausted."; owner.next_action = "Inspect retained accounting; no successor is admitted."; }
-      change(document, owner, at, stopped ? "budget-stopped" : "reconciled", "Monotonic usage retained for the exact owned run.");
+      // Later high-water may cross another cap, but cannot replace the first
+      // exact P/O stop or relabel an unrelated human/recovery decision.
+      change(document, owner, at, stop && !retainedDecision ? "budget-stopped" : "reconciled",
+        stop && !retainedDecision ? workflowBudgetStopSummary(stop) : "Monotonic usage retained for the exact owned run.", live.runId);
     });
+    // A cross-store fault keeps the workflow stopped; reconciliation may only
+    // repeat this exact evidence record, never admit a replacement stage.
+    if (stopped && !retainedDecision) createIssueService(this.repoRoot, { now: this.now }).recordWorkflowBudgetExhaustion(live.workflow.id, "observe");
     return stopped;
   }
   captureOutput(proof: object, prepared: ReturnType<typeof prepareWorkflowStage>, value: unknown, logsPath: string) {
@@ -148,7 +191,49 @@ export class WorkflowOrchestrator {
   }
   settle(proof: object, tokens: number, elapsed: number, complete: boolean): void {
     this.observe(proof, tokens, elapsed, complete);
-    if (!complete) this.block(this.live(proof).workflow.id, "Interrupted or unreported usage is unknown; human recovery is required.", true);
+    if (!complete) {
+      const live = this.live(proof), at = this.now().toISOString();
+      let operation: "observe" | "claim" = "claim";
+      let preserveStop = false;
+      mutateWorkflowDocument((document) => {
+        const owner = document.workflows[live.workflow.id]!;
+        if (!isDeepStrictEqual(document, live.document) || !isDeepStrictEqual(readTask(live.taskId), live.task)
+          || owner.pending_decision_id || owner.status === "waiting-human") throw new ContextContractError("Unknown accounting lost its current workflow owner");
+        // Only this independently owned final observation may label an unknown
+        // budget stop. A generic human/recovery stop is never relabeled.
+        const retained = document.events.filter((event) => event.workflow_id === owner.id && event.type === "budget-stopped").at(-1);
+        if (owner.stop_requested_at) {
+          preserveStop = true;
+          if (owner.counters.accounting_complete) {
+            owner.counters.accounting_complete = false;
+            change(document, owner, at, "reconciled", "Interrupted accounting retained for the exact human stop; no budget decision is inferred.", live.runId);
+          }
+          return;
+        }
+        if (owner.status === "needs-decision" && retained?.summary.startsWith(INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX)) {
+          preserveStop = true;
+          if (owner.counters.accounting_complete) {
+            owner.counters.accounting_complete = false;
+            change(document, owner, at, "reconciled", "Unknown final accounting retained without replacing its exact independent budget stop.", live.runId);
+          }
+          return;
+        }
+        if (owner.status === "needs-decision" && !retained) {
+          preserveStop = true;
+          if (!owner.counters.accounting_complete) return;
+          owner.counters.accounting_complete = false;
+          change(document, owner, at, "reconciled", "Unknown final accounting retained without relabeling an unrelated stop.", live.runId);
+          return;
+        }
+        owner.counters.accounting_complete = false; owner.status = "needs-decision"; owner.recovery_state = "awaiting-human";
+        owner.blocked_reason = "Interrupted or unreported usage is unknown; human recovery is required.";
+        owner.next_action = "Inspect retained high-water and unknown accounting; no automatic refund, retry or successor is admitted.";
+        operation = evaluateWorkflowBudgetStop(document, owner.id, "observe") ? "observe" : "claim";
+        const stop = evaluateWorkflowBudgetStop(document, owner.id, operation)!;
+        change(document, owner, at, "budget-stopped", workflowBudgetStopSummary(stop), live.runId);
+      });
+      if (!preserveStop) createIssueService(this.repoRoot, { now: this.now }).recordWorkflowBudgetExhaustion(live.workflow.id, operation);
+    }
   }
   release(proof: object): void { executions.delete(proof); }
   block(id: string, reason: string, unknown = false): void {
@@ -258,6 +343,8 @@ export class WorkflowOrchestrator {
           if (!next) { this.service.admitCorrection(id); return; }
           if (next.kind !== "qa") throw new ContextContractError("Correction findings cannot skip a required review");
         } else {
+          if (stage.ordinal > plan.stages.length && hasConcreteCorrectionFinding(stage.output)
+            && this.service.stopForBudget(id, "correction", readWorkflowDocument())) return;
           this.block(id, stage.ordinal > plan.stages.length
             ? "The single correction did not clear required review findings; its allowance remains consumed and a human must decide."
             : "Sealed review has a blocking, incomplete, inconclusive or requested human finding.");
@@ -323,6 +410,15 @@ export class WorkflowOrchestrator {
         if (!stage?.task_id) continue;
         try {
           const task = readTask(stage.task_id);
+          if (owner.status === "needs-decision" && !owner.stop_requested_at) {
+            try {
+              createIssueService(this.repoRoot, { now: this.now }).recordIndependentWorkflowBudgetExhaustion(owner.id);
+              for (const operation of ["observe", "claim", "admit", "correction"] as const) {
+                createIssueService(this.repoRoot, { now: this.now }).recordWorkflowBudgetExhaustion(owner.id, operation);
+              }
+            } catch { /* Preserve the original stopped evidence when later facts cannot prove its exact issue edge. */ }
+            continue;
+          }
           // P progression/cutover is not supplied by a stored binding. The
           // fixture execution controller cannot manufacture successor admission.
           if (task && Object.getOwnPropertyDescriptor(task.envelope, "budget_admission")) continue;
@@ -351,6 +447,9 @@ export class WorkflowOrchestrator {
           const intent = Object.values(snapshot.admission_intents).find((entry) => entry.stage_id === stage.id);
           if (intent?.status === "reserved") { this.service.reconcileAdmission(owner.id); continue; }
           if (!task) { this.block(owner.id, "Reserved task is unavailable; its identity cannot be replaced."); continue; }
+          if (task.lifecycle === "queued" && evaluateWorkflowBudgetStop(snapshot, owner.id, "claim")) {
+            this.service.stopForBudget(owner.id, "claim", snapshot); continue;
+          }
           if (task.lifecycle !== "finished") continue;
           const charge = stage.execution_id ? snapshot.accounting[stage.execution_id] : null, admission = task.envelope.context_admission;
           if (admission?.schema_version !== 2 || !charge?.usage_complete || !owner.counters.accounting_complete) { this.block(owner.id, "Terminal attempt accounting is unknown; no successor can start.", true); continue; }

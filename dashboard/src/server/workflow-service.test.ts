@@ -6,12 +6,13 @@ import { parse } from "yaml";
 import type { AgentRoleRegistry } from "../../../lib/context/types";
 import { contextHash } from "../../../lib/context/assemble";
 import { readIssueDocument, mutateIssueDocument } from "../../../lib/state/issues";
+import * as issueStore from "../../../lib/state/issues";
 import { listTasks, readTask, updateTask, writeTask } from "../../../lib/state/store";
 import { readTaskEvents } from "../../../lib/state/events";
 import { readWorkflowDocument, mutateWorkflowDocument } from "../../../lib/state/workflows";
-import type { WorkflowRoleOutput } from "../../../lib/workflows/types";
+import type { WorkflowCandidateBinding, WorkflowRoleOutput } from "../../../lib/workflows/types";
 import { assertWorkflowDocument } from "../../../lib/workflows/validation";
-import { createIssueService } from "./issue-service";
+import { createIssueService, parseIndependentWorkflowBudgetStopSummary, workflowBudgetStopSummary } from "./issue-service";
 import { createWorkflowContextService, type WorkflowPreviewRequest } from "./workflow-context-service";
 import { createWorkflowService, type WorkflowServiceOptions } from "./workflow-service";
 import { createTask, createWorkflowTask, prepareTaskBudgetAdmission } from "./dispatch";
@@ -19,7 +20,12 @@ import { createContextService } from "./context-service";
 import { createTestingEvidence, sealTestingEvidence } from "../../../lib/context/testing-evidence";
 import { runTask } from "../../../runner/run-task";
 import { BUDGET_DIMENSIONS, type BudgetLimits } from "../../../lib/budgets/types";
-import type { BudgetPolicySource } from "../../../lib/budgets/policy";
+import { readBudgetPolicy, type BudgetPolicySource } from "../../../lib/budgets/policy";
+import { evaluateWorkflowBudgetStop, independentWorkflowBudgetStopSummary, projectWorkflowConsumption } from "../../../lib/workflows/policy";
+import { readBudgetLedger, mutateBudgetLedger } from "../../../lib/state/budgets";
+import { reserveTaskBudget, commitTaskBudget } from "../../../lib/budgets/reservations";
+import { BudgetExecutionScaffold } from "../../../runner/task-orchestrator";
+import { WorkflowOrchestrator } from "../../../runner/workflow-orchestrator";
 
 let root: string, state: string, issueId: string;
 const agents = { "portfolio-analyst": "product-manager", planner: "tech-lead", "software-engineer": "backend-engineer", reviewer: "reality-checker", "qa-evaluator": "qa-reviewer", "operations-observer": "devops-engineer" };
@@ -65,7 +71,7 @@ function verifiedLegacyCandidate() {
   updateTask(taskId, (task) => { task.lifecycle = "finished"; task.outcome = "completed"; task.finished_at = at; task.orchestration!.lease = null; task.envelope.metadata.run = { committed: true, diff_path: path, diff_truncated: false }; });
   return candidate;
 }
-function plannerGate() {
+function plannerGate(exhaustTokens = false) {
   const started = start({}, request("implementation")), stageId = started.result.workflow.current_stage_id!, taskId = started.result.stages[0]!.task_id!;
   const output: WorkflowRoleOutput = { schema_version: 1, kind: "plan", status: "completed", summary: "Exact synthetic proposal", plan: ["Implement only the authorized change"], scope_change_required: false, evidence_ids: [], unresolved_questions: [], risks: [], recommended_next_action: "Wait for human approval", requested_decision: "Approve the current plan" };
   updateTask(taskId, (task) => { task.lifecycle = "finished"; task.outcome = "completed"; task.finished_at = new Date().toISOString(); task.orchestration!.attempts = 1; });
@@ -73,8 +79,9 @@ function plannerGate() {
   mutateWorkflowDocument((document) => {
     const workflow = document.workflows[started.result.workflow.id]!; workflow.revision++; workflow.updated_at = at;
     const stage = document.stages[stageId]!; stage.status = "running"; stage.execution_id = runId; stage.updated_at = at;
-    workflow.counters = { tasks: 1, attempts: 1, runtime_ms: 100, total_tokens: 50, accounting_complete: true };
-    document.accounting[runId] = { schema_version: 1, id: runId, workflow_id: workflow.id, stage_id: stage.id, task_id: taskId, execution_id: runId, attempt: 1, attempt_charged: true, active_runtime_ms: 100, observed_tokens: 50, usage_complete: true, captured_at: at };
+    const totalTokens = exhaustTokens ? workflow.budget.max_total_tokens : 50;
+    workflow.counters = { tasks: 1, attempts: 1, runtime_ms: 100, total_tokens: totalTokens, accounting_complete: true };
+    document.accounting[runId] = { schema_version: 1, id: runId, workflow_id: workflow.id, stage_id: stage.id, task_id: taskId, execution_id: runId, attempt: 1, attempt_charged: true, active_runtime_ms: 100, observed_tokens: totalTokens, usage_complete: true, captured_at: at };
   });
   mutateWorkflowDocument((document) => {
     const workflow = document.workflows[started.result.workflow.id]!; workflow.revision++; workflow.updated_at = at; workflow.status = "waiting-human"; workflow.pending_decision_id = decisionId;
@@ -86,6 +93,361 @@ function plannerGate() {
   return { ...started, workflow, decision, stageId, taskId, payload: { expected_revision: workflow.revision, expected_issue_revision: decision.expected_issue_revision, decision_id: decision.id,
     resource_fingerprint: decision.resource_fingerprint, decision: "approve", approval_id: "synthetic-plan-approval", rationale: "Synthetic current exact plan approval", confirm: true } };
 }
+
+function budgetExhaustionFixture(status: "authorized" | "working" | "checking" = "working") {
+  const started = start({}, request(status === "authorized" ? "analysis" : "trivial-change"));
+  const stageId = started.result.workflow.current_stage_id!, taskId = started.result.stages[0]!.task_id!, runId = "synthetic-budget-run", at = new Date().toISOString();
+  updateTask(taskId, (task) => {
+    task.lifecycle = "running"; task.started_at = at; task.orchestration!.attempts = 1;
+    task.orchestration!.lease = { run_id: runId, worker_id: "synthetic-budget-worker", acquired_at: at, heartbeat_at: at, expires_at: new Date(Date.now() + 120_000).toISOString() };
+  });
+  mutateWorkflowDocument((document) => {
+    const workflow = document.workflows[started.result.workflow.id]!, stage = document.stages[stageId]!;
+    workflow.revision++; workflow.updated_at = at; workflow.counters.attempts = 1;
+    workflow.counters.runtime_ms = 100; workflow.counters.total_tokens = workflow.budget.max_total_tokens;
+    stage.status = "running"; stage.execution_id = runId; stage.updated_at = at;
+    document.accounting[runId] = { schema_version: 1, id: runId, workflow_id: workflow.id, stage_id: stage.id, task_id: taskId, execution_id: runId,
+      attempt: 1, attempt_charged: true, active_runtime_ms: 100, observed_tokens: workflow.budget.max_total_tokens, usage_complete: false, captured_at: at };
+  });
+  let candidate: WorkflowCandidateBinding | null = null;
+  if (status === "checking") {
+    const recorded = createIssueService(root).recordCandidate({ issueId, taskId, executionId: runId, repositoryId: "alpha", scopeRevision: 1,
+      baseRevision: "a".repeat(40), candidateRevision: "b".repeat(40), changedPaths: ["src/fixture.ts"] });
+    candidate = { candidate_id: recorded.id, issue_id: issueId, repository_id: "alpha", task_id: taskId, execution_id: runId, scope_revision: 1,
+      base_revision: recorded.base_revision, candidate_revision: recorded.candidate_revision, changed_paths: recorded.changed_paths,
+      diff_fingerprint: recorded.diff_fingerprint, content_fingerprint: "c".repeat(64), testing_evidence_fingerprint: "d".repeat(64) };
+    mutateWorkflowDocument((document) => {
+      const workflow = document.workflows[started.result.workflow.id]!;
+      workflow.revision++; workflow.updated_at = new Date().toISOString();
+      workflow.candidate = candidate; document.lineages[workflow.lineage_id!]!.candidate_ids.push(recorded.id);
+    });
+  }
+  return { ...started, stageId, taskId, runId, candidate };
+}
+
+function correctionReplacementBudgetFixture() {
+  const started = start({}, { ...request("trivial-change"), correction_enabled: true,
+    budget: { max_tasks: 4, max_attempts: 4, max_runtime_ms: 400_000, max_total_tokens: 50_000 } });
+  const ownerId = started.result.workflow.id, original = started.result.stages[0]!, originalRun = "synthetic-original-correction-base", at = new Date().toISOString();
+  updateTask(original.task_id!, (task) => {
+    task.lifecycle = "running"; task.started_at = at; task.orchestration!.attempts = 1;
+    task.orchestration!.lease = { run_id: originalRun, worker_id: "synthetic-original-worker", acquired_at: at, heartbeat_at: at, expires_at: new Date(Date.now() + 120_000).toISOString() };
+  });
+  mutateWorkflowDocument((document) => {
+    const owner = document.workflows[ownerId]!, stage = document.stages[original.id]!; owner.revision++; owner.updated_at = at;
+    owner.counters.attempts = 1; owner.counters.total_tokens = 2; stage.status = "running"; stage.execution_id = originalRun; stage.updated_at = at;
+    document.accounting[originalRun] = { schema_version: 1, id: originalRun, workflow_id: ownerId, stage_id: stage.id, task_id: stage.task_id!, execution_id: originalRun,
+      attempt: 1, attempt_charged: true, active_runtime_ms: 0, observed_tokens: 2, usage_complete: true, captured_at: at };
+  });
+  const issues = createIssueService(root), recorded = issues.recordCandidate({ issueId, taskId: original.task_id!, executionId: originalRun,
+    repositoryId: "alpha", scopeRevision: 1, baseRevision: "a".repeat(40), candidateRevision: "b".repeat(40), changedPaths: ["src/fixture.ts"] });
+  const candidate: WorkflowCandidateBinding = { candidate_id: recorded.id, issue_id: issueId, repository_id: "alpha", task_id: original.task_id!, execution_id: originalRun,
+    scope_revision: 1, base_revision: recorded.base_revision, candidate_revision: recorded.candidate_revision, changed_paths: recorded.changed_paths,
+    diff_fingerprint: recorded.diff_fingerprint, content_fingerprint: "c".repeat(64), testing_evidence_fingerprint: "d".repeat(64) };
+  updateTask(original.task_id!, (task) => { task.lifecycle = "finished"; task.finished_at = at; task.outcome = "completed"; task.orchestration!.lease = null; });
+  const correctionId = "synthetic-current-correction-stage", taskId = "synthetic-current-correction-task", reviewId = "synthetic-prior-review-stage", runId = "synthetic-current-correction-run";
+  const output: Extract<WorkflowRoleOutput, { kind: "review" }> = { schema_version: 1, kind: "review", status: "completed", summary: "Synthetic exact correction finding",
+    verdict: "correction-required", findings: [{ id: "synthetic-correction-finding", severity: "blocking", summary: "Correct the exact scoped fixture", path: "src/fixture.ts",
+      evidence_ids: [readIssueDocument().issues[issueId]!.evidence_ids.at(-1)!], scope_change_required: false }], evidence_ids: [], unresolved_questions: [], risks: [], recommended_next_action: "Apply the single bounded correction", requested_decision: null };
+  // Synthetic sealed review state; the regression starts after its admitted
+  // correction and exercises the real recordCandidate ordering, not its gate.
+  mutateWorkflowDocument((document) => {
+    const owner = document.workflows[ownerId]!, previous = document.stages[original.id]!, lineage = document.lineages[owner.lineage_id!]!;
+    owner.revision++; owner.updated_at = at; owner.candidate = candidate; owner.current_stage_id = correctionId; owner.stage_ids.push(reviewId, correctionId); owner.counters.tasks = 3; owner.counters.attempts = 2; owner.counters.total_tokens = 3;
+    previous.status = "completed"; previous.output_fingerprint = contextHash(JSON.stringify(candidate)); previous.candidate = candidate;
+    document.stages[reviewId] = { ...previous, id: reviewId, ordinal: 2, kind: "review", role_id: "reviewer", agent_id: "reality-checker", sandbox: "read-only",
+      task_id: "synthetic-sealed-review-task", execution_id: "synthetic-sealed-review-run", predecessor_stage_id: previous.id, output, output_fingerprint: contextHash(JSON.stringify(output)), candidate };
+    document.stages[correctionId] = { ...previous, id: correctionId, ordinal: 3, kind: "correction", status: "reserved", task_id: taskId, execution_id: null,
+      predecessor_stage_id: reviewId, handoff_id: "synthetic-correction-handoff", output: null, output_fingerprint: null, candidate };
+    document.handoffs["synthetic-correction-handoff"] = { schema_version: 1, id: "synthetic-correction-handoff", issue_id: issueId,
+      from_role_id: "reviewer", to_role_id: "software-engineer", execution_id: "synthetic-sealed-review-run", outcome_summary: output.summary,
+      evidence_ids: output.findings[0]!.evidence_ids, unresolved_questions: [], risks: [], recommended_next_action: output.recommended_next_action, requested_decision: null, created_at: at };
+    document.accounting["synthetic-sealed-review-run"] = { ...document.accounting[originalRun]!, id: "synthetic-sealed-review-run", stage_id: reviewId,
+      task_id: "synthetic-sealed-review-task", execution_id: "synthetic-sealed-review-run", observed_tokens: 1 };
+    lineage.candidate_ids.push(candidate.candidate_id); lineage.corrections_consumed = 1; lineage.consumed_stage_id = correctionId; lineage.consumed_at = at;
+    document.admission_intents["synthetic-correction-intent"] = { ...Object.values(document.admission_intents)[0]!, id: "synthetic-correction-intent", stage_id: correctionId,
+      task_id: taskId, status: "reserved", expected_issue_revision: readIssueDocument().issues[issueId]!.revision + 1, expected_workflow_revision: owner.revision };
+  });
+  const linked = issues.linkWorkflowTask(correctionId), task = structuredClone(readTask(original.task_id!)!);
+  task.envelope.id = taskId; task.lifecycle = "running"; task.outcome = null; task.finished_at = null;
+  task.orchestration!.lease = { run_id: runId, worker_id: "synthetic-correction-worker", acquired_at: at, heartbeat_at: at, expires_at: new Date(Date.now() + 120_000).toISOString() };
+  if (task.envelope.context_admission?.schema_version !== 2) throw new Error("Synthetic correction needs v2");
+  Object.assign(task.envelope.context_admission, { task_id: taskId, stage_id: correctionId, stage_kind: "correction", issue_revision: linked.revision,
+    predecessor_stage_id: reviewId, handoff_id: "synthetic-correction-handoff", candidate });
+  writeTask(task);
+  mutateWorkflowDocument((document) => {
+    const owner = document.workflows[ownerId]!; owner.revision++; owner.updated_at = at;
+    document.stages[correctionId]!.status = "queued"; document.admission_intents["synthetic-correction-intent"]!.status = "committed";
+  });
+  mutateWorkflowDocument((document) => {
+    const owner = document.workflows[ownerId]!, current = document.stages[correctionId]!; owner.revision++; owner.updated_at = at;
+    current.status = "running"; current.execution_id = runId; current.updated_at = at;
+    owner.counters.attempts = 3; document.accounting[runId] = { ...document.accounting[originalRun]!, id: runId, stage_id: correctionId, task_id: taskId, execution_id: runId, observed_tokens: 1, usage_complete: false };
+    owner.counters.total_tokens = 4;
+  });
+  const replacement = issues.recordCandidate({ issueId, taskId, executionId: runId, repositoryId: "alpha", scopeRevision: 1,
+    baseRevision: candidate.candidate_revision, candidateRevision: "e".repeat(40), changedPaths: ["src/fixture.ts"] });
+  mutateWorkflowDocument((document) => {
+    const owner = document.workflows[ownerId]!, cap = document.grants[owner.current_grant_id]!.correction.budget!.max_total_tokens;
+    owner.revision++; owner.updated_at = new Date().toISOString(); document.accounting[runId]!.observed_tokens = cap; document.accounting[runId]!.usage_complete = false;
+    owner.counters.total_tokens = 3 + cap;
+  });
+  return { ...started, ownerId, taskId, runId, correctionId, candidate, replacement };
+}
+
+describe("canonical workflow budget exhaustion", () => {
+  it("uses the exact unsealed correction replacement after real recordCandidate without fabricating its verification or resetting the retained base", () => {
+    const fixture = correctionReplacementBudgetFixture(), task = readFileSync(join(state, `tasks/${fixture.taskId}.json`)), before = readWorkflowDocument();
+    expect(readTask(fixture.taskId)!.testing_evidence).toBeUndefined(); expect(before.workflows[fixture.ownerId]!.candidate).toEqual(fixture.candidate);
+    expect(createIssueService(root).get(issueId).issue.status).toBe("checking");
+    expect(fixture.service.stopForBudget(fixture.ownerId, "observe")).toBe(true);
+    const after = readIssueDocument(), event = after.events.at(-1)!;
+    expect(event).toMatchObject({ type: "verification-needs-decision", payload: { candidate_id: fixture.replacement.id, retained_candidate: fixture.candidate,
+      replacement_candidate: fixture.replacement, budget_exhaustion: { binding: { candidate: fixture.candidate }, denials: expect.arrayContaining([
+        expect.objectContaining({ scope: "correction", dimension: "total_tokens", code: "budget-exhausted" })]) } } });
+    expect(after.evidence[after.issues[issueId]!.evidence_ids.at(-1)!]).toMatchObject({ candidate_id: fixture.replacement.id, candidate_revision: fixture.replacement.candidate_revision });
+    expect(readWorkflowDocument().workflows[fixture.ownerId]!.candidate).toEqual(fixture.candidate);
+    expect(readWorkflowDocument().lineages[fixture.result.workflow.lineage_id!]!.candidate_ids).toEqual([fixture.candidate.candidate_id]);
+    expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task); expect(after.issues[issueId]!.candidate_ids).toEqual([fixture.candidate.candidate_id, fixture.replacement.id]);
+  });
+  it.each(["base", "run", "event", "lineage"])("refuses an unsealed correction replacement with stale %s without rewriting retained authority", (change) => {
+    const fixture = correctionReplacementBudgetFixture();
+    if (change === "base") mutateIssueDocument((document) => { document.candidates[fixture.replacement.id]!.base_revision = "f".repeat(40); });
+    if (change === "run") mutateIssueDocument((document) => { document.candidates[fixture.replacement.id]!.execution_id = "foreign-correction-run"; });
+    if (change === "event") mutateIssueDocument((document) => { document.events.find((entry) => entry.type === "candidate-produced" && entry.payload.candidate_id === fixture.replacement.id)!.payload.diff_fingerprint = "f".repeat(64); });
+    if (change === "lineage") { const document = readWorkflowDocument(); document.lineages[fixture.result.workflow.lineage_id!]!.candidate_ids = []; expect(() => assertWorkflowDocument(document)).toThrow(); }
+    const beforeWorkflow = workflowBytes(), beforeIssue = readFileSync(join(state, "issues/issues.json")), task = readFileSync(join(state, `tasks/${fixture.taskId}.json`));
+    if (change === "lineage") {
+      // A malformed/future aggregate is never silently repaired by a read.
+      writeFileSync(join(state, "workflows/workflows.json"), '{"schema_version":99}');
+      const invalid = workflowBytes(); expect(() => fixture.service.stopForBudget(fixture.ownerId, "observe")).toThrow(); expect(workflowBytes()).toBe(invalid);
+    } else { expect(() => fixture.service.stopForBudget(fixture.ownerId, "observe")).toThrow(/stale|progress/); expect(workflowBytes()).toBe(beforeWorkflow); }
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task);
+  });
+  it.each(["authorized", "working", "checking"] as const)("takes only the existing %s needs-decision edge with exact retained evidence", (status) => {
+    const fixture = budgetExhaustionFixture(status), beforeTask = readFileSync(join(state, `tasks/${fixture.taskId}.json`));
+    const before = readIssueDocument().issues[issueId]!, stop = evaluateWorkflowBudgetStop(readWorkflowDocument(), fixture.result.workflow.id, "observe")!;
+    expect(fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toBe(true);
+    const document = readIssueDocument(), issue = document.issues[issueId]!, event = document.events.at(-1)!;
+    expect(issue).toMatchObject({ status: "needs-decision", scope_revision: before.scope_revision, revision: before.revision + 1 });
+    expect(issue.authorized_scope).toEqual(before.authorized_scope); expect(issue.task_ids).toEqual(before.task_ids); expect(issue.candidate_ids).toEqual(before.candidate_ids);
+    expect(event.type).toBe(status === "authorized" ? "authorization-stale" : status === "working" ? "decision-required" : "verification-needs-decision");
+    expect(event.payload).toMatchObject({ workflow_id: fixture.result.workflow.id, stage_id: fixture.stageId, task_id: fixture.taskId,
+      execution_id: fixture.runId, candidate_id: fixture.candidate?.candidate_id ?? null, budget_stop_key: workflowBudgetStopSummary(stop),
+      budget_exhaustion: { operation: "observe", binding: { grant_id: fixture.result.grant.id, authority_revision: 1, scope_revision: 1,
+        policy_fingerprint: fixture.result.grant.policy_fingerprint, testing_policy_fingerprint: fixture.result.grant.testing_policy_fingerprint },
+      denials: [{ code: "budget-exhausted", scope: "root", dimension: "total_tokens", cap: fixture.result.workflow.budget.max_total_tokens, remaining: 0 }] } });
+    expect(document.evidence[issue.evidence_ids.at(-1)!]).toMatchObject({ task_id: fixture.taskId, execution_id: fixture.runId, status: "gap", candidate_id: fixture.candidate?.candidate_id ?? null });
+    expect(readWorkflowDocument().events.at(-1)).toMatchObject({ type: "budget-stopped", stage_id: fixture.stageId, execution_id: fixture.runId, summary: workflowBudgetStopSummary(stop) });
+    expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(beforeTask); expect(listTasks()).toHaveLength(1); expect(existsSync(join(state, "budgets"))).toBe(false);
+  });
+  it("retains the one issue transition across repeated calls, later high-water, restart and explicit human resume", () => {
+    const fixture = budgetExhaustionFixture(); fixture.service.stopForBudget(fixture.result.workflow.id, "observe");
+    const beforeIssue = readFileSync(join(state, "issues/issues.json")), beforeWorkflow = workflowBytes();
+    expect(fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toBe(true);
+    expect(createIssueService(root).recordWorkflowBudgetExhaustion(fixture.result.workflow.id, "observe")).toBe(false);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(workflowBytes()).toBe(beforeWorkflow);
+    mutateWorkflowDocument((document) => {
+      const owner = document.workflows[fixture.result.workflow.id]!; owner.revision++; owner.updated_at = new Date().toISOString();
+      document.accounting[fixture.runId]!.active_runtime_ms = 150; owner.counters.runtime_ms = 150;
+    });
+    const afterHighWater = workflowBytes();
+    expect(createWorkflowService(root).stopForBudget(fixture.result.workflow.id, "observe")).toBe(true);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(workflowBytes()).toBe(afterHighWater);
+    const issue = readIssueDocument().issues[issueId]!; createIssueService(root).resolveDecision(issueId, issue.revision, "synthetic-human-resume", "Inspect retained consumption before any fresh admission.");
+    const resumed = readFileSync(join(state, "issues/issues.json"));
+    expect(createIssueService(root).recordWorkflowBudgetExhaustion(fixture.result.workflow.id, "observe")).toBe(false);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(resumed); expect(readIssueDocument().issues[issueId]!.status).toBe("authorized");
+  });
+  it.each(["expired-lease", "replaced-run", "generation", "scope", "unrelated-progress", "candidate"])("refuses %s stale budget ownership without task, issue or workflow effects", (change) => {
+    const fixture = budgetExhaustionFixture(change === "candidate" ? "checking" : "working");
+    if (change === "expired-lease") updateTask(fixture.taskId, (task) => { task.orchestration!.lease!.expires_at = task.orchestration!.lease!.acquired_at; });
+    if (change === "replaced-run") updateTask(fixture.taskId, (task) => { task.orchestration!.lease!.run_id = "foreign-budget-run"; });
+    if (change === "generation") updateTask(fixture.taskId, (task) => { if (task.envelope.context_admission?.schema_version === 2) task.envelope.context_admission.stage_generation++; });
+    if (change === "scope") mutateIssueDocument((document) => { document.issues[issueId]!.authorized_scope.allowed_path_patterns.push("other/**"); });
+    if (change === "unrelated-progress") mutateIssueDocument((document) => {
+      const issue = document.issues[issueId]!; issue.revision++; document.events.push({ id: "synthetic-unrelated-progress", issue_id: issue.id, type: "synthetic-unrelated", at: new Date().toISOString(), scope_revision: 1, payload: {} });
+    });
+    if (change === "candidate") mutateIssueDocument((document) => { document.candidates[fixture.candidate!.candidate_id]!.invalidated_at = new Date().toISOString(); });
+    const beforeIssue = readFileSync(join(state, "issues/issues.json")), beforeWorkflow = workflowBytes(), beforeTask = readFileSync(join(state, `tasks/${fixture.taskId}.json`));
+    expect(() => fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toThrow(/stale|lease|scope|progress/);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(workflowBytes()).toBe(beforeWorkflow);
+    expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(beforeTask); expect(listTasks()).toHaveLength(1);
+  });
+  it.each(["ready-for-review", "done", "cancelled", "blocked", "needs-decision"] as const)("preserves protected %s issue state instead of rewriting it through exhaustion", (status) => {
+    const fixture = budgetExhaustionFixture(); mutateIssueDocument((document) => { document.issues[issueId]!.status = status; });
+    const beforeIssue = readFileSync(join(state, "issues/issues.json")), beforeWorkflow = workflowBytes();
+    expect(fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toBe(false);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(workflowBytes()).toBe(beforeWorkflow);
+  });
+  it("does not turn a human Planner gate or a correction opt-out into budget exhaustion", () => {
+    const gate = plannerGate(), before = workflowBytes(), issue = readFileSync(join(state, "issues/issues.json"));
+    expect(gate.service.stopForBudget(gate.workflow.id, "correction")).toBe(false);
+    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue);
+  });
+  it("stops an exact exhausted read-only quality review without rewinding the protected ready-for-review issue", () => {
+    const candidate = verifiedLegacyCandidate(), { service, result } = start({}, { ...request("quality-review"),
+      selected_agents: { reviewer: "reality-checker", "qa-evaluator": "qa-reviewer" }, candidate_id: candidate.id });
+    const stage = result.stages[0]!, runId = "synthetic-quality-budget-run", at = new Date().toISOString();
+    updateTask(stage.task_id!, (task) => {
+      task.lifecycle = "running"; task.started_at = at; task.orchestration!.attempts = 1;
+      task.orchestration!.lease = { run_id: runId, worker_id: "synthetic-quality-worker", acquired_at: at, heartbeat_at: at, expires_at: new Date(Date.now() + 60_000).toISOString() };
+    });
+    mutateWorkflowDocument((document) => {
+      const owner = document.workflows[result.workflow.id]!, current = document.stages[stage.id]!;
+      owner.revision++; owner.updated_at = at; owner.counters.attempts = 1; owner.counters.total_tokens = owner.budget.max_total_tokens;
+      current.status = "running"; current.execution_id = runId; current.updated_at = at;
+      document.accounting[runId] = { schema_version: 1, id: runId, workflow_id: owner.id, stage_id: current.id, task_id: stage.task_id!, execution_id: runId,
+        attempt: 1, attempt_charged: true, active_runtime_ms: 0, observed_tokens: owner.budget.max_total_tokens, usage_complete: false, captured_at: at };
+    });
+    const before = readFileSync(join(state, "issues/issues.json")), task = readFileSync(join(state, `tasks/${stage.task_id}.json`));
+    expect(service.stopForBudget(result.workflow.id, "observe")).toBe(true);
+    expect(readWorkflowDocument().workflows[result.workflow.id]).toMatchObject({ status: "needs-decision", recovery_state: "awaiting-human" });
+    expect(readWorkflowDocument().events.at(-1)).toMatchObject({ type: "budget-stopped", execution_id: runId });
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(before); expect(readIssueDocument().issues[issueId]!.status).toBe("ready-for-review");
+    expect(readFileSync(join(state, `tasks/${stage.task_id}.json`))).toEqual(task); expect(listTasks()).toHaveLength(2);
+  });
+  it("records authorization-stale before an exhausted successor even after legitimate human Planner approval", () => {
+    const gate = plannerGate(true); gate.service.decide(gate.workflow.id, gate.payload);
+    const task = readFileSync(join(state, `tasks/${gate.taskId}.json`));
+    expect(() => gate.service.admitSuccessor(gate.workflow.id)).toThrow(/budget exhaustion/);
+    expect(readIssueDocument().issues[issueId]!.status).toBe("needs-decision");
+    expect(readIssueDocument().events.at(-1)).toMatchObject({ type: "authorization-stale", payload: { stage_id: gate.stageId, task_id: gate.taskId } });
+    expect(readWorkflowDocument().workflows[gate.workflow.id]!.approved_plan).not.toBeNull(); expect(listTasks()).toHaveLength(1);
+    expect(readFileSync(join(state, `tasks/${gate.taskId}.json`))).toEqual(task);
+  });
+  it("requires the exact retained budget-stopped event before an issue recorder may mutate", () => {
+    const fixture = budgetExhaustionFixture();
+    mutateWorkflowDocument((document) => {
+      const owner = document.workflows[fixture.result.workflow.id]!; owner.revision++; owner.updated_at = new Date().toISOString();
+      owner.status = "needs-decision"; owner.blocked_reason = "Human decision already required for another reason.";
+    });
+    const before = readFileSync(join(state, "issues/issues.json"));
+    expect(createIssueService(root).recordWorkflowBudgetExhaustion(fixture.result.workflow.id, "observe")).toBe(false);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(before); expect(fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toBe(false);
+  });
+  it("retains a durable stop through an issue persistence gap and retries only its exact canonical transition", () => {
+    const fixture = budgetExhaustionFixture(), beforeIssue = readFileSync(join(state, "issues/issues.json")), beforeTask = readFileSync(join(state, `tasks/${fixture.taskId}.json`));
+    const mutation = vi.spyOn(issueStore, "mutateIssueDocument").mockImplementationOnce(() => { throw new Error("Synthetic issue persistence failure"); });
+    expect(() => fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toThrow(/persistence failure/);
+    const stopped = readWorkflowDocument(); expect(stopped.workflows[fixture.result.workflow.id]).toMatchObject({ status: "needs-decision", recovery_state: "awaiting-human" });
+    expect(stopped.events.at(-1)).toMatchObject({ type: "budget-stopped", execution_id: fixture.runId });
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(beforeTask);
+    const stoppedBytes = workflowBytes(); mutation.mockRestore();
+    expect(createWorkflowService(root).stopForBudget(fixture.result.workflow.id, "observe")).toBe(true);
+    expect(workflowBytes()).toBe(stoppedBytes); expect(readIssueDocument().issues[issueId]!.status).toBe("needs-decision");
+    expect(readIssueDocument().events.filter((entry) => entry.payload.budget_stop_key)).toHaveLength(1); expect(listTasks()).toHaveLength(1);
+  });
+  it("rejects a stale expected workflow snapshot before either stop or issue evidence", () => {
+    const fixture = budgetExhaustionFixture(), snapshot = readWorkflowDocument();
+    mutateWorkflowDocument((document) => { const owner = document.workflows[fixture.result.workflow.id]!; owner.revision++; owner.updated_at = new Date().toISOString(); owner.next_action = "Current synthetic inspection differs."; });
+    const before = workflowBytes(), issue = readFileSync(join(state, "issues/issues.json"));
+    expect(() => fixture.service.stopForBudget(fixture.result.workflow.id, "observe", snapshot)).toThrow(/snapshot is stale/);
+    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue);
+  });
+  it("retains proven usage and unavailable totals when exact interrupted accounting requires a decision", () => {
+    const fixture = budgetExhaustionFixture(), at = new Date().toISOString();
+    updateTask(fixture.taskId, (task) => {
+      task.lifecycle = "finished"; task.outcome = "needs-review"; task.finished_at = at; task.orchestration!.lease = null;
+      task.orchestration!.last_failure = { kind: "terminal", message: "Synthetic interrupted usage", at, run_id: fixture.runId };
+    });
+    mutateWorkflowDocument((document) => {
+      const owner = document.workflows[fixture.result.workflow.id]!, stage = document.stages[fixture.stageId]!;
+      owner.revision++; owner.updated_at = at; owner.status = "needs-decision"; owner.recovery_state = "awaiting-human";
+      owner.blocked_reason = "Interrupted accounting remains unknown."; owner.counters.accounting_complete = false;
+      // The initial fixture is a proven ceiling sample; retained usage cannot
+      // regress. Unknown final usage keeps that high-water, never known zero.
+      stage.status = "needs-review"; stage.updated_at = at;
+      const stop = evaluateWorkflowBudgetStop(document, owner.id, "admit")!;
+      document.events.push({ schema_version: 1, id: "WE-synthetic-unknown-budget", workflow_id: owner.id, stage_id: stage.id, execution_id: fixture.runId,
+        revision: owner.revision, type: "budget-stopped", summary: workflowBudgetStopSummary(stop), at });
+    });
+    const bytes = workflowBytes(), task = readFileSync(join(state, `tasks/${fixture.taskId}.json`));
+    expect(fixture.service.stopForBudget(fixture.result.workflow.id, "admit")).toBe(true);
+    const payload = readIssueDocument().events.at(-1)!.payload;
+    expect(payload.budget_exhaustion).toMatchObject({ denials: expect.arrayContaining([{ code: "budget-accounting-unavailable", scope: "root", dimension: "accounting", cap: null,
+      proven_consumed: fixture.result.workflow.budget.max_total_tokens, remaining: null, required: 1 }]) });
+    expect(payload.budget_consumption).toMatchObject({ root: { canonical: { total_tokens: fixture.result.workflow.budget.max_total_tokens, accounting_complete: false }, runtime_ms: null, total_tokens: null } });
+    expect(workflowBytes()).toBe(bytes); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task); expect(listTasks()).toHaveLength(1);
+  });
+  it("reports canonical and independent consumption read-only while an active final total remains unknown", () => {
+    const fixture = budgetExhaustionFixture(), before = workflowBytes(), issue = readFileSync(join(state, "issues/issues.json")), task = readFileSync(join(state, `tasks/${fixture.taskId}.json`));
+    const detail = fixture.service.detail(fixture.result.workflow.id), lineage = createIssueService(root).get(issueId);
+    expect(detail.budget_consumption).toMatchObject({ root: { canonical: { attempts: 1, runtime_ms: 100, total_tokens: fixture.result.workflow.budget.max_total_tokens }, runtime_ms: null, total_tokens: null },
+      review: { counters: { tasks: 0, attempts: 0, runtime_ms: 0, total_tokens: 0 } }, correction: { enabled: false, consumed: 0, remaining: 0 } });
+    expect(lineage.budget_consumption).toEqual({ availability: "available", workflows: [detail.budget_consumption] });
+    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task);
+  });
+});
+
+async function independentStopFixture(unknown = false) {
+  const started = start(), stage = started.result.stages[0]!, taskId = stage.task_id!, runId = "synthetic-independent-stop-run";
+  writeFileSync(join(root, "registry/budget-policy.yml"), JSON.stringify({ schema_version: 1, revision: 1, pricing: { status: "unavailable", reason: "no-versioned-source" },
+    rules: [{ id: "synthetic-static-company", revision: 1, scope: { kind: "company", id: "surtec" }, period: "none", warning_percent: 80,
+      limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "unconfigured" }])) }] }));
+  const source = readBudgetPolicy(root), draft = structuredClone(readTask(taskId)!); draft.orchestration!.max_total_tokens = 20;
+  const prepared = prepareTaskBudgetAdmission(draft, { source, attribution: { company_id: "surtec", objective_ids: [], project_ids: ["alpha"], issue_id: issueId,
+    role_id: stage.role_id, execution_id: taskId } });
+  mutateBudgetLedger((tx) => reserveTaskBudget(tx, { admission: prepared.admission, source }), undefined, prepared.admission.created_at);
+  writeTask(prepared.task); mutateBudgetLedger((tx) => commitTaskBudget(tx, { admission: prepared.admission, persisted_admission: prepared.admission }), undefined, prepared.admission.created_at);
+  const budgets = new BudgetExecutionScaffold({ resolve: () => ({ source }) }), proof = budgets.prepareClaim(taskId, runId, "synthetic-independent-worker"), at = new Date().toISOString();
+  updateTask(taskId, (task) => {
+    task.lifecycle = "running"; task.started_at = at; task.orchestration!.attempts = 1;
+    task.orchestration!.lease = { run_id: runId, worker_id: "synthetic-independent-worker", acquired_at: at, heartbeat_at: at, expires_at: new Date(Date.now() + 120_000).toISOString() };
+  });
+  budgets.bindClaim(proof); await budgets.observe(proof, unknown ? null : 20, 1);
+  const receipt = budgets.stopReceipt(taskId, proof); expect(receipt).not.toBeNull();
+  return { ...started, taskId, runId, budgets, proof, receipt: receipt!, controller: new WorkflowOrchestrator(root) };
+}
+
+describe("independent canonical budget evidence", () => {
+  it.each(["invented-required", "invented-unknown"])("rejects %s retained summary values without any canonical issue write", async (change) => {
+    const fixture = await independentStopFixture(change === "invented-unknown"), fault = vi.spyOn(issueStore, "mutateIssueDocument").mockImplementationOnce(() => { throw new Error("Synthetic independent issue gap"); });
+    expect(() => fixture.controller.stopForIndependentBudget(fixture.taskId, fixture.receipt)).toThrow(/issue gap/); fault.mockRestore();
+    const workflows = readWorkflowDocument(), binding = projectWorkflowConsumption(workflows, fixture.result.workflow.id).binding, event = workflows.events.at(-1)!;
+    const data = parseIndependentWorkflowBudgetStopSummary(event.summary, binding)!;
+    if (change === "invented-required") {
+      // An untrusted persisted fixture may claim a larger requirement, but it
+      // cannot transform a below-cap canonical charge into a run exhaustion.
+      const ledger = structuredClone(readBudgetLedger()!); Object.values(ledger.charges)[0]!.observed_total_tokens = 1;
+      writeFileSync(join(state, "budgets/budgets.json"), JSON.stringify(ledger));
+      data.denials[0]!.proven_consumed = 1; data.denials[0]!.required = 100;
+    } else data.denials[0]!.proven_consumed = 999;
+    event.summary = independentWorkflowBudgetStopSummary(binding, data); assertWorkflowDocument(workflows);
+    writeFileSync(join(state, "workflows/workflows.json"), JSON.stringify(workflows));
+    const issue = readFileSync(join(state, "issues/issues.json")), task = readFileSync(join(state, `tasks/${fixture.taskId}.json`)), ledger = readFileSync(join(state, "budgets/budgets.json")), workflow = workflowBytes();
+    expect(() => createIssueService(root).recordIndependentWorkflowBudgetExhaustion(fixture.result.workflow.id)).toThrow(/cannot be reconstructed|no longer exact/);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task);
+    expect(readFileSync(join(state, "budgets/budgets.json"))).toEqual(ledger); expect(workflowBytes()).toBe(workflow); expect(listTasks()).toHaveLength(1);
+  });
+  it.each([false, true])("recovers exact static %s evidence after a workflow-to-issue persistence gap without O charges, authority or refunds", async (unknown) => {
+    const fixture = await independentStopFixture(unknown), task = readFileSync(join(state, `tasks/${fixture.taskId}.json`)), ledger = readFileSync(join(state, "budgets/budgets.json"));
+    const issue = readFileSync(join(state, "issues/issues.json")), fault = vi.spyOn(issueStore, "mutateIssueDocument").mockImplementationOnce(() => { throw new Error("Synthetic independent issue gap"); });
+    expect(() => fixture.controller.stopForIndependentBudget(fixture.taskId, fixture.receipt)).toThrow(/issue gap/); fault.mockRestore();
+    const workflow = workflowBytes(), retained = readWorkflowDocument().events.at(-1)!;
+    expect(retained).toMatchObject({ type: "budget-stopped", execution_id: null });
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue); expect(readWorkflowDocument().accounting).toEqual({});
+    expect(createIssueService(root).recordIndependentWorkflowBudgetExhaustion(fixture.result.workflow.id)).toBe(true);
+    expect(readIssueDocument().events.at(-1)).toMatchObject({ type: "authorization-stale", payload: { task_id: fixture.taskId, execution_id: fixture.runId,
+      independent_budget_exhaustion: { denials: expect.arrayContaining([expect.objectContaining(unknown ? { code: "budget-accounting-unavailable", dimension: "accounting", cap: null } : { code: "budget-exhausted", dimension: "total_tokens", cap: 20 })]) } } });
+    expect(workflowBytes()).toBe(workflow); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task); expect(readFileSync(join(state, "budgets/budgets.json"))).toEqual(ledger);
+    const final = readFileSync(join(state, "issues/issues.json")); expect(createIssueService(root).recordIndependentWorkflowBudgetExhaustion(fixture.result.workflow.id)).toBe(false);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(final); expect(Object.values(readBudgetLedger()!.charges)).toHaveLength(1);
+  });
+  it("strictly parses retained evidence and rejects changed bindings, malformed tuples and caller receipt copies", async () => {
+    const fixture = await independentStopFixture(); fixture.controller.stopForIndependentBudget(fixture.taskId, fixture.receipt);
+    const document = readWorkflowDocument(), binding = projectWorkflowConsumption(document, fixture.result.workflow.id).binding, summary = document.events.at(-1)!.summary;
+    expect(parseIndependentWorkflowBudgetStopSummary(summary, binding)).toMatchObject({ phase: "run", run_id: fixture.runId, denials: [expect.objectContaining({ required: 0 })] });
+    expect(parseIndependentWorkflowBudgetStopSummary(summary, { ...binding, grant_id: "foreign-grant" })).toBeNull();
+    expect(parseIndependentWorkflowBudgetStopSummary(summary.replace('"total_tokens",20,20,0', '"total_tokens",20,20,-1'), binding)).toBeNull();
+    expect(parseIndependentWorkflowBudgetStopSummary(summary + " ", binding)).toBeNull();
+    const before = workflowBytes(); expect(() => fixture.controller.stopForIndependentBudget(fixture.taskId, {})).toThrow(/receipt/); expect(workflowBytes()).toBe(before);
+    const issue = readIssueDocument().issues[issueId]!; createIssueService(root).resolveDecision(issueId, issue.revision, "synthetic-independent-human", "Inspect exact consumption before any future admission.");
+    await fixture.budgets.observe(fixture.proof, 25, 2);
+    const resumed = readFileSync(join(state, "issues/issues.json")); expect(createIssueService(root).recordIndependentWorkflowBudgetExhaustion(fixture.result.workflow.id)).toBe(false);
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(resumed); expect(readIssueDocument().issues[issueId]!.status).toBe("authorized");
+  });
+});
 
 describe("durable explicit workflow admission", () => {
   it.each([false, true])("separates historical P scaffold readiness from current O controller availability %s", (available) => {

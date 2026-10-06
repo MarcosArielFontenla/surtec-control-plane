@@ -101,6 +101,13 @@ export async function runTask(
   const budgetPresent = (task: TaskRecord | null): boolean => !!task && Object.hasOwn(task.envelope, "budget_admission");
   const budgetOwner = budgetExecutionOwner(options.budgetExecution, taskId, runId);
   if (budgetPresent(beforeClaim) && !budgetOwner) return null;
+  const relayBudgetStop = (): void => {
+    if (!budgetOwner || beforeClaim?.envelope.context_admission?.schema_version !== 2) return;
+    const owner = workflowExecutionOwner(options.workflowExecution, taskId, runId);
+    if (!owner) return; // Neither serialized data nor one proof replaces both owners.
+    const receipt = budgetOwner.stopReceipt(taskId, options.budgetExecution);
+    if (receipt) owner.stopForIndependentBudget(taskId, receipt, options.workflowExecution);
+  };
   let effectiveRuntimeMs = beforeClaim?.orchestration?.max_runtime_ms ?? 300_000;
   let budgetStartedMs: number | null = null;
   const prepareBudget = (): void => {
@@ -110,7 +117,7 @@ export async function runTask(
     }
     if (!budgetOwner) throw new ContextPreviewError("Budget-bound execution requires its private scaffold controller");
     try { effectiveRuntimeMs = Math.min(effectiveRuntimeMs, budgetOwner.prepare(options.budgetExecution!).maxRuntimeMs); }
-    catch { throw new ContextPreviewError("Budget execution binding, capacity or ownership is unavailable; retained facts require review"); }
+    catch { relayBudgetStop(); throw new ContextPreviewError("Budget execution binding, capacity or ownership is unavailable; retained facts require review"); }
     if (budgetStartedMs !== null && Date.now() - budgetStartedMs >= effectiveRuntimeMs) {
       throw new ContextPreviewError("Current attempt runtime capacity is exhausted; no further execution effect is admitted");
     }
@@ -235,6 +242,7 @@ export async function runTask(
         const observed = await budgetOwner.observe(options.budgetExecution!, workflowUsageComplete && !usageUncertain ? attemptTokens : null,
           Math.max(0, Date.now() - Date.parse(startedAt)), true);
         budgetTerminalObserved = true;
+        relayBudgetStop(); // Before task terminalization, proof revocation or any further effect.
         if (observed.unknown || !workflowUsageComplete || usageUncertain) {
           retryable = false;
           if (outcome === "completed" || outcome === "partial" || outcome === "failed") {
@@ -353,6 +361,7 @@ export async function runTask(
     if (budgetOwner) {
       const elapsed = Math.max(0, Date.now() - Date.parse(startedAt));
       const observed = await budgetOwner.observe(options.budgetExecution!, attemptTokens, elapsed);
+      relayBudgetStop();
       if ((observed.exhausted || observed.unknown) && !controller.signal.aborted) {
         effectiveRuntimeMs = Math.min(effectiveRuntimeMs, readTask(taskId)?.orchestration?.max_runtime_ms ?? effectiveRuntimeMs);
         abortKind = elapsed >= effectiveRuntimeMs ? "timeout" : "tokens";
@@ -780,6 +789,7 @@ export async function runTask(
     if (budgetOwner && !budgetTerminalObserved) {
       try {
         await budgetOwner.observe(options.budgetExecution!, modelInvoked ? null : 0, Math.max(0, Date.now() - Date.parse(startedAt)), true);
+        relayBudgetStop();
       } catch { /* Retain durable holds on an interrupted or unavailable ledger. */ }
     }
     span.end(spanStatus);

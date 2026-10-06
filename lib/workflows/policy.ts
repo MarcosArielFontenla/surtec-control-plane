@@ -1,13 +1,15 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { types as nodeTypes } from "node:util";
 import { parse } from "yaml";
 import { evidenceHash, testingEvidenceStatus, type TestingEvidence } from "../context/testing-evidence";
+import type { BudgetDimension } from "../budgets/types";
 import type { ExecutionBudget } from "../context/types";
 import type { WorkIssue } from "../issues/types";
 import { redactText } from "../security/redaction";
 import { assertResolvedWorkflowReviewPolicy } from "./review-policy";
-import type { GovernedWorkflow, ReviewReceipt, WorkflowBudget, WorkflowCandidateBinding, WorkflowCandidateLineage, WorkflowCorrection, WorkflowCounters, WorkflowGrant, WorkflowPolicy, WorkflowRoleOutput } from "./types";
-import { assertReviewReceipt, assertWorkflowCandidateLineage, assertWorkflowGrant, assertWorkflowPolicy, assertWorkflowRecord, assertWorkflowRoleOutput, WorkflowContractError } from "./validation";
+import { WORKFLOW_LIMITS, type GovernedWorkflow, type ReviewReceipt, type WorkflowBudget, type WorkflowCandidateBinding, type WorkflowCandidateLineage, type WorkflowCorrection, type WorkflowCounters, type WorkflowDocument, type WorkflowGrant, type WorkflowPolicy, type WorkflowRoleOutput, type WorkflowStage } from "./types";
+import { assertReviewReceipt, assertWorkflowCandidateLineage, assertWorkflowDocument, assertWorkflowGrant, assertWorkflowPolicy, assertWorkflowRecord, assertWorkflowRoleOutput, WorkflowContractError } from "./validation";
 
 export const WORKFLOW_BUDGET_CEILINGS: Readonly<WorkflowBudget> = Object.freeze({ max_tasks: 7, max_attempts: 14, max_runtime_ms: 1800000, max_total_tokens: 300000 });
 export const CORRECTION_BUDGET_CEILINGS: Readonly<WorkflowBudget> = Object.freeze({ max_tasks: 3, max_attempts: 4, max_runtime_ms: 300000, max_total_tokens: 40000 });
@@ -86,6 +88,166 @@ export function resolveWorkflowStageBudget(input: {
   return { budget: { max_attempts: Math.min(...caps.map((cap) => cap.max_attempts)), max_runtime_ms: Math.min(...caps.map((cap) => cap.max_runtime_ms)), max_total_tokens: Math.min(...caps.map((cap) => cap.max_total_tokens)) }, reasons };
 }
 
+export type WorkflowBudgetStopOperation = "admit" | "claim" | "observe" | "correction";
+export interface WorkflowBudgetBinding {
+  workflow_id: string; workflow_revision: number; project_id: string; issue_id: string; scope_revision: number;
+  grant_id: string; authority_revision: number; stage_id: string | null; stage_generation: number | null;
+  task_id: string | null; execution_id: string | null; candidate: WorkflowCandidateBinding | null;
+  context_fingerprint: string | null; policy_fingerprint: string; testing_policy_fingerprint: string; review_policy_fingerprint: string | null;
+}
+export interface WorkflowConsumptionGroup {
+  /** Canonical proven numbers remain visible even when final totals cannot be proved. */
+  counters: WorkflowCounters; runtime_ms: number | null; total_tokens: number | null; attribution_complete: boolean;
+}
+export interface WorkflowConsumptionView {
+  binding: WorkflowBudgetBinding;
+  /** Conservative normative floors are never reset to a smaller receipt-derived total. */
+  root: WorkflowConsumptionGroup & { canonical: WorkflowCounters };
+  /** Overlapping labels, never another charge added to root. No O review cap is invented. */
+  review: WorkflowConsumptionGroup;
+  correction: WorkflowConsumptionGroup & { budget: WorkflowBudget | null; lineage_id: string | null; enabled: boolean;
+    limit: 0 | 1; consumed: 0 | 1 | null; remaining: 0 | 1 | null; consumed_stage_id: string | null };
+}
+export interface WorkflowBudgetDenial {
+  code: "budget-exhausted" | "budget-accounting-unavailable" | "correction-disabled" | "correction-lineage-unavailable";
+  scope: "root" | "correction"; dimension: "tasks" | "attempts" | "runtime_ms" | "total_tokens" | "corrections" | "accounting";
+  cap: number | null; proven_consumed: number; remaining: number | null; required: number;
+}
+export interface WorkflowBudgetStop { operation: WorkflowBudgetStopOperation; binding: WorkflowBudgetBinding; denials: WorkflowBudgetDenial[] }
+
+/** Evidence only. Serialized data can never mint an execution or stop receipt. */
+export interface IndependentBudgetStopData {
+  admission_fingerprint: string; policy_fingerprint: string; cap_fingerprint: string;
+  run_id: string | null; phase: "before-claim" | "run";
+  denials: Array<{ dimension: BudgetDimension | "accounting"; cap: number | null; proven_consumed: number; required: number;
+    code: "budget-exhausted" | "budget-accounting-unavailable" }>;
+}
+export const INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX = "Independent workflow budget stop v1: ";
+export function independentWorkflowBudgetStopSummary(binding: WorkflowBudgetBinding, data: IndependentBudgetStopData): string {
+  consumptionData(binding); consumptionData(data);
+  const { workflow_revision: _revision, ...stableBinding } = binding;
+  const summary = INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX + JSON.stringify({ k: evidenceHash(JSON.stringify(stableBinding)),
+    b: data.admission_fingerprint, s: data.policy_fingerprint, f: data.cap_fingerprint, r: data.run_id, p: data.phase,
+    d: data.denials.map((entry) => [entry.dimension, entry.cap, entry.proven_consumed, entry.required, entry.code]) });
+  requirePolicy(summary.length <= 2000, "Independent workflow budget evidence exceeds event bounds");
+  return summary;
+}
+
+// The existing schema validator serializes first. Reject hooks/proxies before
+// that call; projections accept inert data only, never executable metadata.
+function consumptionData(value: unknown, ancestors = new Set<object>(), depth = 0): void {
+  requirePolicy(depth <= 32, "Workflow consumption nesting exceeds bounds");
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string") { requirePolicy(Buffer.byteLength(value) <= WORKFLOW_LIMITS.documentBytes, "Workflow consumption string exceeds bounds"); return; }
+  if (typeof value === "number") { requirePolicy(Number.isSafeInteger(value), "Workflow consumption numbers must be safe integers"); return; }
+  requirePolicy(typeof value === "object" && !nodeTypes.isProxy(value) && !ancestors.has(value as object), "Workflow consumption requires inert JSON data");
+  const array = Array.isArray(value), prototype = Object.getPrototypeOf(value);
+  requirePolicy(array ? prototype === Array.prototype : prototype === Object.prototype || prototype === null, "Workflow consumption prototype is unsafe");
+  const descriptors = Object.getOwnPropertyDescriptors(value), names = Reflect.ownKeys(descriptors);
+  requirePolicy(names.every((key) => typeof key === "string") && names.length <= WORKFLOW_LIMITS.events + (array ? 1 : 0), "Workflow consumption collection exceeds bounds");
+  if (array) requirePolicy(value.length <= WORKFLOW_LIMITS.events && names.length === value.length + 1
+    && Array.from({ length: value.length }, (_, index) => Object.hasOwn(descriptors, String(index))).every(Boolean), "Workflow consumption array is sparse or decorated");
+  ancestors.add(value as object);
+  try { for (const key of names as string[]) {
+    if (array && key === "length") continue;
+    const descriptor = descriptors[key]!;
+    requirePolicy(!["constructor", "prototype", "__proto__"].includes(key) && descriptor.enumerable === true && Object.hasOwn(descriptor, "value"), "Workflow consumption property is unsafe");
+    consumptionData(descriptor.value, ancestors, depth + 1);
+  } } finally { ancestors.delete(value as object); }
+}
+function frozenConsumption<T>(value: T): T {
+  if (value !== null && typeof value === "object") { for (const child of Object.values(value)) frozenConsumption(child); Object.freeze(value); }
+  return value;
+}
+function consumptionSum(values: number[]): number {
+  let total = 0;
+  for (const value of values) { total += value; requirePolicy(Number.isSafeInteger(total), "Workflow consumption exceeds safe integer capacity"); }
+  return total;
+}
+function consumptionCounters(document: WorkflowDocument, stages: WorkflowStage[]): WorkflowCounters {
+  const ids = new Set(stages.map((stage) => stage.id)), runs = Object.values(document.accounting).filter((run) => ids.has(run.stage_id));
+  return { tasks: stages.filter((stage) => stage.task_id !== null).length, attempts: runs.length,
+    runtime_ms: consumptionSum(runs.map((run) => run.active_runtime_ms)), total_tokens: consumptionSum(runs.map((run) => run.observed_tokens)),
+    accounting_complete: runs.every((run) => run.usage_complete) };
+}
+function consumptionGroup(counters: WorkflowCounters, attributionComplete = true): WorkflowConsumptionGroup {
+  const reported = { ...counters, accounting_complete: counters.accounting_complete && attributionComplete };
+  return { counters: reported, runtime_ms: reported.accounting_complete ? reported.runtime_ms : null, total_tokens: reported.accounting_complete ? reported.total_tokens : null,
+    attribution_complete: attributionComplete };
+}
+/** Pure informational read model: no ledger addition, allocation, effects or authority. */
+export function projectWorkflowConsumption(document: WorkflowDocument, workflowId: string): WorkflowConsumptionView {
+  consumptionData(document); assertWorkflowDocument(document);
+  requirePolicy(typeof workflowId === "string" && Object.hasOwn(document.workflows, workflowId), "Workflow consumption owner is unavailable");
+  const owner = document.workflows[workflowId]!, grant = document.grants[owner.current_grant_id]!, current = owner.current_stage_id ? document.stages[owner.current_stage_id]! : null;
+  const stages = Object.values(document.stages).filter((stage) => stage.workflow_id === workflowId), canonical = consumptionCounters(document, stages);
+  const root = { ...owner.counters }, lineage = owner.lineage_id ? document.lineages[owner.lineage_id]! : null;
+  const attributed = counterKeys.every((key) => root[key] === canonical[key]) && (root.accounting_complete || !canonical.accounting_complete);
+  const consumedStage = lineage?.consumed_stage_id ? document.stages[lineage.consumed_stage_id]! : null;
+  // Replacement workflows retain the original lineage allowance and its
+  // exact branch history; unrelated replacement roles are not guessed labels.
+  const correctionStages = consumedStage ? Object.values(document.stages).filter((stage) => stage.workflow_id === consumedStage.workflow_id && stage.ordinal >= consumedStage.ordinal) : [];
+  const correction = consumptionCounters(document, correctionStages), consumed = lineage?.corrections_consumed ?? null;
+  const correctionOwner = consumedStage ? document.workflows[consumedStage.workflow_id]! : owner;
+  const correctionCanonical = correctionOwner.id === owner.id ? canonical
+    : consumptionCounters(document, Object.values(document.stages).filter((stage) => stage.workflow_id === correctionOwner.id));
+  const correctionAttributed = counterKeys.every((key) => correctionOwner.counters[key] === correctionCanonical[key])
+    && (correctionOwner.counters.accounting_complete || !correctionCanonical.accounting_complete);
+  const binding: WorkflowBudgetBinding = { workflow_id: owner.id, workflow_revision: owner.revision, project_id: owner.project_id, issue_id: owner.issue_id,
+    scope_revision: owner.scope_revision, grant_id: grant.id, authority_revision: owner.authority_revision,
+    stage_id: current?.id ?? null, stage_generation: current?.generation ?? null, task_id: current?.task_id ?? null, execution_id: current?.execution_id ?? null,
+    candidate: structuredClone(current?.candidate ?? owner.candidate), context_fingerprint: current?.context_fingerprint ?? null,
+    policy_fingerprint: grant.policy_fingerprint, testing_policy_fingerprint: grant.testing_policy_fingerprint, review_policy_fingerprint: owner.review_policy?.fingerprint ?? null };
+  return frozenConsumption({ binding, root: { ...consumptionGroup(root, attributed), counters: root, canonical,
+    runtime_ms: root.accounting_complete && canonical.accounting_complete && attributed ? root.runtime_ms : null,
+    total_tokens: root.accounting_complete && canonical.accounting_complete && attributed ? root.total_tokens : null },
+    review: consumptionGroup(consumptionCounters(document, stages.filter((stage) => stage.kind === "review" || stage.kind === "qa")), attributed),
+    correction: { ...consumptionGroup(correction, correctionAttributed), budget: structuredClone(grant.correction.budget), lineage_id: lineage?.id ?? null, enabled: grant.correction.enabled,
+      limit: lineage?.correction_limit ?? grant.correction.max_corrections, consumed, remaining: consumed === null ? null : Math.max(0, (lineage?.correction_limit ?? 0) - consumed) as 0 | 1,
+      consumed_stage_id: lineage?.consumed_stage_id ?? null } });
+}
+/** Pure denial evidence only. Callers independently recheck ownership and persist canonical edges. */
+export function evaluateWorkflowBudgetStop(document: WorkflowDocument, workflowId: string, operation: WorkflowBudgetStopOperation): WorkflowBudgetStop | null {
+  requirePolicy(["admit", "claim", "observe", "correction"].includes(operation), "Invalid workflow budget operation");
+  const view = projectWorkflowConsumption(document, workflowId), owner = document.workflows[workflowId]!, grant = document.grants[owner.current_grant_id]!;
+  const current = owner.current_stage_id ? document.stages[owner.current_stage_id]! : null, lineage = owner.lineage_id ? document.lineages[owner.lineage_id]! : null;
+  const consumedStage = lineage?.consumed_stage_id ? document.stages[lineage.consumed_stage_id]! : null;
+  const inCorrection = !!current && !!consumedStage && current.workflow_id === consumedStage.workflow_id && current.ordinal >= consumedStage.ordinal;
+  const dimensions = operation === "observe" ? ["runtime_ms", "total_tokens"] as const
+    : operation === "claim" ? ["attempts", "runtime_ms", "total_tokens"] as const : counterKeys;
+  const denials: WorkflowBudgetDenial[] = [];
+  const inspect = (scope: "root" | "correction", budget: WorkflowBudget, counters: WorkflowCounters, required = 1) => {
+    for (const dimension of dimensions) {
+      const cap = budget[`max_${dimension}`], amount = counters[dimension], remaining = Math.max(0, cap - amount);
+      const needed = dimension === "tasks" || dimension === "attempts" ? required : 1;
+      if (remaining < needed) denials.push({ code: "budget-exhausted", scope, dimension, cap, proven_consumed: amount, remaining, required: needed });
+    }
+  };
+  const required = operation === "correction" ? owner.review_policy?.qa_required ? 3 : 2 : 1;
+  inspect("root", owner.budget, owner.counters, required);
+  if (operation !== "observe" && !owner.counters.accounting_complete) denials.push({ code: "budget-accounting-unavailable", scope: "root", dimension: "accounting", cap: null,
+    proven_consumed: owner.counters.total_tokens, remaining: null, required: 1 });
+  if (inCorrection && grant.correction.budget) {
+    inspect("correction", grant.correction.budget, view.correction.counters);
+    const incompleteStopped = Object.values(document.accounting).some((run) => document.stages[run.stage_id]!.workflow_id === consumedStage!.workflow_id
+      && document.stages[run.stage_id]!.ordinal >= consumedStage!.ordinal && !run.usage_complete
+      && !(document.stages[run.stage_id]!.status === "running" && document.stages[run.stage_id]!.execution_id === run.execution_id));
+    if (operation !== "observe" && (incompleteStopped || !view.correction.attribution_complete)) denials.push({ code: "budget-accounting-unavailable", scope: "correction", dimension: "accounting", cap: null,
+      proven_consumed: view.correction.counters.total_tokens, remaining: null, required: 1 });
+  }
+  if (operation === "correction") {
+    if (!grant.correction.enabled || !grant.correction.budget) denials.push({ code: "correction-disabled", scope: "correction", dimension: "corrections", cap: 0, proven_consumed: view.correction.consumed ?? 0, remaining: 0, required: 1 });
+    else if (!lineage) denials.push({ code: "correction-lineage-unavailable", scope: "correction", dimension: "corrections", cap: grant.correction.max_corrections, proven_consumed: 0, remaining: null, required: 1 });
+    else if (lineage.corrections_consumed >= lineage.correction_limit) denials.push({ code: "budget-exhausted", scope: "correction", dimension: "corrections", cap: lineage.correction_limit,
+      proven_consumed: lineage.corrections_consumed, remaining: 0, required: 1 });
+    else {
+      inspect("correction", grant.correction.budget, view.correction.counters, required);
+      if (!view.correction.counters.accounting_complete) denials.push({ code: "budget-accounting-unavailable", scope: "correction", dimension: "accounting", cap: null,
+        proven_consumed: view.correction.counters.total_tokens, remaining: null, required: 1 });
+    }
+  }
+  return denials.length ? frozenConsumption({ operation, binding: view.binding, denials }) : null;
+}
 function safePath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 300 && !/[\\:\x00-\x1f\x7f]/.test(value)
     && !value.startsWith("/") && value.split("/").every((part) => !!part && part !== "." && part !== "..") && redactText(value) === value;

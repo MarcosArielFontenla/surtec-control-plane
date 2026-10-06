@@ -7,7 +7,7 @@ import { defaultTaskOrchestration } from "../lib/state/orchestration";
 import { readTask, updateTask, writeTask } from "../lib/state/store";
 import * as taskStore from "../lib/state/store";
 import { readTaskEvents } from "../lib/state/events";
-import { assertTaskOutsideActiveWorkflow, BudgetExecutionScaffold, budgetExecutionOwner, TaskControlError, TaskOrchestrator } from "./task-orchestrator";
+import { assertTaskOutsideActiveWorkflow, BudgetExecutionScaffold, budgetExecutionOwner, inspectBudgetStopReceipt, TaskControlError, TaskOrchestrator } from "./task-orchestrator";
 import type { TaskRunCompletion, TaskRunOptions } from "./run-task";
 import type { AgentExecutor } from "./agent-executor";
 import { assembleContext, contextHash } from "../lib/context/assemble";
@@ -15,7 +15,7 @@ import { WorkflowOrchestrator } from "./workflow-orchestrator";
 import { mutateWorkflowDocument } from "../lib/state/workflows";
 import { prepareTaskBudgetAdmission } from "../dashboard/src/server/dispatch";
 import { mutateBudgetLedger, readBudgetLedger } from "../lib/state/budgets";
-import { commitTaskBudget, reserveTaskBudget } from "../lib/budgets/reservations";
+import { commitTaskBudget, markBudgetUnknown, reserveTaskBudget } from "../lib/budgets/reservations";
 import { BUDGET_DIMENSIONS, type BudgetLimits } from "../lib/budgets/types";
 import type { BudgetPolicySource } from "../lib/budgets/policy";
 
@@ -33,9 +33,9 @@ function record(id: string, sandbox: SandboxMode = "read-only", project = "p", o
   };
 }
 
-function admittedRecord(id: string, workflow = false): TaskRecord {
+function admittedRecord(id: string, workflow = false, roleId = "planner"): TaskRecord {
   const task = record(id), budget = task.orchestration!;
-  task.envelope.context_manifest = assembleContext({ schema_version: 1, project_id: "p", agent_id: "agent", role_id: "planner", task_kind: "analysis", sandbox: "read-only", tools: ["inspect"], approval_rules: [],
+  task.envelope.context_manifest = assembleContext({ schema_version: 1, project_id: "p", agent_id: "agent", role_id: roleId, task_kind: "analysis", sandbox: "read-only", tools: ["inspect"], approval_rules: [],
     budget: { max_attempts: budget.max_attempts, max_runtime_ms: budget.max_runtime_ms, max_total_tokens: budget.max_total_tokens }, limits: { max_lines: 500, max_bytes: 60000, max_sources: 64 }, selected_categories: [], excluded_categories: [], omitted_sources: [],
     routing: { work_scale: "bounded", action: "direct", review_depth: "focused", qa_required: false, reasons: ["Synthetic fixture"], delegation: { admitted: false, executable: false, reasons: ["Unavailable"] } },
     testing: { mode: "functional", minimum_review_depth: "focused", runner_ids: [], commands: [], reasons: ["Functional fixture"], requires_red_evidence: false } },
@@ -370,16 +370,26 @@ describe("T006 private budget execution scaffold", () => {
     vi.stubEnv("SURTEC_STATE_DIR", state); nowMs = Date.parse("2026-09-21T10:00:00Z");
   });
   afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false); });
-  function bind(id = "B-1", policy = source(), commit = true, attempts = 2) {
-    const task = admittedRecord(id); task.orchestration!.max_runtime_ms = 2000; task.orchestration!.max_total_tokens = 10; task.orchestration!.max_attempts = attempts;
+  function bind(id = "B-1", policy = source(), commit = true, attempts = 2, review = false) {
+    const task = admittedRecord(id, false, review ? "reviewer" : "planner"); task.orchestration!.max_runtime_ms = 2000; task.orchestration!.max_total_tokens = 10; task.orchestration!.max_attempts = attempts;
     const prepared = prepareTaskBudgetAdmission(task, { source: policy, attribution: { company_id: "surtec", objective_ids: [], project_ids: ["p"],
-      issue_id: null, role_id: "planner", execution_id: id } });
+      issue_id: null, role_id: review ? "reviewer" : "planner", execution_id: id } });
     mutateBudgetLedger((tx) => reserveTaskBudget(tx, { admission: prepared.admission, source: policy }), ledgerPath, prepared.admission.created_at);
     writeTask(prepared.task);
     if (commit) mutateBudgetLedger((tx) => commitTaskBudget(tx, { admission: prepared.admission, persisted_admission: readTask(id)!.envelope.budget_admission }), ledgerPath, prepared.admission.created_at);
     return readTask(id)!;
   }
   function controller(policy = source()) { return new BudgetExecutionScaffold({ filePath: ledgerPath, now: () => new Date(nowMs), resolve: () => ({ source: policy }) }); }
+  function liveBudgetProof(budgets: BudgetExecutionScaffold, bindClaim = true) {
+    const proof = budgets.prepareClaim("B-1", "receipt-run", "receipt-worker");
+    updateTask("B-1", (task) => {
+      task.lifecycle = "running"; task.orchestration!.attempts++;
+      task.orchestration!.lease = { run_id: "receipt-run", worker_id: "receipt-worker", acquired_at: new Date(nowMs).toISOString(),
+        heartbeat_at: new Date(nowMs).toISOString(), expires_at: new Date(nowMs + 60000).toISOString() };
+    });
+    if (bindClaim) budgets.bindClaim(proof);
+    return proof;
+  }
   async function terminal(id: string, options: TaskRunOptions, tokens = 3, elapsed = 100, retryable = false) {
     const owner = budgetExecutionOwner(options.budgetExecution, id, options.runId!)!; expect(owner).not.toBeNull();
     const proof = options.budgetExecution!;
@@ -642,5 +652,172 @@ describe("T006 private budget execution scaffold", () => {
       expect(readTask("B-1")!.orchestration!.lease).toEqual(lease); expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1 } });
       expect(await worker.runOnce()).toBe(0); expect(run).toHaveBeenCalledOnce();
     } finally { await worker.stop(); }
+  });
+  it("does not stop the last reserved/charged review attempt or lend a stop receipt as execution proof", async () => {
+    const policy = source({ review_attempts: 1 }); bind("B-1", policy, true, 1, true); const budgets = controller(policy);
+    expect(budgets.stopReceipt("B-1")).toBeNull();
+    const proof = liveBudgetProof(budgets);
+    expect(budgets.stopReceipt("B-1", proof)).toBeNull(); expect(budgets.prepare(proof).maxRuntimeMs).toBe(2000);
+    await budgets.observe(proof, 10, 20);
+    const receipt = budgets.stopReceipt("B-1", proof)!; expect(receipt).not.toBeNull();
+    const data = inspectBudgetStopReceipt(receipt, readTask("B-1")!)!;
+    expect(data).toMatchObject({ phase: "run", run_id: "receipt-run", denials: expect.arrayContaining([
+      { dimension: "review_total_tokens", cap: 10, proven_consumed: 10, required: 0, code: "budget-exhausted" },
+    ]) });
+    expect(data.denials.some((entry) => entry.dimension === "review_attempts" || entry.dimension === "attempts")).toBe(false);
+    expect(budgetExecutionOwner(receipt, "B-1", "receipt-run")).toBeNull(); expect(() => budgets.prepare(receipt)).toThrow(/unavailable/);
+    expect(data.admission_fingerprint).toBe(contextHash(JSON.stringify(readTask("B-1")!.envelope.budget_admission)));
+    expect(Object.isFrozen(data)).toBe(true); expect(Object.isFrozen(data.denials[0])).toBe(true);
+  });
+  it("captures an exhausted private review retry before a new charge while preserving task and ledger bytes", async () => {
+    const policy = source({ review_attempts: 1 }); bind("B-1", policy, true, 2, true); const budgets = controller(policy);
+    const run = vi.fn(async (id: string, options: TaskRunOptions) => terminal(id, options, 2, 100, true));
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), retryBaseMs: 100, runAttempt: run });
+    try {
+      expect(await worker.runOnce()).toBe(1); await vi.waitFor(() => expect(readTask("B-1")!.lifecycle).toBe("queued"));
+      const task = readTask("B-1")!, taskBytes = readFileSync(join(state, "tasks/B-1.json")), ledgerBytes = readFileSync(ledgerPath);
+      const receipt = budgets.stopReceipt("B-1")!, data = inspectBudgetStopReceipt(receipt, task)!;
+      expect(data).toMatchObject({ phase: "before-claim", run_id: null, denials: expect.arrayContaining([
+        { dimension: "review_attempts", cap: 1, proven_consumed: 1, required: 1, code: "budget-exhausted" },
+      ]) });
+      expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(taskBytes); expect(readFileSync(ledgerPath)).toEqual(ledgerBytes);
+      expect(Object.values(readBudgetLedger(ledgerPath)!.charges)).toHaveLength(1);
+      expect(inspectBudgetStopReceipt({ ...receipt }, task)).toBeNull(); expect(inspectBudgetStopReceipt(structuredClone(data), task)).toBeNull();
+      expect(inspectBudgetStopReceipt(new Proxy(receipt, {}), task)).toBeNull();
+    } finally { await worker.stop(); }
+  });
+  it("binds a measured review runtime stop to its exact private allocation, not an O or duplicated charge", async () => {
+    const policy = source({ review_runtime_ms: 1000 }); bind("B-1", policy, true, 2, true); const budgets = controller(policy), proof = liveBudgetProof(budgets);
+    await budgets.observe(proof, 3, 1200);
+    const data = inspectBudgetStopReceipt(budgets.stopReceipt("B-1", proof), readTask("B-1")!)!;
+    expect(data.denials).toEqual(expect.arrayContaining([
+      { dimension: "runtime_ms", cap: 1000, proven_consumed: 1200, required: 0, code: "budget-exhausted" },
+      { dimension: "review_runtime_ms", cap: 1000, proven_consumed: 1200, required: 0, code: "budget-exhausted" },
+    ]));
+    expect(data.policy_fingerprint).toBe(policy.fingerprint); expect(data.cap_fingerprint).toBe(readTask("B-1")!.envelope.budget_admission!.admitted_cap_fingerprint);
+    expect(Object.values(readBudgetLedger(ledgerPath)!.charges)).toHaveLength(1);
+    expect(Object.values(readBudgetLedger(ledgerPath)!.charges)[0]).toMatchObject({ attempts: 1, review: true, runtime_ms: 1200 });
+  });
+  it.each([false, true])("mints exact unknown usage evidence before revocation terminal=%s without treating it as zero or exhaustion", async (terminalReceipt) => {
+    bind(); const budgets = controller(), proof = liveBudgetProof(budgets);
+    await budgets.observe(proof, null, 100, terminalReceipt);
+    const receipt = budgets.stopReceipt("B-1", proof)!, task = readTask("B-1")!;
+    expect(receipt).not.toBeNull(); expect(inspectBudgetStopReceipt(receipt, task)).toMatchObject({ phase: "run", run_id: "receipt-run",
+      denials: [{ dimension: "accounting", cap: null, proven_consumed: 0, required: 0, code: "budget-accounting-unavailable" }] });
+    expect(Object.values(readBudgetLedger(ledgerPath)!.charges)[0]).toMatchObject({ runtime_ms: 100, observed_total_tokens: 0, usage_state: "unknown", status: terminalReceipt ? "terminal" : "running" });
+    budgets.release(proof); expect(inspectBudgetStopReceipt(receipt, task)).toBeNull();
+  });
+  it("captures only a committed exact queued reservation's unknown accounting without charging or effects", () => {
+    bind(); const budgets = controller(), admission = readTask("B-1")!.envelope.budget_admission!;
+    mutateBudgetLedger((tx) => markBudgetUnknown(tx, { reservation_id: admission.reservation_id }), ledgerPath, new Date(nowMs).toISOString());
+    const taskBytes = readFileSync(join(state, "tasks/B-1.json")), ledgerBytes = readFileSync(ledgerPath);
+    expect(inspectBudgetStopReceipt(budgets.stopReceipt("B-1"), readTask("B-1")!)).toMatchObject({ phase: "before-claim", run_id: null,
+      denials: [{ dimension: "accounting", cap: null, proven_consumed: 0, required: 0, code: "budget-accounting-unavailable" }] });
+    expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(taskBytes); expect(readFileSync(ledgerPath)).toEqual(ledgerBytes);
+    expect(Object.values(readBudgetLedger(ledgerPath)!.charges)).toHaveLength(0);
+  });
+  it.each(["revision", "ledger", "policy", "worker", "attempt", "expiry"] as const)("rejects stale private stop evidence after exact %s facts change", async (fault) => {
+    const policy = source(); bind("B-1", policy); const budgets = controller(policy), proof = liveBudgetProof(budgets);
+    await budgets.observe(proof, 10, 50); const task = readTask("B-1")!, receipt = budgets.stopReceipt("B-1", proof)!;
+    expect(inspectBudgetStopReceipt(receipt, task)).not.toBeNull();
+    if (fault === "ledger") mutateBudgetLedger((tx) => markBudgetUnknown(tx, { reservation_id: task.envelope.budget_admission!.reservation_id }), ledgerPath, new Date(nowMs).toISOString());
+    else if (fault === "policy") policy.fingerprint = "b".repeat(64);
+    else if (fault === "expiry") nowMs += 60000;
+    else updateTask("B-1", (current) => {
+      if (fault === "worker") current.orchestration!.lease!.worker_id = "foreign-worker";
+      else if (fault === "attempt") current.orchestration!.attempts++;
+      else current.updated_at = new Date(nowMs).toISOString();
+    });
+    expect(inspectBudgetStopReceipt(receipt, task)).toBeNull(); expect(inspectBudgetStopReceipt(receipt, readTask("B-1")!)).toBeNull();
+  });
+  it("refuses hooked, borrowed, terminalized and noncanonical-store stop facts without running hooks", async () => {
+    bind(); const budgets = controller(), proof = liveBudgetProof(budgets); await budgets.observe(proof, 10, 50, true);
+    const task = readTask("B-1")!, receipt = budgets.stopReceipt("B-1", proof)!; let hooks = 0;
+    const hooked = structuredClone(task); Object.defineProperty(hooked, "toJSON", { enumerable: true, get: () => { hooks++; return () => ({}); } });
+    expect(inspectBudgetStopReceipt(receipt, hooked)).toBeNull(); expect(hooks).toBe(0);
+    expect(inspectBudgetStopReceipt(receipt, new Proxy(task, {}))).toBeNull();
+    const borrowed = structuredClone(task); borrowed.envelope.id = "borrowed"; expect(inspectBudgetStopReceipt(receipt, borrowed)).toBeNull();
+    const other = new BudgetExecutionScaffold({ filePath: join(state, "other-budget.json"), resolve: () => ({ source: source() }) });
+    expect(other.stopReceipt("B-1", proof)).toBeNull();
+    updateTask("B-1", (current) => { current.lifecycle = "finished"; current.outcome = "needs-review"; current.finished_at = new Date(nowMs).toISOString(); current.orchestration!.lease = null; });
+    expect(budgets.stopReceipt("B-1", proof)).toBeNull(); expect(inspectBudgetStopReceipt(receipt, readTask("B-1")!)).toBeNull();
+  });
+  it.each(["valid", "foreign-worker", "foreign-attempt", "expiry"] as const)("binds a P-claim/O-claim gap only to exact current private ownership %s", (fault) => {
+    bind(); const budgets = controller(), proof = liveBudgetProof(budgets, false), task = readTask("B-1")!;
+    mutateBudgetLedger((tx) => markBudgetUnknown(tx, { reservation_id: task.envelope.budget_admission!.reservation_id }), ledgerPath, new Date(nowMs).toISOString());
+    if (fault === "foreign-worker") updateTask("B-1", (current) => { current.orchestration!.lease!.worker_id = "foreign-worker"; });
+    if (fault === "foreign-attempt") updateTask("B-1", (current) => { current.orchestration!.attempts++; });
+    if (fault === "expiry") nowMs += 60000;
+    const receipt = budgets.stopReceipt("B-1", proof);
+    if (fault === "valid") expect(inspectBudgetStopReceipt(receipt, readTask("B-1")!)).toMatchObject({ phase: "before-claim", run_id: "receipt-run" });
+    else expect(receipt).toBeNull();
+  });
+  it("calls the queued stop bridge before claim without effects, task progress or ledger rewriting", async () => {
+    bind(); const budgets = controller(), admission = readTask("B-1")!.envelope.budget_admission!;
+    mutateBudgetLedger((tx) => markBudgetUnknown(tx, { reservation_id: admission.reservation_id }), ledgerPath, new Date(nowMs).toISOString());
+    const taskBytes = readFileSync(join(state, "tasks/B-1.json")), ledgerBytes = readFileSync(ledgerPath), workflows = new WorkflowOrchestrator(root, () => new Date(nowMs));
+    const bridge = vi.spyOn(workflows, "stopForIndependentBudget").mockImplementation((taskId, receipt) => {
+      expect(inspectBudgetStopReceipt(receipt, readTask(taskId)!)).toMatchObject({ phase: "before-claim", run_id: null }); return true;
+    });
+    const run = vi.fn(), worker = new TaskOrchestrator({ budgets, workflows, now: () => new Date(nowMs), runAttempt: run });
+    expect(await worker.runOnce()).toBe(0); expect(bridge).toHaveBeenCalledOnce(); expect(run).not.toHaveBeenCalled();
+    expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(taskBytes); expect(readFileSync(ledgerPath)).toEqual(ledgerBytes); expect(readTaskEvents("B-1")).toEqual([]);
+    await worker.stop();
+  });
+  it.each(["runtime", "unknown"] as const)("debits heartbeat facts and invokes its stop bridge before abort/revocation for %s", async (fault) => {
+    bind(); const budgets = controller(), workflows = new WorkflowOrchestrator(root, () => new Date(nowMs)); let signal!: AbortSignal, proof!: object, captured = false;
+    const bridge = vi.spyOn(workflows, "stopForIndependentBudget").mockImplementation((taskId, receipt) => {
+      expect(signal.aborted).toBe(false); expect(budgetExecutionOwner(proof, taskId, readTask(taskId)!.orchestration!.lease!.run_id)).toBe(budgets);
+      const data = inspectBudgetStopReceipt(receipt, readTask(taskId)!)!; expect(data).not.toBeNull();
+      expect(data.denials.some((entry) => fault === "runtime" ? entry.dimension === "runtime_ms" && entry.proven_consumed === 2000 : entry.code === "budget-accounting-unavailable")).toBe(true);
+      captured = true; return true;
+    });
+    const run = vi.fn(async (_id: string, options: TaskRunOptions) => new Promise<null>((resolve) => {
+      signal = options.signal!; proof = options.budgetExecution!; signal.addEventListener("abort", () => resolve(null), { once: true });
+    }));
+    const worker = new TaskOrchestrator({ budgets, workflows, now: () => new Date(nowMs), heartbeatMs: 10, runAttempt: run });
+    try {
+      expect(await worker.runOnce()).toBe(1); await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      const lease = readTask("B-1")!.orchestration!.lease;
+      if (fault === "runtime") nowMs += 2000; else { await budgets.observe(proof, null, 10); nowMs += 100; }
+      await vi.waitFor(() => expect(signal.aborted).toBe(true)); await worker.stop();
+      expect(captured).toBe(true); expect(bridge).toHaveBeenCalledOnce(); expect(readTask("B-1")!.orchestration!.lease).toEqual(lease);
+      expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]!.held.concurrent_reads).toBe(1);
+      expect(Object.values(readBudgetLedger(ledgerPath)!.charges)[0]!.runtime_ms).toBe(fault === "runtime" ? 2000 : 100);
+    } finally { await worker.stop(); }
+  });
+  it("records a launch failure's exact budget evidence before abandoning its private identity", async () => {
+    bind(); const budgets = controller(), workflows = new WorkflowOrchestrator(root, () => new Date(nowMs)); let proof!: object;
+    const bridge = vi.spyOn(workflows, "stopForIndependentBudget").mockImplementation((taskId, receipt) => {
+      expect(inspectBudgetStopReceipt(receipt, readTask(taskId)!)).toMatchObject({ phase: "run", denials: expect.arrayContaining([
+        { dimension: "total_tokens", cap: 10, proven_consumed: 10, required: 0, code: "budget-exhausted" },
+      ]) }); expect(budgetExecutionOwner(proof, taskId, readTask(taskId)!.orchestration!.lease!.run_id)).toBe(budgets); return true;
+    });
+    const run = vi.fn(async (_id: string, options: TaskRunOptions) => { proof = options.budgetExecution!; await budgets.observe(proof, 10, 50); throw new Error("Synthetic launch failure"); });
+    const worker = new TaskOrchestrator({ budgets, workflows, now: () => new Date(nowMs), runAttempt: run });
+    expect(await worker.runOnce()).toBe(1); await worker.stop(); expect(bridge).toHaveBeenCalledOnce();
+    expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1 } });
+  });
+  it("keeps heartbeat's known zero usage distinct from unknown and retains measured runtime across policy drift", async () => {
+    const policy = source(); bind("B-1", policy); const budgets = controller(policy), proof = liveBudgetProof(budgets);
+    expect(await budgets.observeHeartbeat(proof, 100)).toEqual({ exhausted: false, unknown: false });
+    expect(Object.values(readBudgetLedger(ledgerPath)!.charges)[0]).toMatchObject({ runtime_ms: 100, observed_total_tokens: 0, usage_state: "complete" });
+    expect(budgets.stopReceipt("B-1", proof)).toBeNull();
+    policy.fingerprint = "b".repeat(64); expect(await budgets.observeHeartbeat(proof, 200)).toEqual({ exhausted: false, unknown: false });
+    expect(Object.values(readBudgetLedger(ledgerPath)!.charges)[0]!.runtime_ms).toBe(200);
+    expect(budgets.stopReceipt("B-1", proof)).toBeNull(); expect(() => budgets.prepare(proof)).toThrow(/unavailable/);
+  });
+  it("refuses an immutable ledger-subject swap before observation debit, retaining holds without foreign progress", async () => {
+    bind(); const budgets = controller(), proof = liveBudgetProof(budgets), task = readTask("B-1")!;
+    // Synthetic on-disk tampering bypasses the normal store's immutable write guard.
+    const tampered = structuredClone(readBudgetLedger(ledgerPath)!), subject = tampered.subjects[task.envelope.budget_admission!.subject_id]!;
+    if (subject.kind === "task") subject.agent_id = "foreign-agent";
+    writeFileSync(ledgerPath, JSON.stringify(tampered));
+    const taskBytes = readFileSync(join(state, "tasks/B-1.json"));
+    await expect(budgets.observe(proof, 10, 100)).rejects.toThrow(/unavailable/);
+    expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(taskBytes);
+    expect(Object.values(readBudgetLedger(ledgerPath)!.charges)[0]).toMatchObject({ observed_total_tokens: 0, runtime_ms: 0 });
+    expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1, total_tokens: 10 } });
+    expect(budgets.stopReceipt("B-1", proof)).toBeNull();
   });
 });

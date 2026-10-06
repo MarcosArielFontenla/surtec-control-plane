@@ -21,7 +21,14 @@ import { applicableWorkflowReviews, assertOwnedWorkflowIssueProgress, assertTerm
 import { readContained } from "../../../lib/harness/source";
 import { inspectCandidateTree } from "../../../runner/worktree";
 import { createWorkflowContextService } from "./workflow-context-service";
-import { taskBudgetReadiness, validateTaskRecord } from "../../../lib/state/validation";
+import { assertTaskBudgetAdmissionBinding, taskBudgetReadiness, validateTaskRecord } from "../../../lib/state/validation";
+import { evaluateWorkflowBudgetStop, projectWorkflowConsumption, independentWorkflowBudgetStopSummary, INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX,
+  type IndependentBudgetStopData, type WorkflowBudgetBinding, type WorkflowBudgetStop, type WorkflowBudgetStopOperation, type WorkflowConsumptionView } from "../../../lib/workflows/policy";
+import { BUDGET_DIMENSIONS } from "../../../lib/budgets/types";
+import { readBudgetLedger } from "../../../lib/state/budgets";
+import { budgetStatePath } from "../../../lib/state/paths";
+import { readBudgetPolicy, resolveBudgetPolicy } from "../../../lib/budgets/policy";
+import { inspectBudgetStopReceipt } from "../../../runner/task-orchestrator";
 
 export class IssueServiceError extends Error {
   constructor(message: string, readonly status: 400 | 404 | 409 = 400) { super(message); }
@@ -42,6 +49,205 @@ export interface IssueServiceOptions {
 }
 
 type IssueBudgetReadiness = { task_id: string; availability: "available" | "unavailable"; readiness: ReturnType<typeof taskBudgetReadiness> | null };
+type IssueBudgetConsumption = { availability: "available" | "unavailable"; workflows: WorkflowConsumptionView[] };
+
+// A stable operational key, not approval or execution authority. Later proven
+// high-water does not authorize a second transition for the same exact run.
+export function workflowBudgetStopSummary(stop: WorkflowBudgetStop): string {
+  const { workflow_revision: _revision, ...binding } = stop.binding;
+  return `Workflow budget exhaustion ${stop.operation}: ${workflowEvidenceHash(binding)}`;
+}
+
+// This is a conservative state/evidence guard, never a private runtime proof.
+// Callers read all facts before their own short store mutation and fence them
+// again inside it; no second store lock or external effect is acquired here.
+function inspectBudgetStopFacts(workflows: WorkflowDocument, issues: IssueDocument, workflowId: string, at: number, independent?: IndependentBudgetStopData) {
+  const workflow = workflows.workflows[workflowId], stage = workflow?.current_stage_id ? workflows.stages[workflow.current_stage_id] : null;
+  const grant = workflow && workflows.grants[workflow.current_grant_id], issue = workflow && issues.issues[workflow.issue_id];
+  const task = stage?.task_id ? readTask(stage.task_id) : null, admission = task?.envelope.context_admission;
+  const intent = stage && Object.values(workflows.admission_intents).find((entry) => entry.stage_id === stage.id);
+  if (!workflow || !stage || !grant || !issue || !task || !validateTaskRecord(task) || admission?.schema_version !== 2
+    || stage.workflow_id !== workflow.id || stage.grant_id !== grant.id || stage.authority_revision !== grant.authority_revision
+    || workflow.authority_revision !== grant.authority_revision || admission.workflow_id !== workflow.id || admission.stage_id !== stage.id
+    || admission.stage_generation !== stage.generation || admission.grant_id !== grant.id || admission.authority_revision !== grant.authority_revision
+    || admission.stage_kind !== stage.kind || admission.template_id !== workflow.template_id || admission.template_version !== workflow.template_version
+    || stage.kind !== "planning" && !isDeepStrictEqual(admission.approved_plan, workflow.approved_plan)
+    || admission.predecessor_stage_id !== stage.predecessor_stage_id || admission.handoff_id !== stage.handoff_id
+    || stage.sandbox === "read-only" && !isDeepStrictEqual(admission.candidate, stage.candidate)
+    || admission.task_id !== stage.task_id || task.envelope.id !== stage.task_id || admission.role_id !== stage.role_id || task.envelope.agent !== stage.agent_id
+    || issue.project_id !== workflow.project_id || grant.issue_id !== issue.id || task.envelope.project !== workflow.project_id || admission.issue_id !== issue.id || admission.scope_revision !== issue.scope_revision
+    || admission.scope_fingerprint !== workflowEvidenceHash(issue.authorized_scope) || task.envelope.context_manifest?.fingerprint !== stage.context_fingerprint
+    || admission.manifest_fingerprint !== stage.context_fingerprint || intent?.status !== "committed" || intent.task_id !== task.envelope.id
+    || intent.grant_id !== grant.id || intent.context_fingerprint !== stage.context_fingerprint || issue.task_ids.at(-1) !== task.envelope.id) {
+    throw new IssueServiceError("Workflow budget evidence has stale task, scope or admission bindings", 409);
+  }
+  assertOwnedWorkflowIssueProgress(workflows, workflow, issues, admission.issue_revision);
+  const charge = stage.execution_id ? workflows.accounting[stage.execution_id] : null;
+  if (stage.execution_id && (!charge || charge.task_id !== task.envelope.id || charge.stage_id !== stage.id || charge.workflow_id !== workflow.id
+    || charge.execution_id !== stage.execution_id || charge.attempt !== task.orchestration?.attempts || !charge.attempt_charged
+    || task.orchestration?.last_failure && task.orchestration.last_failure.run_id !== stage.execution_id)) {
+    throw new IssueServiceError("Workflow budget evidence has stale run accounting", 409);
+  }
+  if (task.lifecycle === "running") {
+    const lease = task.orchestration?.lease;
+    if ((!independent && stage.status !== "running" || independent && !["queued", "running"].includes(stage.status))
+      || !lease || lease.run_id !== (independent?.run_id ?? stage.execution_id) || Date.parse(lease.expires_at) <= at || task.orchestration?.cancel_requested_at) {
+      throw new IssueServiceError("Workflow budget evidence lost its current run lease", 409);
+    }
+  } else if (task.lifecycle === "queued") {
+    if (stage.execution_id !== null || task.orchestration?.lease || !independent && task.orchestration?.attempts !== 0 || task.orchestration?.cancel_requested_at) {
+      throw new IssueServiceError("Workflow budget evidence has progressed queued ownership", 409);
+    }
+  } else if (!(independent?.run_id ?? stage.execution_id) || task.orchestration?.lease || task.orchestration?.cancel_requested_at || !["completed", "partial", "needs-review", "failed"].includes(task.outcome ?? "")
+    || independent && task.orchestration?.last_failure && task.orchestration.last_failure.run_id !== independent.run_id) {
+    throw new IssueServiceError("Workflow budget evidence has incomplete terminal ownership", 409);
+  }
+  let evidenceCandidate: ReviewCandidate | null = null, replacementCandidate: ReviewCandidate | null = null;
+  if (workflow.candidate) {
+    const binding = workflow.candidate, candidate = issues.candidates[binding.candidate_id];
+    if (!candidate || candidate.issue_id !== issue.id || candidate.task_id !== binding.task_id || candidate.execution_id !== binding.execution_id || candidate.repository_id !== binding.repository_id
+      || candidate.scope_revision !== binding.scope_revision || candidate.base_revision !== binding.base_revision || candidate.candidate_revision !== binding.candidate_revision
+      || candidate.diff_fingerprint !== binding.diff_fingerprint || !isDeepStrictEqual(candidate.changed_paths, binding.changed_paths)) {
+      throw new IssueServiceError("Workflow budget evidence has a stale retained candidate", 409);
+    }
+    evidenceCandidate = candidate;
+    if (candidate.invalidated_at !== null || issue.candidate_ids.at(-1) !== candidate.id) {
+      const replacement = issues.candidates[issue.candidate_ids.at(-1) ?? ""], lineage = workflow.lineage_id ? workflows.lineages[workflow.lineage_id] : null;
+      const produced = issues.events.filter((entry) => entry.issue_id === issue.id && entry.type === "candidate-produced"
+        && entry.payload.task_id === task.envelope.id && entry.payload.candidate_id === replacement?.id).at(-1);
+      // recordCandidate precedes verification and the workflow's terminal seal.
+      // Retain its exact replacement as evidence, never invent passed testing or
+      // replace the verified authorization candidate in the workflow binding.
+      if (stage.kind !== "correction" || !isDeepStrictEqual(admission.candidate, binding) || !isDeepStrictEqual(stage.candidate, binding)
+        || !grant.correction.enabled || !lineage || lineage.project_id !== workflow.project_id || lineage.issue_id !== issue.id
+        || lineage.scope_revision !== issue.scope_revision || !lineage.workflow_ids.includes(workflow.id) || !lineage.candidate_ids.includes(candidate.id)
+        || lineage.corrections_consumed !== 1 || lineage.consumed_stage_id !== stage.id || !lineage.consumed_at
+        || !replacement || replacement.id === candidate.id || replacement.invalidated_at !== null || replacement.issue_id !== issue.id
+        || replacement.repository_id !== workflow.project_id || replacement.task_id !== task.envelope.id || replacement.execution_id !== stage.execution_id
+        || replacement.scope_revision !== issue.scope_revision || replacement.base_revision !== candidate.candidate_revision
+        || replacement.candidate_revision === candidate.candidate_revision || candidate.invalidated_at !== replacement.created_at
+        || Date.parse(replacement.created_at) < Date.parse(lineage.consumed_at) || !produced || produced.at !== replacement.created_at
+        || produced.scope_revision !== issue.scope_revision || produced.payload.scope_revision !== issue.scope_revision
+        || produced.payload.candidate_revision !== replacement.candidate_revision || produced.payload.diff_fingerprint !== replacement.diff_fingerprint
+        || pathsOutsideScope(replacement.changed_paths, issue.authorized_scope).length
+        || replacement.diff_fingerprint !== createHash("sha256").update(`${replacement.repository_id}\0${replacement.base_revision}\0${replacement.candidate_revision}\0${replacement.changed_paths.join("\0")}`).digest("hex")) {
+        throw new IssueServiceError("Workflow budget evidence has a stale retained correction replacement", 409);
+      }
+      evidenceCandidate = replacement; replacementCandidate = replacement;
+    }
+  }
+  return { workflow, stage, grant, issue, task, evidence_candidate: evidenceCandidate,
+    retained_candidate: workflow.candidate, replacement_candidate: replacementCandidate };
+}
+
+export function inspectWorkflowBudgetStopFacts(workflows: WorkflowDocument, issues: IssueDocument, workflowId: string, at: number) {
+  return inspectBudgetStopFacts(workflows, issues, workflowId, at);
+}
+
+/** Strict evidence parser. Neither a summary nor its hash is runtime authority. */
+export function parseIndependentWorkflowBudgetStopSummary(summary: string, binding: WorkflowBudgetBinding): IndependentBudgetStopData | null {
+  if (typeof summary !== "string" || summary.length > 2000 || !summary.startsWith(INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX)) return null;
+  try {
+    const value = JSON.parse(summary.slice(INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX.length));
+    if (!value || Array.isArray(value) || Object.keys(value).sort().join(",") !== "b,d,f,k,p,r,s"
+      || [value.k, value.b, value.s, value.f].some((entry) => typeof entry !== "string" || !/^[a-f0-9]{64}$/.test(entry))
+      || !["before-claim", "run"].includes(value.p) || (value.r === null ? value.p !== "before-claim" : typeof value.r !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(value.r))
+      || !Array.isArray(value.d) || !value.d.length || value.d.length > BUDGET_DIMENSIONS.length + 1) return null;
+    const count = (entry: unknown): entry is number => Number.isSafeInteger(entry) && (entry as number) >= 0;
+    const denials: IndependentBudgetStopData["denials"] = [];
+    for (const entry of value.d) {
+      if (!Array.isArray(entry) || entry.length !== 5 || ![...BUDGET_DIMENSIONS, "accounting"].includes(entry[0])
+        || entry[1] !== null && !count(entry[1]) || !count(entry[2]) || !count(entry[3])
+        || !["budget-exhausted", "budget-accounting-unavailable"].includes(entry[4])
+        || entry[4] === "budget-exhausted" && entry[1] === null) return null;
+      denials.push({ dimension: entry[0], cap: entry[1], proven_consumed: entry[2], required: entry[3], code: entry[4] });
+    }
+    if (new Set(denials.map((entry) => entry.dimension)).size !== denials.length) return null;
+    const data: IndependentBudgetStopData = { admission_fingerprint: value.b, policy_fingerprint: value.s, cap_fingerprint: value.f, run_id: value.r, phase: value.p, denials };
+    return independentWorkflowBudgetStopSummary(binding, data) === summary ? data : null;
+  } catch { return null; }
+}
+
+export function independentWorkflowBudgetStopKey(binding: WorkflowBudgetBinding, data: IndependentBudgetStopData): string {
+  const summary = JSON.parse(independentWorkflowBudgetStopSummary(binding, data).slice(INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX.length));
+  const { d: _denials, ...identity } = summary;
+  return `Independent workflow budget evidence ${workflowEvidenceHash(identity)}`;
+}
+
+/** Canonical P evidence only. It never adopts a lease or restores private execution authority. */
+export function inspectIndependentWorkflowBudgetStopFacts(workflows: WorkflowDocument, issues: IssueDocument, workflowId: string,
+  data: IndependentBudgetStopData, at: number, receipt?: unknown, repoRoot = process.cwd()) {
+  const owner = workflows.workflows[workflowId], stage = owner?.current_stage_id ? workflows.stages[owner.current_stage_id] : null;
+  const task = stage?.task_id ? readTask(stage.task_id) : null;
+  if (!task || !validateTaskRecord(task)) throw new IssueServiceError("Independent budget task evidence is unavailable", 409);
+  assertTaskBudgetAdmissionBinding(task);
+  const admission = task.envelope.budget_admission, ledgerPath = budgetStatePath(), ledger = readBudgetLedger(ledgerPath);
+  if (!admission || !ledger || data.admission_fingerprint !== workflowEvidenceHash(admission)
+    || admission.workflow?.workflow_id !== workflowId || admission.workflow.stage_id !== stage!.id
+    || admission.workflow.stage_generation !== stage!.generation || admission.workflow.grant_id !== owner!.current_grant_id
+    || admission.issue_id !== owner!.issue_id || admission.scope_revision !== owner!.scope_revision
+    || stage!.execution_id !== null && stage!.execution_id !== data.run_id) throw new IssueServiceError("Independent budget immutable admission is stale", 409);
+  const reservation = ledger.reservations[admission.reservation_id], intent = ledger.admission_intents[admission.intent_id];
+  const subject = { id: admission.subject_id, kind: "task", task_id: admission.task_id, project_id: admission.project_id,
+    role_id: admission.role_id, agent_id: admission.agent_id, issue_id: admission.issue_id, workflow: admission.workflow, attribution: admission.attribution };
+  const charges = Object.values(ledger.charges).filter((entry) => entry.reservation_id === admission.reservation_id);
+  const charge = data.run_id === null ? null : charges.find((entry) => entry.run_id === data.run_id);
+  if (!reservation || !intent || !isDeepStrictEqual(ledger.subjects[admission.subject_id], subject)
+    || reservation.subject_id !== admission.subject_id || reservation.intent_id !== admission.intent_id || reservation.created_at !== admission.created_at
+    || !isDeepStrictEqual(reservation.policy_bindings, admission.policy_bindings) || !["committed", "unknown"].includes(intent.status) || intent.admission_id !== admission.id
+    || intent.subject_id !== admission.subject_id || intent.reservation_id !== reservation.id
+    || charges.some((entry) => entry.subject_id !== admission.subject_id || entry.review !== (admission.caps.review_attempts > 0) || entry.correction !== (admission.caps.corrections > 0))
+    || data.phase === "run" && (!charge || reservation.run_ids.at(-1) !== data.run_id || charges.length !== task.orchestration?.attempts)
+    || data.phase === "before-claim" && (!["queued", "running"].includes(task.lifecycle)
+      || task.lifecycle === "queued" && !!task.orchestration?.lease
+      || task.lifecycle === "running" && task.orchestration?.lease?.run_id !== data.run_id
+      || data.run_id !== null && (!charge || reservation.run_ids.at(-1) !== data.run_id)
+      || charges.some((entry) => entry.status === "running" && entry.run_id !== data.run_id))) {
+    throw new IssueServiceError("Independent budget canonical ownership is unavailable", 409);
+  }
+  const currentReceipt = receipt === undefined ? null : inspectBudgetStopReceipt(receipt, task);
+  if (receipt !== undefined && !currentReceipt) throw new IssueServiceError("Independent budget private stop receipt is unavailable", 409);
+  if (data.phase === "before-claim" && task.lifecycle === "running" && !currentReceipt) throw new IssueServiceError("Independent pre-bind evidence cannot restore a private claim", 409);
+  let sourceFingerprint: string | null = null;
+  if (currentReceipt) {
+    if (currentReceipt.admission_fingerprint !== data.admission_fingerprint || currentReceipt.policy_fingerprint !== data.policy_fingerprint
+      || currentReceipt.cap_fingerprint !== data.cap_fingerprint || currentReceipt.run_id !== data.run_id || currentReceipt.phase !== data.phase
+      || data.denials.some((denial) => !currentReceipt.denials.some((current) => current.dimension === denial.dimension && current.cap === denial.cap
+        && current.required === denial.required && current.code === denial.code && current.proven_consumed >= denial.proven_consumed))) {
+      throw new IssueServiceError("Independent budget stop receipt has changed bindings", 409);
+    }
+  } else {
+    // Only a reassemblable trusted static policy can complete a cross-store
+    // evidence gap after restart. Unknown dynamic constraints are not guessed.
+    const source = readBudgetPolicy(repoRoot), resolved = resolveBudgetPolicy({ source, attribution: admission.attribution,
+      at: admission.created_at, base_caps: admission.caps, ledger,
+      correction_lineages: Object.values(workflows.lineages).map(({ id, project_id, issue_id, workflow_ids }) => ({ id, project_id, issue_id, workflow_ids })) });
+    sourceFingerprint = source.fingerprint;
+    if (source.fingerprint !== data.policy_fingerprint || resolved.cap_fingerprint !== data.cap_fingerprint
+      || resolved.cap_fingerprint !== admission.admitted_cap_fingerprint || !isDeepStrictEqual(resolved.policy_bindings, admission.policy_bindings)) {
+      throw new IssueServiceError("Independent budget current policy cannot reconstruct retained evidence", 409);
+    }
+    const total = (dimension: IndependentBudgetStopData["denials"][number]["dimension"]) => charges.reduce((sum, entry) => sum
+      + (dimension === "attempts" || dimension === "review_attempts" ? 1 : dimension === "runtime_ms" || dimension === "review_runtime_ms" ? entry.runtime_ms
+        : dimension === "total_tokens" || dimension === "review_total_tokens" ? entry.observed_total_tokens ?? 0 : dimension === "corrections" ? entry.correction ? 1 : 0 : 0), 0);
+    const unknown = reservation.status === "unknown" || reservation.uncertain_dimensions.length > 0
+      || charges.some((entry) => entry.runtime_state === "unknown" || entry.usage_state === "unknown");
+    for (const denial of data.denials) {
+      if (denial.code === "budget-accounting-unavailable") {
+        if (!unknown || denial.cap !== null || denial.dimension !== "accounting" || denial.proven_consumed !== 0 || denial.required !== 0) throw new IssueServiceError("Independent budget unknown evidence is no longer exact", 409);
+        continue;
+      }
+      if (denial.dimension === "accounting") throw new IssueServiceError("Independent budget accounting cannot invent a numeric cap", 409);
+      const consumed = total(denial.dimension), ceiling = resolved.ceilings[denial.dimension];
+      if (data.phase !== "run" || !["runtime_ms", "total_tokens", "review_runtime_ms", "review_total_tokens"].includes(denial.dimension)
+        || denial.required !== 0 || denial.cap !== ceiling || consumed < denial.proven_consumed || consumed < ceiling) {
+        throw new IssueServiceError("Independent budget exhaustion cannot be reconstructed from canonical evidence", 409);
+      }
+    }
+  }
+  const facts = inspectBudgetStopFacts(workflows, issues, workflowId, at, data);
+  return { ...facts, ledger, ledgerPath, source_fingerprint: sourceFingerprint, independent_stop: data };
+}
 
 function assertDispatchAdmission(value: unknown): void {
   if (value === undefined) return;
@@ -331,6 +537,78 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
   return {
     inspectWorkflowCandidate,
     captureWorkflowCandidate,
+    recordIndependentWorkflowBudgetExhaustion(workflowId: string, receipt?: unknown): boolean {
+      const workflows = readWorkflowDocument(), workflow = workflows.workflows[workflowId];
+      if (!workflow || workflow.status !== "needs-decision" || workflow.stop_requested_at || workflow.pending_decision_id) return false;
+      const retained = workflows.events.filter((entry) => entry.workflow_id === workflowId && entry.type === "budget-stopped").at(-1);
+      const consumption = projectWorkflowConsumption(workflows, workflowId), data = retained && parseIndependentWorkflowBudgetStopSummary(retained.summary, consumption.binding);
+      if (!retained || !data || retained.stage_id !== consumption.binding.stage_id || retained.execution_id !== consumption.binding.execution_id) return false;
+      const document = readIssueDocument(), issue = requireIssue(document, workflow.issue_id), key = independentWorkflowBudgetStopKey(consumption.binding, data);
+      // The original immutable stop is consumed once, irrespective of later
+      // usage high-water, finalized receipts or a human's explicit resume.
+      if (document.events.some((entry) => entry.issue_id === issue.id && entry.payload.budget_stop_key === key
+        && entry.payload.workflow_id === workflowId && entry.payload.stage_id === consumption.binding.stage_id
+        && entry.payload.task_id === consumption.binding.task_id && entry.payload.execution_id === data.run_id)) return false;
+      if (!["authorized", "working", "checking"].includes(issue.status)) return false;
+      const facts = inspectIndependentWorkflowBudgetStopFacts(workflows, document, workflowId, data, now().getTime(), receipt, repoRoot), at = now().toISOString();
+      return mutateIssueDocument((current) => {
+        if (!isDeepStrictEqual(current, document) || !isDeepStrictEqual(readWorkflowDocument(), workflows)
+          || !isDeepStrictEqual(readTask(facts.task.envelope.id), facts.task) || !isDeepStrictEqual(readBudgetLedger(facts.ledgerPath), facts.ledger)
+          || facts.source_fingerprint !== null && readBudgetPolicy(repoRoot).fingerprint !== facts.source_fingerprint) {
+          throw new IssueServiceError("Independent budget facts changed before canonical issue transition", 409);
+        }
+        const target = requireIssue(current, issue.id), candidate = facts.evidence_candidate;
+        target.next_action = "Inspect the exact independent budget evidence; retained data cannot restore private execution or authorize another stage.";
+        addEvidence(current, target, { task_id: facts.task.envelope.id, execution_id: data.run_id, candidate_id: candidate?.id ?? null,
+          candidate_revision: candidate?.candidate_revision ?? null, diff_fingerprint: candidate?.diff_fingerprint ?? null, scope_revision: target.scope_revision,
+          kind: "task", label: "Exact independent workflow budget stop requires a human decision", reference: key, status: "gap" }, at);
+        const type = target.status === "authorized" ? "authorization-stale" : target.status === "working" ? "decision-required" : "verification-needs-decision";
+        transition(current, target, "needs-decision", target.revision, type, { workflow_id: workflowId, stage_id: consumption.binding.stage_id,
+          task_id: consumption.binding.task_id, execution_id: data.run_id, candidate_id: candidate?.id ?? null, grant_id: consumption.binding.grant_id,
+          authority_revision: consumption.binding.authority_revision, scope_revision: target.scope_revision, budget_stop_key: key,
+          retained_candidate: facts.retained_candidate, replacement_candidate: facts.replacement_candidate,
+          independent_budget_exhaustion: data, budget_consumption: consumption,
+          independent_budget_consumption: { reservation_id: facts.task.envelope.budget_admission!.reservation_id,
+            charges: Object.values(facts.ledger.charges).filter((entry) => entry.reservation_id === facts.task.envelope.budget_admission!.reservation_id) } }, at);
+        return true;
+      });
+    },
+    recordWorkflowBudgetExhaustion(workflowId: string, operation: WorkflowBudgetStopOperation): boolean {
+      const workflows = readWorkflowDocument(), workflow = workflows.workflows[workflowId];
+      if (!workflow || workflow.status !== "needs-decision" || workflow.stop_requested_at || workflow.pending_decision_id) return false;
+      const stop = evaluateWorkflowBudgetStop(workflows, workflowId, operation);
+      if (!stop || !stop.denials.some((denial) => denial.code === "budget-exhausted" || denial.code === "budget-accounting-unavailable")) return false;
+      const summary = workflowBudgetStopSummary(stop), retained = workflows.events.filter((entry) => entry.workflow_id === workflowId && entry.type === "budget-stopped").at(-1);
+      if (!retained || retained.stage_id !== stop.binding.stage_id || retained.execution_id !== stop.binding.execution_id || retained.summary !== summary) {
+        return false; // Unrelated human/recovery stops are not budget evidence.
+      }
+      const document = readIssueDocument(), issue = requireIssue(document, workflow.issue_id);
+      // Check before acquiring the issue lock. The historical event remains
+      // consumed even when a human later resumes; growing usage is not replay.
+      if (document.events.some((entry) => entry.issue_id === issue.id && entry.payload.budget_stop_key === summary
+        && entry.payload.workflow_id === workflowId && entry.payload.stage_id === stop.binding.stage_id
+        && entry.payload.task_id === stop.binding.task_id && entry.payload.execution_id === stop.binding.execution_id)) return false;
+      if (!["authorized", "working", "checking"].includes(issue.status)) return false;
+      const facts = inspectWorkflowBudgetStopFacts(workflows, document, workflowId, now().getTime());
+      const consumption = projectWorkflowConsumption(workflows, workflowId), at = now().toISOString();
+      return mutateIssueDocument((current) => {
+        if (!isDeepStrictEqual(current, document) || !isDeepStrictEqual(readWorkflowDocument(), workflows)
+          || !isDeepStrictEqual(readTask(facts.task.envelope.id), facts.task)) throw new IssueServiceError("Workflow budget facts changed before canonical issue transition", 409);
+        const target = requireIssue(current, issue.id), candidate = facts.evidence_candidate;
+        target.next_action = "Inspect the exact retained budget evidence and explicitly decide the next action under current scope and policy.";
+        addEvidence(current, target, { task_id: facts.task.envelope.id, execution_id: stop.binding.execution_id,
+          candidate_id: candidate?.id ?? null, candidate_revision: candidate?.candidate_revision ?? null,
+          diff_fingerprint: candidate?.diff_fingerprint ?? null, scope_revision: target.scope_revision, kind: "task",
+          label: "Exact workflow budget exhaustion requires a human decision", reference: summary, status: "gap" }, at);
+        const type = target.status === "authorized" ? "authorization-stale" : target.status === "working" ? "decision-required" : "verification-needs-decision";
+        transition(current, target, "needs-decision", target.revision, type, { workflow_id: workflowId, stage_id: stop.binding.stage_id,
+          task_id: stop.binding.task_id, execution_id: stop.binding.execution_id, candidate_id: candidate?.id ?? null,
+          grant_id: stop.binding.grant_id, authority_revision: stop.binding.authority_revision,
+          retained_candidate: facts.retained_candidate, replacement_candidate: facts.replacement_candidate,
+          scope_revision: target.scope_revision, budget_stop_key: summary, budget_exhaustion: stop, budget_consumption: consumption }, at);
+        return true;
+      });
+    },
     recordWorkflowReview(workflowId: string, stageId: string): void {
       const facts = inspectWorkflowCandidate(workflowId), stage = facts.workflows.stages[stageId];
       const receipt = Object.values(facts.workflows.review_receipts).find((entry) => entry.workflow_id === workflowId && entry.stage_id === stageId);
@@ -369,7 +647,7 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
       return Object.values(readIssueDocument().issues).sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at));
     },
 
-    get(id: string): IssueLineage & { budget_readiness: IssueBudgetReadiness[] } {
+    get(id: string): IssueLineage & { budget_readiness: IssueBudgetReadiness[]; budget_consumption?: IssueBudgetConsumption } {
       const document = readIssueDocument();
       const issue = requireIssue(document, id);
       const tasks = listTasks().filter((task) => taskIssueId(task) === id);
@@ -394,7 +672,13 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
           return { task_id, availability: task ? "available" : "unavailable", readiness: task ? taskBudgetReadiness(task) : null };
         } catch { return { task_id, availability: "unavailable", readiness: null }; }
       });
-      return { issue, tasks: taskLineage, candidates, evidence, evidence_gaps: gaps, sessions, budget_readiness };
+      let budget_consumption: IssueBudgetConsumption;
+      try {
+        const workflows = readWorkflowDocument();
+        budget_consumption = { availability: "available", workflows: Object.values(workflows.workflows).filter((entry) => entry.issue_id === id)
+          .map((entry) => projectWorkflowConsumption(workflows, entry.id)) };
+      } catch { budget_consumption = { availability: "unavailable", workflows: [] }; }
+      return { issue, tasks: taskLineage, candidates, evidence, evidence_gaps: gaps, sessions, budget_readiness, budget_consumption };
     },
 
     create(raw: IssueCreateInput): WorkIssue {
@@ -778,7 +1062,7 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
       });
     },
 
-    lineage(id: string): IssueLineage & { budget_readiness: IssueBudgetReadiness[] } { return this.get(id); },
+    lineage(id: string): IssueLineage & { budget_readiness: IssueBudgetReadiness[]; budget_consumption?: IssueBudgetConsumption } { return this.get(id); },
 
     executionGate(input: { issueId: string; taskId: string; executionId: string; scopeRevision: number }): "allowed" | "candidate-ready" | "decision-required" {
       const document = readIssueDocument();

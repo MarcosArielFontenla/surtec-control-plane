@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,8 +7,9 @@ import type { ExecutionBudget, TestingPlan } from "../context/types";
 import { pathsOutsideScope } from "../../dashboard/src/server/issue-service";
 import { resolveWorkflowReviewPolicy } from "./review-policy";
 import { CORRECTION_BUDGET_CEILINGS, CORRECTION_PROTECTED_PATTERNS, correctionPathReasons, evaluateCorrectionEligibility, hasConcreteCorrectionFinding, readWorkflowPolicy, remainingWorkflowBudget,
-  resolveWorkflowBudget, resolveWorkflowCorrection, resolveWorkflowStageBudget, WORKFLOW_BUDGET_CEILINGS, type CorrectionEligibilityInput } from "./policy";
-import type { WorkflowBudget, WorkflowCounters, WorkflowPolicy } from "./types";
+  resolveWorkflowBudget, resolveWorkflowCorrection, resolveWorkflowStageBudget, WORKFLOW_BUDGET_CEILINGS, projectWorkflowConsumption, evaluateWorkflowBudgetStop, type CorrectionEligibilityInput } from "./policy";
+import type { WorkflowBudget, WorkflowCounters, WorkflowDocument, WorkflowPolicy, WorkflowStage } from "./types";
+import { assertWorkflowDocument } from "./validation";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -266,5 +267,249 @@ describe("pure one-correction eligibility, not admission authority", () => {
     input.correction_counters = { ...counters(), total_tokens: 39999 }; input.workflow.counters.total_tokens = 99999;
     expect(evaluateCorrectionEligibility(input).remaining_budget?.max_total_tokens).toBe(1);
     input.correction_counters.tasks = 1; expect(evaluateCorrectionEligibility(input).eligible).toBe(false);
+  });
+});
+
+function consumptionFixture(): WorkflowDocument {
+  const fixture = correctionFixture(), workflow = structuredClone(fixture.workflow), grant = structuredClone(fixture.grant), lineage = structuredClone(fixture.lineage);
+  workflow.stage_ids = []; workflow.current_stage_id = null; workflow.counters = counters();
+  return { schema_version: 1, workflows: { [workflow.id]: workflow }, grants: { [grant.id]: grant }, lineages: { [lineage.id]: lineage },
+    stages: {}, accounting: {}, admission_intents: {}, handoffs: {}, review_receipts: {}, decisions: {}, events: [] };
+}
+function consumptionStage(document: WorkflowDocument, kind: WorkflowStage["kind"], tokens: number, runtime: number, complete = true, generation = 1, workflowId = "workflow-1"): WorkflowStage {
+  const owner = document.workflows[workflowId]!, grant = document.grants[owner.current_grant_id]!;
+  const index = Object.keys(document.stages).length + 1, stageId = `stage-${index}`, taskId = index === 1 ? "writer-1" : `task-${index}`, runId = `run-${index}`;
+  const roleId = kind === "implementation" || kind === "correction" ? "software-engineer" : kind === "qa" ? "qa-evaluator" : "reviewer";
+  const assignment = grant.role_assignments.find((entry) => entry.role_id === roleId)!;
+  const previous = generation > 1 ? document.stages[owner.stage_ids.at(-1)!]! : null;
+  const stage: WorkflowStage = { schema_version: 1, id: stageId, workflow_id: owner.id, grant_id: grant.id, authority_revision: grant.authority_revision,
+    generation, ordinal: previous?.ordinal ?? index, kind, role_id: roleId, agent_id: assignment.agent_id, sandbox: assignment.sandbox,
+    status: complete ? "needs-review" : "running", phase: "execution", task_id: taskId, execution_id: runId, predecessor_stage_id: null,
+    supersedes_stage_id: previous?.id ?? null, handoff_id: null, output: null, output_fingerprint: null, candidate: structuredClone(owner.candidate),
+    context_fingerprint: evidenceHash(`context-${index}`), created_at: at(0), updated_at: at(6) };
+  document.stages[stageId] = stage;
+  if (previous) owner.stage_ids[owner.stage_ids.length - 1] = stageId; else owner.stage_ids.push(stageId);
+  owner.current_stage_id = stageId; owner.counters.tasks++; owner.counters.attempts++; owner.counters.runtime_ms += runtime; owner.counters.total_tokens += tokens;
+  document.accounting[runId] = { schema_version: 1, id: runId, workflow_id: owner.id, stage_id: stageId, task_id: taskId, execution_id: runId,
+    attempt: 1, attempt_charged: true, active_runtime_ms: runtime, observed_tokens: tokens, usage_complete: complete, captured_at: at(6) };
+  if (kind === "correction") { const lineage = document.lineages[owner.lineage_id!]!; lineage.corrections_consumed = 1; lineage.consumed_stage_id = stageId; lineage.consumed_at = at(5); }
+  return stage;
+}
+
+describe("T007 pure independent canonical consumption and exact stops", () => {
+  it("labels Reviewer, QA and the consumed correction branch without adding copies to root totals", () => {
+    const document = consumptionFixture();
+    consumptionStage(document, "implementation", 10, 100); consumptionStage(document, "review", 20, 200); consumptionStage(document, "qa", 30, 300);
+    const correction = consumptionStage(document, "correction", 40, 400); consumptionStage(document, "review", 50, 500); consumptionStage(document, "qa", 60, 600);
+    assertWorkflowDocument(document); const before = structuredClone(document), view = projectWorkflowConsumption(document, "workflow-1");
+    expect(view.root.counters).toEqual({ tasks: 6, attempts: 6, runtime_ms: 2100, total_tokens: 210, accounting_complete: true });
+    expect(view.root.canonical).toEqual(view.root.counters);
+    expect(view.review.counters).toEqual({ tasks: 4, attempts: 4, runtime_ms: 1600, total_tokens: 160, accounting_complete: true });
+    expect(view.correction.counters).toEqual({ tasks: 3, attempts: 3, runtime_ms: 1500, total_tokens: 150, accounting_complete: true });
+    expect(view.correction).toMatchObject({ enabled: true, limit: 1, consumed: 1, remaining: 0, lineage_id: "lineage-1", consumed_stage_id: correction.id });
+    expect(document).toEqual(before); expect(Object.isFrozen(view)).toBe(true); expect(Object.isFrozen(view.binding.candidate)).toBe(true);
+    expect(() => { view.review.counters.total_tokens = 0; }).toThrow();
+  });
+  it("retains normative root floors separately from observed canonical receipts", () => {
+    const document = consumptionFixture(); consumptionStage(document, "implementation", 4, 10);
+    Object.assign(document.workflows["workflow-1"]!.counters, { tasks: 3, attempts: 5, runtime_ms: 100, total_tokens: 50 });
+    const view = projectWorkflowConsumption(document, "workflow-1");
+    expect(view.root.counters).toEqual({ tasks: 3, attempts: 5, runtime_ms: 100, total_tokens: 50, accounting_complete: true });
+    expect(view.root.canonical).toEqual({ tasks: 1, attempts: 1, runtime_ms: 10, total_tokens: 4, accounting_complete: true });
+    expect(view.root).toMatchObject({ attribution_complete: false, runtime_ms: null, total_tokens: null });
+    expect(view.review).toMatchObject({ attribution_complete: false, runtime_ms: null, total_tokens: null, counters: { tasks: 0, accounting_complete: false } });
+    expect(view.correction).toMatchObject({ attribution_complete: false, runtime_ms: null, total_tokens: null, counters: { tasks: 0, accounting_complete: false } });
+    expect(document.workflows["workflow-1"]!.counters.total_tokens).toBe(50);
+  });
+  it("retains every superseded review generation and exact run instead of resetting a current slot", () => {
+    const document = consumptionFixture(); consumptionStage(document, "implementation", 10, 100);
+    const old = consumptionStage(document, "review", 20, 200), next = consumptionStage(document, "review", 30, 300, true, 2);
+    const view = projectWorkflowConsumption(document, "workflow-1");
+    expect(view.review.counters).toMatchObject({ tasks: 2, attempts: 2, runtime_ms: 500, total_tokens: 50 });
+    expect(view.root.canonical.tasks).toBe(3); expect(view.binding).toMatchObject({ stage_id: next.id, stage_generation: 2, execution_id: next.execution_id });
+    expect(document.stages[old.id]).toBeDefined();
+  });
+  it("preserves the consumed lineage and original branch across replacement without lending its root charges", () => {
+    const document = consumptionFixture(), old = document.workflows["workflow-1"]!;
+    consumptionStage(document, "implementation", 10, 100); const correction = consumptionStage(document, "correction", 20, 200);
+    old.status = "cancelled"; old.stop_requested_at = at(6); old.completed_at = at(6);
+    const replacement = structuredClone(old); replacement.id = "replacement"; replacement.current_grant_id = "replacement-grant";
+    replacement.status = "running"; replacement.stop_requested_at = null; replacement.completed_at = null; replacement.stage_ids = []; replacement.current_stage_id = null; replacement.counters = counters();
+    const replacementGrant = structuredClone(document.grants[old.current_grant_id]!); replacementGrant.id = replacement.current_grant_id; replacementGrant.workflow_id = replacement.id;
+    document.workflows[replacement.id] = replacement; document.grants[replacementGrant.id] = replacementGrant; document.lineages[old.lineage_id!]!.workflow_ids.push(replacement.id);
+    consumptionStage(document, "review", 30, 300, true, 1, replacement.id);
+    const view = projectWorkflowConsumption(document, replacement.id);
+    expect(view.root.counters).toMatchObject({ tasks: 1, attempts: 1, runtime_ms: 300, total_tokens: 30 });
+    expect(view.review.counters.total_tokens).toBe(30);
+    expect(view.correction).toMatchObject({ consumed: 1, remaining: 0, consumed_stage_id: correction.id, counters: { tasks: 1, attempts: 1, runtime_ms: 200, total_tokens: 20 } });
+    expect(evaluateWorkflowBudgetStop(document, replacement.id, "correction")!.denials).toContainEqual({ code: "budget-exhausted", scope: "correction", dimension: "corrections", cap: 1, proven_consumed: 1, remaining: 0, required: 1 });
+    replacement.counters.total_tokens++;
+    const unknownReplacement = projectWorkflowConsumption(document, replacement.id);
+    expect(unknownReplacement.review.total_tokens).toBeNull();
+    expect(unknownReplacement.correction).toMatchObject({ attribution_complete: true, total_tokens: 20 });
+    old.counters.total_tokens++;
+    expect(projectWorkflowConsumption(document, replacement.id).correction).toMatchObject({ attribution_complete: false, total_tokens: null });
+  });
+  it.each([0, 17])("preserves an incomplete active review receipt with proven tokens %s but unavailable totals", (tokens) => {
+    const document = consumptionFixture(); consumptionStage(document, "implementation", 1, 1); consumptionStage(document, "review", tokens, 2, false);
+    const view = projectWorkflowConsumption(document, "workflow-1");
+    expect(view.review.counters).toMatchObject({ total_tokens: tokens, runtime_ms: 2, accounting_complete: false });
+    expect(view.review.total_tokens).toBeNull(); expect(view.review.runtime_ms).toBeNull(); expect(view.root.total_tokens).toBeNull();
+    expect(evaluateWorkflowBudgetStop(document, "workflow-1", "observe")).toBeNull();
+  });
+  it("does not label explicit complete zero as unknown", () => {
+    const document = consumptionFixture(); consumptionStage(document, "implementation", 0, 0); consumptionStage(document, "review", 0, 0);
+    expect(projectWorkflowConsumption(document, "workflow-1").review).toMatchObject({ runtime_ms: 0, total_tokens: 0, counters: { accounting_complete: true } });
+  });
+  it("keeps unexplained unknown root accounting unattributed even when every retained receipt is complete", () => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!;
+    consumptionStage(document, "implementation", 2, 3); consumptionStage(document, "review", 5, 7);
+    owner.counters.accounting_complete = false; owner.status = "needs-decision"; owner.blocked_reason = "Unexplained interrupted accounting";
+    const view = projectWorkflowConsumption(document, owner.id);
+    expect(view.root).toMatchObject({ attribution_complete: false, total_tokens: null, counters: { total_tokens: 7, accounting_complete: false } });
+    expect(view.review).toMatchObject({ attribution_complete: false, total_tokens: null, counters: { total_tokens: 5, accounting_complete: false } });
+    expect(view.correction.total_tokens).toBeNull();
+  });
+  it.each(["tasks", "attempts", "runtime_ms", "total_tokens"] as const)("preserves exact root %s exhaustion evidence on admission", (dimension) => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!; consumptionStage(document, "implementation", 1, 1);
+    owner.counters[dimension] = owner.budget[`max_${dimension}`];
+    const stop = evaluateWorkflowBudgetStop(document, owner.id, "admit")!;
+    expect(stop.denials).toContainEqual({ code: "budget-exhausted", scope: "root", dimension, cap: owner.budget[`max_${dimension}`],
+      proven_consumed: owner.counters[dimension], remaining: 0, required: 1 });
+    expect(stop.binding).toMatchObject({ workflow_id: owner.id, workflow_revision: owner.revision, grant_id: owner.current_grant_id,
+      authority_revision: owner.authority_revision, scope_revision: owner.scope_revision, issue_id: owner.issue_id, project_id: owner.project_id,
+      stage_id: owner.current_stage_id, stage_generation: 1, task_id: "writer-1", execution_id: "run-1", candidate: owner.candidate,
+      policy_fingerprint: document.grants[owner.current_grant_id]!.policy_fingerprint, testing_policy_fingerprint: document.grants[owner.current_grant_id]!.testing_policy_fingerprint,
+      review_policy_fingerprint: owner.review_policy!.fingerprint, context_fingerprint: document.stages[owner.current_stage_id!]!.context_fingerprint });
+  });
+  it("allows the final already admitted task and charged attempt during active observation", () => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!; consumptionStage(document, "implementation", 1, 1);
+    owner.counters.tasks = owner.budget.max_tasks;
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "claim")).toBeNull();
+    owner.counters.attempts = owner.budget.max_attempts;
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "observe")).toBeNull();
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "claim")!.denials.map((entry) => entry.dimension)).toEqual(["attempts"]);
+  });
+  it.each(["runtime_ms", "total_tokens"] as const)("observes actual excess %s without clipping or requiring complete terminal usage", (dimension) => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!; consumptionStage(document, "implementation", 1, 1, false);
+    owner.counters[dimension] = owner.budget[`max_${dimension}`] + 1; owner.status = "needs-decision"; owner.blocked_reason = "Observed exact excess";
+    const stop = evaluateWorkflowBudgetStop(document, owner.id, "observe")!;
+    expect(stop.denials).toContainEqual({ code: "budget-exhausted", scope: "root", dimension, cap: owner.budget[`max_${dimension}`],
+      proven_consumed: owner.budget[`max_${dimension}`] + 1, remaining: 0, required: 1 });
+  });
+  it("reports unknown root accounting as unavailable rather than spent zero", () => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!; consumptionStage(document, "implementation", 17, 20, false);
+    owner.counters.accounting_complete = false; owner.status = "needs-decision"; owner.blocked_reason = "Interrupted receipt";
+    const stop = evaluateWorkflowBudgetStop(document, owner.id, "admit")!;
+    expect(stop.denials).toContainEqual({ code: "budget-accounting-unavailable", scope: "root", dimension: "accounting", cap: null,
+      proven_consumed: 17, remaining: null, required: 1 });
+    expect(projectWorkflowConsumption(document, owner.id).root.total_tokens).toBeNull();
+  });
+  it("retains incomplete terminal review receipts and rejects admission without replacing their proven high-water", () => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!;
+    consumptionStage(document, "implementation", 1, 1); const review = consumptionStage(document, "review", 17, 20);
+    document.accounting[review.execution_id!]!.usage_complete = false; owner.counters.accounting_complete = false; owner.status = "needs-decision"; owner.blocked_reason = "Unknown terminal usage";
+    const before = structuredClone(document), view = projectWorkflowConsumption(document, owner.id);
+    expect(view.review).toMatchObject({ total_tokens: null, runtime_ms: null, counters: { total_tokens: 17, runtime_ms: 20, accounting_complete: false } });
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "claim")!.denials.map((entry) => entry.code)).toContain("budget-accounting-unavailable");
+    expect(document).toEqual(before);
+  });
+  it("does not fabricate exhausted correction when no correction was opted in", () => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!, grant = document.grants[owner.current_grant_id]!;
+    consumptionStage(document, "implementation", 0, 0);
+    grant.correction = { enabled: false, max_corrections: 0, budget: null }; grant.permitted_stage_kinds = grant.permitted_stage_kinds.filter((kind) => kind !== "correction");
+    document.lineages[owner.lineage_id!]!.correction_limit = 0;
+    const stop = evaluateWorkflowBudgetStop(document, owner.id, "correction")!;
+    expect(stop.denials.map((entry) => entry.code)).toEqual(["correction-disabled"]);
+    expect(projectWorkflowConsumption(document, owner.id).correction).toMatchObject({ enabled: false, limit: 0, consumed: 0, remaining: 0 });
+  });
+  it("retains consumed allowance without stopping its permitted fresh reviews", () => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!;
+    consumptionStage(document, "implementation", 1, 1); consumptionStage(document, "correction", 2, 2);
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "claim")).toBeNull();
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "observe")).toBeNull();
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "admit")).toBeNull();
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "correction")!.denials).toContainEqual({ code: "budget-exhausted", scope: "correction", dimension: "corrections", cap: 1, proven_consumed: 1, remaining: 0, required: 1 });
+  });
+  it.each(["tasks", "attempts", "runtime_ms", "total_tokens"] as const)("independently stops the correction branch at %s without inflating root usage", (dimension) => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!, grant = document.grants[owner.current_grant_id]!;
+    consumptionStage(document, "implementation", 1, 1); consumptionStage(document, "correction", 2, 2);
+    const capKey = `max_${dimension}` as keyof WorkflowBudget; grant.correction.budget![capKey] = dimension === "tasks" || dimension === "attempts" ? 1 : 2;
+    const stop = evaluateWorkflowBudgetStop(document, owner.id, "admit")!;
+    expect(stop.denials).toContainEqual({ code: "budget-exhausted", scope: "correction", dimension, cap: grant.correction.budget![capKey],
+      proven_consumed: dimension === "tasks" || dimension === "attempts" ? 1 : 2, remaining: 0, required: 1 });
+    expect(projectWorkflowConsumption(document, owner.id).root.counters.total_tokens).toBe(3);
+  });
+  it("requires enough root and correction tasks/attempts for the correction plus all mandatory fresh reviews", () => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!;
+    consumptionStage(document, "implementation", 1, 1); owner.counters.tasks = owner.budget.max_tasks - 2;
+    const stop = evaluateWorkflowBudgetStop(document, owner.id, "correction")!;
+    expect(stop.denials).toContainEqual({ code: "budget-exhausted", scope: "root", dimension: "tasks", cap: 7, proven_consumed: 5, remaining: 2, required: 3 });
+  });
+  it.each(["tasks", "attempts"] as const)("requires independent correction %s capacity for every mandatory fresh review", (dimension) => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!, grant = document.grants[owner.current_grant_id]!;
+    consumptionStage(document, "implementation", 1, 1); grant.correction.budget![`max_${dimension}`] = 2;
+    const stop = evaluateWorkflowBudgetStop(document, owner.id, "correction")!;
+    expect(stop.denials).toContainEqual({ code: "budget-exhausted", scope: "correction", dimension, cap: 2, proven_consumed: 0, remaining: 2, required: 3 });
+  });
+  it("keeps focused correction at two tasks without waiving its required Reviewer", () => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!, grant = document.grants[owner.current_grant_id]!;
+    consumptionStage(document, "implementation", 1, 1); owner.review_policy!.qa_required = false;
+    grant.correction.budget!.max_tasks = 2; grant.correction.budget!.max_attempts = 2;
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "correction")).toBeNull();
+    owner.counters.tasks = owner.budget.max_tasks - 1;
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "correction")!.denials).toContainEqual({ code: "budget-exhausted", scope: "root", dimension: "tasks", cap: 7, proven_consumed: 6, remaining: 1, required: 2 });
+  });
+  it.each(["tasks", "attempts", "runtime_ms", "total_tokens"] as const)("exposes unassigned %s floors without guessing complete review/correction zero", (dimension) => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!; consumptionStage(document, "implementation", 1, 1);
+    owner.counters[dimension]++;
+    const view = projectWorkflowConsumption(document, owner.id);
+    expect(view.root.counters[dimension]).toBe(2); expect(view.root.canonical[dimension]).toBe(1);
+    expect(view.review).toMatchObject({ attribution_complete: false, runtime_ms: null, total_tokens: null, counters: { accounting_complete: false } });
+    expect(view.correction).toMatchObject({ attribution_complete: false, runtime_ms: null, total_tokens: null, counters: { accounting_complete: false } });
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "correction")!.denials).toContainEqual({ code: "budget-accounting-unavailable", scope: "correction", dimension: "accounting", cap: null,
+      proven_consumed: 0, remaining: null, required: 1 });
+  });
+  it.each(["tasks", "attempts"] as const)("does not stop an active correction at the last charged %s", (dimension) => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!, grant = document.grants[owner.current_grant_id]!;
+    consumptionStage(document, "implementation", 1, 1); consumptionStage(document, "correction", 2, 2);
+    grant.correction.budget![`max_${dimension}`] = 1;
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "observe")).toBeNull();
+    if (dimension === "tasks") expect(evaluateWorkflowBudgetStop(document, owner.id, "claim")).toBeNull();
+  });
+  it("keeps missing lineage allowance unavailable, never a new correction", () => {
+    const document = consumptionFixture(), owner = document.workflows["workflow-1"]!; consumptionStage(document, "implementation", 0, 0); owner.lineage_id = null; document.lineages = {};
+    const view = projectWorkflowConsumption(document, owner.id);
+    expect(view.correction).toMatchObject({ consumed: null, remaining: null, lineage_id: null });
+    expect(evaluateWorkflowBudgetStop(document, owner.id, "correction")!.denials.map((entry) => entry.code)).toEqual(["correction-lineage-unavailable"]);
+  });
+  it.each(["missing-workflow", "future", "missing-stage", "mismatched-run", "unsafe-operation"])("refuses invalid %s without editing data", (failure) => {
+    const document = consumptionFixture(); consumptionStage(document, "implementation", 1, 1);
+    if (failure === "future") document.schema_version = 2 as never;
+    if (failure === "missing-stage") delete document.stages["stage-1"];
+    if (failure === "mismatched-run") document.accounting["run-1"]!.task_id = "foreign";
+    const before = JSON.stringify(document);
+    expect(() => evaluateWorkflowBudgetStop(document, failure === "missing-workflow" ? "foreign" : "workflow-1", failure === "unsafe-operation" ? "restart" as never : "admit")).toThrow();
+    expect(JSON.stringify(document)).toBe(before);
+  });
+  it.each(["proxy", "getter", "toJSON", "inherited", "symbol"])("rejects unsafe %s before invoking hooks or serializers", (failure) => {
+    const document = consumptionFixture(), hook = vi.fn(() => document); let value: unknown = document;
+    if (failure === "proxy") value = new Proxy(document, { ownKeys: hook as never, get: hook as never });
+    if (failure === "getter") Object.defineProperty(document, "accounting", { enumerable: true, get: hook });
+    if (failure === "toJSON") Object.assign(document, { toJSON: hook });
+    if (failure === "inherited") value = Object.create(document);
+    if (failure === "symbol") Object.defineProperty(document, Symbol("hidden"), { value: "hidden" });
+    expect(() => projectWorkflowConsumption(value as WorkflowDocument, "workflow-1")).toThrow(); expect(hook).not.toHaveBeenCalled();
+  });
+  it.each(["proxy", "getter", "toJSON", "cycle", "sparse", "fractional", "negative"])("rejects nested unsafe %s without executing accounting hooks", (failure) => {
+    const document = consumptionFixture(), stage = consumptionStage(document, "implementation", 1, 1), hook = vi.fn(() => 1);
+    if (failure === "proxy") document.accounting[stage.execution_id!] = new Proxy(document.accounting[stage.execution_id!]!, { get: hook });
+    if (failure === "getter") Object.defineProperty(document.accounting[stage.execution_id!]!, "observed_tokens", { enumerable: true, get: hook });
+    if (failure === "toJSON") Object.assign(document.accounting[stage.execution_id!]!, { toJSON: hook });
+    if (failure === "cycle") Object.assign(document.accounting[stage.execution_id!]!, { self: document });
+    if (failure === "sparse") document.workflows["workflow-1"]!.stage_ids = Array(1) as string[];
+    if (failure === "fractional") document.accounting[stage.execution_id!]!.observed_tokens = 0.5;
+    if (failure === "negative") document.accounting[stage.execution_id!]!.observed_tokens = -1;
+    expect(() => projectWorkflowConsumption(document, "workflow-1")).toThrow(); expect(hook).not.toHaveBeenCalled();
   });
 });

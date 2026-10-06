@@ -111,6 +111,22 @@ afterEach(() => {
 });
 
 describe("local issue service", () => {
+  it("projects absent workflow consumption as an explicit read-only empty inventory", () => {
+    const issues = service(), issue = issues.create(input()), before = readFileSync(join(state, "issues/issues.json")), inventory = readdirSync(state, { recursive: true });
+    expect(issues.get(issue.id).budget_consumption).toEqual({ availability: "available", workflows: [] });
+    expect(issues.lineage(issue.id).budget_consumption).toEqual({ availability: "available", workflows: [] });
+    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(before); expect(readdirSync(state, { recursive: true })).toEqual(inventory);
+    expect(existsSync(join(state, "workflows"))).toBe(false); expect(existsSync(join(state, "budgets"))).toBe(false);
+  });
+  it.each(["malformed", "future"])("keeps %s workflow consumption unavailable without repairing bytes or changing issue state", (kind) => {
+    const issues = service(), issue = issues.create(input()), before = readFileSync(join(state, "issues/issues.json"));
+    mkdirSync(join(state, "workflows")); const path = join(state, "workflows/workflows.json"), bytes = kind === "malformed" ? "{" : '{"schema_version":99}';
+    writeFileSync(path, bytes); const inventory = readdirSync(state, { recursive: true });
+    expect(issues.get(issue.id).budget_consumption).toEqual({ availability: "unavailable", workflows: [] });
+    expect(issues.lineage(issue.id).budget_consumption).toEqual({ availability: "unavailable", workflows: [] });
+    expect(readFileSync(path, "utf8")).toBe(bytes); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(before);
+    expect(readdirSync(state, { recursive: true })).toEqual(inventory); expect(existsSync(join(state, "budgets"))).toBe(false);
+  });
   it.each(["budget_admission", "budget", "reservation_id", "reservation", "intent_id", "budget_cutover", "cutover", "execution_enabled"])("rejects caller %s before issue mutation or task admission", (key) => {
     const issues = service(), proposed = issues.create(input()), authorized = issues.authorize(proposed.id, proposed.revision, "synthetic-human");
     const bytes = readFileSync(join(state, "issues/issues.json")), inventory = readdirSync(state, { recursive: true });
