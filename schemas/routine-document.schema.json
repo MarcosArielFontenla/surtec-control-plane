@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/routine-document.schema.json",
+  "title": "RoutineDocument v1",
+  "$comment": "Bounded optional aggregate; current records, immutable definitions, unique occurrences and cursor high-water are checked together. No migration, repair or execution authority is implied.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "revision",
+    "created_at",
+    "updated_at",
+    "routines",
+    "definitions",
+    "occurrences",
+    "cursors"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "revision": {
+      "$ref": "budget-policy.schema.json#/$defs/positiveInteger"
+    },
+    "created_at": {
+      "$ref": "routine-record.schema.json#/$defs/timestamp"
+    },
+    "updated_at": {
+      "$ref": "routine-record.schema.json#/$defs/timestamp"
+    },
+    "routines": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": {
+        "$ref": "routine-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "routine-record.schema.json"
+      }
+    },
+    "definitions": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": {
+        "$ref": "routine-record.schema.json#/$defs/fingerprint"
+      },
+      "additionalProperties": {
+        "$ref": "routine-record.schema.json"
+      }
+    },
+    "occurrences": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": {
+        "$ref": "routine-record.schema.json#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "routine-occurrence.schema.json"
+      }
+    },
+    "cursors": {
+      "type": "object",
+      "maxProperties": 10000,
+      "propertyNames": {
+        "$ref": "routine-record.schema.json#/$defs/fingerprint"
+      },
+      "additionalProperties": {
+        "$ref": "routine-record.schema.json#/$defs/cursor"
+      }
+    }
+  }
+}

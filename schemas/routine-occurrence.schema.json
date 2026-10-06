@@ -1,0 +1,563 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/routine-occurrence.schema.json",
+  "title": "RoutineOccurrence v1",
+  "$comment": "Exact historical occurrence/receipt data only. Persisted owner inventory does not prove live ownership. Runtime validation enforces cross-record, slot and accounting invariants.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "revision",
+    "routine_id",
+    "routine_revision",
+    "occurrence_key",
+    "definition",
+    "slot",
+    "trigger",
+    "project_ids",
+    "attribution",
+    "budget",
+    "status",
+    "owner",
+    "started_at",
+    "finished_at",
+    "cancel_requested_at",
+    "receipt",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "$ref": "routine-record.schema.json#/$defs/id"
+    },
+    "revision": {
+      "$ref": "budget-policy.schema.json#/$defs/positiveInteger"
+    },
+    "routine_id": {
+      "$ref": "routine-record.schema.json#/$defs/id"
+    },
+    "routine_revision": {
+      "$ref": "budget-policy.schema.json#/$defs/positiveInteger"
+    },
+    "occurrence_key": {
+      "$ref": "routine-record.schema.json#/$defs/fingerprint"
+    },
+    "definition": {
+      "$ref": "routine-record.schema.json"
+    },
+    "slot": {
+      "$ref": "routine-record.schema.json#/$defs/timestamp"
+    },
+    "trigger": {
+      "type": "string",
+      "enum": [
+        "scheduled",
+        "manual",
+        "catch-up",
+        "coalesced"
+      ]
+    },
+    "project_ids": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 25,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "routine-record.schema.json#/$defs/id"
+      }
+    },
+    "attribution": {
+      "$ref": "budget-policy.schema.json#/$defs/attribution"
+    },
+    "budget": {
+      "$ref": "routine-occurrence.schema.json#/$defs/budget"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "reserved",
+        "running",
+        "completed",
+        "partial",
+        "failed",
+        "cancelled",
+        "needs-review"
+      ]
+    },
+    "owner": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "run_id",
+            "worker_id",
+            "claimed_at"
+          ],
+          "properties": {
+            "run_id": {
+              "$ref": "routine-record.schema.json#/$defs/id"
+            },
+            "worker_id": {
+              "$ref": "routine-record.schema.json#/$defs/id"
+            },
+            "claimed_at": {
+              "$ref": "routine-record.schema.json#/$defs/timestamp"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "$ref": "routine-record.schema.json#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "$ref": "routine-record.schema.json#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cancel_requested_at": {
+      "anyOf": [
+        {
+          "$ref": "routine-record.schema.json#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipt": {
+      "anyOf": [
+        {
+          "$ref": "routine-occurrence.schema.json#/$defs/receipt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "$ref": "routine-record.schema.json#/$defs/timestamp"
+    },
+    "updated_at": {
+      "$ref": "routine-record.schema.json#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject_id",
+        "reservation_id",
+        "intent_id",
+        "cap_fingerprint",
+        "admitted_runtime_ms",
+        "policy_bindings"
+      ],
+      "properties": {
+        "subject_id": {
+          "$ref": "routine-record.schema.json#/$defs/id"
+        },
+        "reservation_id": {
+          "$ref": "routine-record.schema.json#/$defs/id"
+        },
+        "intent_id": {
+          "$ref": "routine-record.schema.json#/$defs/id"
+        },
+        "cap_fingerprint": {
+          "$ref": "routine-record.schema.json#/$defs/fingerprint"
+        },
+        "admitted_runtime_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000
+        },
+        "policy_bindings": {
+          "$ref": "budget-policy.schema.json#/$defs/bindings"
+        }
+      }
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "project_id",
+        "state",
+        "observed_at",
+        "fingerprint"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "git",
+            "ci",
+            "deployment",
+            "dependencies",
+            "health",
+            "organization",
+            "issues",
+            "sessions",
+            "harness",
+            "signals"
+          ]
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "$ref": "routine-record.schema.json#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "fresh",
+            "stale",
+            "unavailable"
+          ]
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "$ref": "routine-record.schema.json#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fingerprint": {
+          "anyOf": [
+            {
+              "$ref": "routine-record.schema.json#/$defs/fingerprint"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "fingerprint",
+        "issue_id"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "routine-record.schema.json#/$defs/fingerprint"
+        },
+        "fingerprint": {
+          "$ref": "routine-record.schema.json#/$defs/fingerprint"
+        },
+        "issue_id": {
+          "anyOf": [
+            {
+              "$ref": "routine-record.schema.json#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "occurrence_id",
+        "occurrence_key",
+        "routine_id",
+        "routine_revision",
+        "slot",
+        "action",
+        "scope",
+        "policy_fingerprint",
+        "cap_fingerprint",
+        "project_ids",
+        "started_at",
+        "finished_at",
+        "captured_at",
+        "freshness",
+        "sources",
+        "counts",
+        "consumption",
+        "budget_outcome",
+        "proposals",
+        "failure_code",
+        "next_action"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "occurrence_id": {
+          "$ref": "routine-record.schema.json#/$defs/id"
+        },
+        "occurrence_key": {
+          "$ref": "routine-record.schema.json#/$defs/fingerprint"
+        },
+        "routine_id": {
+          "$ref": "routine-record.schema.json#/$defs/id"
+        },
+        "routine_revision": {
+          "$ref": "budget-policy.schema.json#/$defs/positiveInteger"
+        },
+        "slot": {
+          "$ref": "routine-record.schema.json#/$defs/timestamp"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "refresh-evidence",
+            "evaluate-signals",
+            "propose-issues",
+            "generate-local-report"
+          ]
+        },
+        "scope": {
+          "$ref": "routine-record.schema.json#/$defs/scope"
+        },
+        "policy_fingerprint": {
+          "$ref": "routine-record.schema.json#/$defs/fingerprint"
+        },
+        "cap_fingerprint": {
+          "$ref": "routine-record.schema.json#/$defs/fingerprint"
+        },
+        "project_ids": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 25,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "routine-record.schema.json#/$defs/id"
+          }
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "$ref": "routine-record.schema.json#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "$ref": "routine-record.schema.json#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "captured_at": {
+          "$ref": "routine-record.schema.json#/$defs/timestamp"
+        },
+        "freshness": {
+          "type": "string",
+          "enum": [
+            "fresh",
+            "partial",
+            "stale",
+            "unavailable"
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 10000,
+          "items": {
+            "$ref": "routine-occurrence.schema.json#/$defs/fact"
+          }
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "projects_selected",
+            "facts_total",
+            "facts_fresh",
+            "facts_unavailable",
+            "signals_evaluated",
+            "proposals_created",
+            "reports_written"
+          ],
+          "properties": {
+            "projects_selected": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 25
+            },
+            "facts_total": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "facts_fresh": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "facts_unavailable": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "signals_evaluated": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "proposals_created": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "reports_written": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            }
+          }
+        },
+        "consumption": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attempts",
+            "runtime_ms",
+            "runtime_state",
+            "model_calls",
+            "total_tokens",
+            "workspace_writes"
+          ],
+          "properties": {
+            "attempts": {
+              "enum": [
+                0,
+                1,
+                null
+              ]
+            },
+            "runtime_ms": {
+              "anyOf": [
+                {
+                  "$ref": "routine-record.schema.json#/$defs/count"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "runtime_state": {
+              "type": "string",
+              "enum": [
+                "complete",
+                "unknown"
+              ]
+            },
+            "model_calls": {
+              "type": "integer",
+              "const": 0
+            },
+            "total_tokens": {
+              "type": "integer",
+              "const": 0
+            },
+            "workspace_writes": {
+              "type": "integer",
+              "const": 0
+            }
+          }
+        },
+        "budget_outcome": {
+          "type": "string",
+          "enum": [
+            "within-limit",
+            "exhausted",
+            "denied",
+            "unknown"
+          ]
+        },
+        "proposals": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 10000,
+          "items": {
+            "$ref": "routine-occurrence.schema.json#/$defs/proposal"
+          }
+        },
+        "failure_code": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "budget-denied",
+                "budget-exhausted",
+                "accounting-unavailable",
+                "ownership-unavailable",
+                "source-unavailable",
+                "scope-too-large",
+                "state-invalid",
+                "action-failed",
+                "cancelled",
+                "deadline-exceeded"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_action": {
+          "type": "string",
+          "enum": [
+            "none",
+            "inspect-evidence",
+            "review-proposals",
+            "inspect-budget",
+            "resolve-ownership",
+            "run-new-occurrence"
+          ]
+        }
+      }
+    }
+  }
+}
