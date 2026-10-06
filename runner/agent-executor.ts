@@ -1,3 +1,5 @@
+import { types as utilTypes } from "node:util";
+
 export type RunMode = "read-only" | "workspace-write" | "workspace-write-verify";
 
 export interface AgentUsage {
@@ -8,6 +10,21 @@ export interface AgentUsage {
   totalTokens: number;
 }
 
+const usageFields = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"] as const;
+
+/** Normalize evidence only; a valid numeric sample does not prove final usage. */
+export function isCompleteAgentUsage(value: unknown): value is AgentUsage {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || utilTypes.isProxy(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== usageFields.length || keys.some((key) => typeof key !== "string" || !usageFields.includes(key as typeof usageFields[number]))) return false;
+  return usageFields.every((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return !!descriptor?.enumerable && "value" in descriptor && Number.isSafeInteger(descriptor.value) && descriptor.value >= 0;
+  });
+}
+
 export type AgentEvent =
   | { type: "thread-started"; at: string; threadId: string }
   | { type: "turn-started"; at: string; threadId: string; turnId: string }
@@ -15,6 +32,7 @@ export type AgentEvent =
   | { type: "item"; at: string; threadId: string; turnId: string; phase: "started" | "completed"; itemId: string; itemType: string; status?: string }
   | { type: "approval"; at: string; threadId: string; turnId: string; approval: "command" | "file-change" | "unsupported"; allowed: boolean; command?: string }
   | { type: "usage"; at: string; threadId: string; turnId: string; usage: AgentUsage }
+  | { type: "usage-unknown"; at: string; threadId: string; turnId: string; reason: "invalid-usage" | "final-usage-unproven" }
   | { type: "warning"; at: string; threadId?: string; turnId?: string; message: string }
   | { type: "turn-completed"; at: string; threadId: string; turnId: string; status: string };
 
@@ -41,6 +59,10 @@ export interface AgentRunResult {
   threadId: string;
   turnId: string;
   usage: AgentUsage | null;
+  /** Explicitly false when the adapter cannot prove a final total. Omitted by historical fakes. */
+  usageComplete?: boolean;
+  /** Monotonic proven observations, independent of final-total completeness. */
+  usageHighWater?: AgentUsage | null;
 }
 
 export interface AgentExecutor {

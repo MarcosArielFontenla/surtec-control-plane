@@ -5,13 +5,19 @@ import { join } from "node:path";
 import type { SandboxMode, TaskRecord } from "../lib/state/types";
 import { defaultTaskOrchestration } from "../lib/state/orchestration";
 import { readTask, updateTask, writeTask } from "../lib/state/store";
+import * as taskStore from "../lib/state/store";
 import { readTaskEvents } from "../lib/state/events";
-import { assertTaskOutsideActiveWorkflow, TaskControlError, TaskOrchestrator } from "./task-orchestrator";
+import { assertTaskOutsideActiveWorkflow, BudgetExecutionScaffold, budgetExecutionOwner, TaskControlError, TaskOrchestrator } from "./task-orchestrator";
 import type { TaskRunCompletion, TaskRunOptions } from "./run-task";
 import type { AgentExecutor } from "./agent-executor";
 import { assembleContext, contextHash } from "../lib/context/assemble";
 import { WorkflowOrchestrator } from "./workflow-orchestrator";
 import { mutateWorkflowDocument } from "../lib/state/workflows";
+import { prepareTaskBudgetAdmission } from "../dashboard/src/server/dispatch";
+import { mutateBudgetLedger, readBudgetLedger } from "../lib/state/budgets";
+import { commitTaskBudget, reserveTaskBudget } from "../lib/budgets/reservations";
+import { BUDGET_DIMENSIONS, type BudgetLimits } from "../lib/budgets/types";
+import type { BudgetPolicySource } from "../lib/budgets/policy";
 
 function record(id: string, sandbox: SandboxMode = "read-only", project = "p", order = 0): TaskRecord {
   return {
@@ -349,5 +355,292 @@ describe("TaskOrchestrator", () => {
       orchestration: { attempts: 1, cumulative_tokens: 6, lease: null },
     });
     expect(readTaskEvents("T-1").map((event) => event.type)).toEqual(["claimed", "started", "policy-evaluated", "usage", "completed"]);
+  });
+});
+
+describe("T006 private budget execution scaffold", () => {
+  let root: string, state: string, ledgerPath: string, nowMs: number;
+  const source = (limits: Partial<Record<typeof BUDGET_DIMENSIONS[number], number>> = {}): BudgetPolicySource => ({
+    fingerprint: "a".repeat(64), policy: { schema_version: 1, revision: 1, pricing: { status: "unavailable", reason: "no-versioned-source" },
+      rules: [{ id: "company-cap", revision: 1, scope: { kind: "company", id: "surtec" }, period: "none", warning_percent: 80,
+        limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, limits[dimension] === undefined
+          ? { status: "unconfigured" } : { status: "configured", hard_cap: limits[dimension] }])) as BudgetLimits }] } });
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "surtec-budget-worker-")); state = join(root, "state"); ledgerPath = join(state, "budgets/budgets.json");
+    vi.stubEnv("SURTEC_STATE_DIR", state); nowMs = Date.parse("2026-09-21T10:00:00Z");
+  });
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false); });
+  function bind(id = "B-1", policy = source(), commit = true, attempts = 2) {
+    const task = admittedRecord(id); task.orchestration!.max_runtime_ms = 2000; task.orchestration!.max_total_tokens = 10; task.orchestration!.max_attempts = attempts;
+    const prepared = prepareTaskBudgetAdmission(task, { source: policy, attribution: { company_id: "surtec", objective_ids: [], project_ids: ["p"],
+      issue_id: null, role_id: "planner", execution_id: id } });
+    mutateBudgetLedger((tx) => reserveTaskBudget(tx, { admission: prepared.admission, source: policy }), ledgerPath, prepared.admission.created_at);
+    writeTask(prepared.task);
+    if (commit) mutateBudgetLedger((tx) => commitTaskBudget(tx, { admission: prepared.admission, persisted_admission: readTask(id)!.envelope.budget_admission }), ledgerPath, prepared.admission.created_at);
+    return readTask(id)!;
+  }
+  function controller(policy = source()) { return new BudgetExecutionScaffold({ filePath: ledgerPath, now: () => new Date(nowMs), resolve: () => ({ source: policy }) }); }
+  async function terminal(id: string, options: TaskRunOptions, tokens = 3, elapsed = 100, retryable = false) {
+    const owner = budgetExecutionOwner(options.budgetExecution, id, options.runId!)!; expect(owner).not.toBeNull();
+    const proof = options.budgetExecution!;
+    owner.prepare(proof);
+    updateTask(id, (task) => { task.orchestration!.cumulative_tokens += tokens; });
+    await owner.observe(proof, tokens, elapsed, true);
+    updateTask(id, (task) => {
+      task.lifecycle = "finished"; task.outcome = retryable ? "failed" : "completed"; task.finished_at = new Date(nowMs).toISOString();
+      task.orchestration!.lease = null;
+      task.orchestration!.last_failure = retryable ? { kind: "transient", message: "Synthetic known transient", at: new Date(nowMs).toISOString(), run_id: options.runId! } : null;
+    });
+    const settled = await owner.settle(proof, tokens, elapsed, retryable); expect(settled.complete).toBe(true);
+    return { outcome: retryable ? "failed" as const : "completed" as const, retryable, stale: false };
+  }
+  it.each(["queued", "running", "finished"] as const)("default worker denies bound %s history without rewriting facts", async (lifecycle) => {
+    const task = bind(); task.lifecycle = lifecycle;
+    if (lifecycle === "finished") { task.outcome = "failed"; task.orchestration!.last_failure = { kind: "transient", message: "Synthetic failure", at: task.created_at, run_id: "old" }; }
+    if (lifecycle === "running") { task.orchestration!.attempts = 1; task.orchestration!.lease = { run_id: "old", worker_id: "old", acquired_at: task.created_at, heartbeat_at: task.created_at, expires_at: "2026-09-21T09:00:00Z" }; }
+    writeTask(task); const bytes = readFileSync(join(state, "tasks/B-1.json")), ledger = readFileSync(ledgerPath), run = vi.fn();
+    vi.stubEnv("SURTEC_BUDGET_CUTOVER", "1"); vi.stubEnv("SURTEC_BUDGET_EXECUTION", "1");
+    const worker = new TaskOrchestrator({ now: () => new Date(nowMs), runAttempt: run });
+    expect(worker.recoverExpiredLeases()).toBe(0); expect(await worker.runOnce()).toBe(0); expect(() => worker.retry("B-1")).toThrow(/Budget-bound/);
+    expect(run).not.toHaveBeenCalled(); expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(bytes); expect(readFileSync(ledgerPath)).toEqual(ledger); expect(readTaskEvents("B-1")).toEqual([]);
+  });
+  it("rejects caller-shaped controller and proof copies", () => {
+    bind(); expect(() => new TaskOrchestrator({ budgets: {} as never })).toThrow(/Unrecognized/);
+    expect(() => controller().prepare({})).toThrow(/unavailable/); expect(budgetExecutionOwner({}, "B-1", "fake")).toBeNull();
+  });
+  it.each(["recovery", "retry", "cancel"] as const)("locked reread refuses a binding inserted after the %s snapshot", (action) => {
+    const task = bind(), admission = task.envelope.budget_admission!; delete task.envelope.budget_admission;
+    task.lifecycle = action === "retry" ? "finished" : "running"; task.outcome = action === "retry" ? "failed" : null;
+    task.orchestration!.attempts = 1; task.orchestration!.lease = action === "retry" ? null : { run_id: "old", worker_id: "old",
+      acquired_at: task.created_at, heartbeat_at: task.created_at, expires_at: "2026-09-21T09:00:00Z" };
+    writeTask(task); const original = taskStore.updateTask; let replaced = false, boundBytes: Buffer | undefined;
+    vi.spyOn(taskStore, "updateTask").mockImplementation((id, mutate, directory) => {
+      if (!replaced) { replaced = true; original(id, (current) => { current.envelope.budget_admission = admission; }, directory); boundBytes = readFileSync(join(state, `tasks/${id}.json`)); }
+      return original(id, mutate, directory);
+    });
+    const run = vi.fn(), worker = new TaskOrchestrator({ now: () => new Date(nowMs), runAttempt: run });
+    if (action === "recovery") expect(worker.recoverExpiredLeases()).toBe(0);
+    else expect(() => action === "retry" ? worker.retry("B-1") : worker.cancel("B-1")).toThrow(/Budget-bound/);
+    expect(replaced).toBe(true); expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(boundBytes); expect(readTaskEvents("B-1")).toEqual([]); expect(run).not.toHaveBeenCalled();
+  });
+  it.each(["accessor", "proxy", "extra"] as const)("refuses %s resolver data without invoking hooks or mutating stores", async (fault) => {
+    bind(); const hook = vi.fn(), policy: Record<string, unknown> = { source: source() };
+    if (fault === "accessor") Object.defineProperty(policy, "source", { enumerable: true, get: hook });
+    if (fault === "extra") policy.cutover = true;
+    const returned = fault === "proxy" ? new Proxy(policy, { get: hook, ownKeys: hook }) : policy;
+    const budgets = new BudgetExecutionScaffold({ filePath: ledgerPath, now: () => new Date(nowMs), resolve: () => returned as never });
+    const taskBytes = readFileSync(join(state, "tasks/B-1.json")), ledgerBytes = readFileSync(ledgerPath), run = vi.fn();
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), runAttempt: run });
+    expect(await worker.runOnce()).toBe(0); expect(hook).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+    expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(taskBytes); expect(readFileSync(ledgerPath)).toEqual(ledgerBytes);
+  });
+  it("keeps nonterminal unknown sticky after a valid final sample without releasing holds", async () => {
+    bind(); const budgets = controller(), run = vi.fn(async (id: string, options: TaskRunOptions) => {
+      const proof = options.budgetExecution!;
+      expect(await budgets.observe(proof, null, 20)).toMatchObject({ unknown: true });
+      expect(await budgets.observe(proof, 3, 100, true)).toMatchObject({ unknown: true });
+      updateTask(id, (task) => { task.lifecycle = "finished"; task.outcome = "needs-review"; task.finished_at = new Date(nowMs).toISOString(); task.orchestration!.lease = null; task.orchestration!.cumulative_tokens = 3; });
+      await expect(budgets.settle(proof, 3, 110, false)).rejects.toThrow(/unavailable/);
+      return { outcome: "needs-review" as const, retryable: false, stale: false };
+    });
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), runAttempt: run }); expect(await worker.runOnce()).toBe(1); await worker.stop();
+    const ledger = readBudgetLedger(ledgerPath)!; expect(Object.values(ledger.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1, total_tokens: 10 } });
+    expect(Object.values(ledger.charges)[0]).toMatchObject({ observed_total_tokens: 3, usage_state: "unknown" });
+  });
+  it("tightened persisted runtime stops later effects without increasing its admitted slice", async () => {
+    bind(); const budgets = controller(), run = vi.fn(async (id: string, options: TaskRunOptions) => {
+      const proof = options.budgetExecution!; updateTask(id, (task) => { task.orchestration!.max_runtime_ms = 1000; });
+      expect(budgets.prepare(proof).maxRuntimeMs).toBe(1000);
+      expect(await budgets.observe(proof, 3, 1500)).toMatchObject({ exhausted: true });
+      expect(() => budgets.prepare(proof)).toThrow(/unavailable/);
+      updateTask(id, (task) => { task.orchestration!.cumulative_tokens = 3; });
+      await budgets.observe(proof, 3, 1510, true);
+      updateTask(id, (task) => { task.lifecycle = "finished"; task.outcome = "failed"; task.finished_at = new Date(nowMs).toISOString(); task.orchestration!.lease = null; });
+      expect(await budgets.settle(proof, 3, 1600, false)).toEqual({ complete: true, exhausted: true });
+      return { outcome: "failed" as const, retryable: false, stale: false };
+    });
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), runAttempt: run }); expect(await worker.runOnce()).toBe(1); await worker.stop();
+    expect(Object.values(readBudgetLedger(ledgerPath)!.charges)[0]!.runtime_ms).toBe(1600); expect(run).toHaveBeenCalledOnce();
+  });
+  it("executes the final permitted attempt with exact private ownership and monotonic canonical usage", async () => {
+    const policy = source({ attempts: 1, concurrent_reads: 1 }); bind("B-1", policy, true, 1); const budgets = controller(policy);
+    const run = vi.fn(async (id: string, options: TaskRunOptions) => {
+      const proof = options.budgetExecution!; expect(budgetExecutionOwner(proof, id, options.runId!)).toBe(budgets);
+      expect(budgetExecutionOwner({ ...proof }, id, options.runId!)).toBeNull(); expect(budgetExecutionOwner(proof, "borrowed", options.runId!)).toBeNull();
+      expect(budgets.prepare(proof)).toEqual({ maxRuntimeMs: 2000, maxTotalTokens: 10 });
+      await budgets.observe(proof, 3, 20); await budgets.observe(proof, 3, 20); await budgets.observe(proof, 1, 10);
+      return terminal(id, options, 3, 160);
+    });
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), maxConcurrent: 1, runAttempt: run });
+    expect(await worker.runOnce()).toBe(1); await worker.stop(); expect(run).toHaveBeenCalledOnce();
+    const ledger = readBudgetLedger(ledgerPath)!; expect(Object.values(ledger.charges)).toMatchObject([{ attempts: 1, runtime_ms: 160, observed_total_tokens: 3, status: "terminal" }]);
+    expect(Object.values(ledger.reservations)).toMatchObject([{ status: "settled", held: { concurrent_reads: 0, total_tokens: 0 } }]);
+    expect(await worker.runOnce()).toBe(0);
+  });
+  it.each(["pending", "policy-drift"] as const)("denies %s facts before task claim or execution", async (fault) => {
+    const task = bind("B-1", source(), fault !== "pending"), bytes = readFileSync(join(state, "tasks/B-1.json")), before = readFileSync(ledgerPath);
+    const changed = source(); if (fault === "policy-drift") changed.fingerprint = "b".repeat(64);
+    const run = vi.fn(), worker = new TaskOrchestrator({ budgets: controller(changed), now: () => new Date(nowMs), runAttempt: run });
+    expect(await worker.runOnce()).toBe(0); expect(run).not.toHaveBeenCalled(); expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(bytes);
+    expect(readFileSync(ledgerPath)).toEqual(before); expect(readTask(task.envelope.id)!.orchestration!.attempts).toBe(0); expect(readTaskEvents("B-1")).toEqual([]);
+  });
+  it("retains a charged cross-store revision gap without effects or automatic refund/replay", async () => {
+    bind(); let first = true;
+    const budgets = new BudgetExecutionScaffold({ filePath: ledgerPath, now: () => new Date(nowMs), resolve: () => {
+      expect(existsSync(join(state, "locks/orchestrator-schedule.lock"))).toBe(false); expect(existsSync(join(state, "locks/budgets.lock"))).toBe(false);
+      if (first) { first = false; updateTask("B-1", (task) => { task.updated_at = new Date(nowMs).toISOString(); }); }
+      return { source: source() };
+    } });
+    const run = vi.fn(), worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), runAttempt: run });
+    expect(await worker.runOnce()).toBe(0); expect(run).not.toHaveBeenCalled(); expect(readTask("B-1")).toMatchObject({ lifecycle: "queued", orchestration: { attempts: 0, lease: null } });
+    expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)).toMatchObject([{ status: "unknown", held: { concurrent_reads: 1, total_tokens: 10 } }]);
+    const bytes = readFileSync(ledgerPath); expect(await worker.runOnce()).toBe(0); expect(readFileSync(ledgerPath)).toEqual(bytes);
+  });
+  it("two workers cannot spend the final worker slot or charge one task twice", async () => {
+    bind(); const budgets = controller(), otherBudgets = controller(); let finish!: () => void;
+    const run = vi.fn(async (id: string, options: TaskRunOptions) => { await new Promise<void>((resolve) => { finish = resolve; }); return terminal(id, options); });
+    const first = new TaskOrchestrator({ budgets, maxConcurrent: 1, now: () => new Date(nowMs), runAttempt: run });
+    const other = new TaskOrchestrator({ budgets: otherBudgets, maxConcurrent: 1, now: () => new Date(nowMs), runAttempt: run });
+    try {
+      expect(await first.runOnce()).toBe(1); expect(await other.runOnce()).toBe(0); expect(run).toHaveBeenCalledOnce(); expect(Object.values(readBudgetLedger(ledgerPath)!.charges)).toHaveLength(1);
+      finish(); await first.stop(); expect(await other.runOnce()).toBe(0); expect(run).toHaveBeenCalledOnce();
+    } finally { await other.stop(); }
+  });
+  it.each([null, "foreign-lease", "revision-gap", "settle-lock"] as const)("keeps holds and proven facts on terminal fault %s", async (fault) => {
+    bind(); const budgets = controller(); let proof: object | undefined;
+    const run = vi.fn(async (id: string, options: TaskRunOptions) => {
+      proof = options.budgetExecution!; await budgets.observe(proof, 3, 100);
+      if (fault === "foreign-lease") {
+        updateTask(id, (task) => { task.orchestration!.lease!.run_id = "foreign"; });
+        await expect(budgets.observe(proof, 3, 110, true)).rejects.toThrow(/unavailable/); return null;
+      }
+      updateTask(id, (task) => { task.orchestration!.cumulative_tokens = 3; });
+      await budgets.observe(proof, fault === null ? null : 3, 120, true);
+      updateTask(id, (task) => { task.lifecycle = "finished"; task.outcome = "needs-review"; task.finished_at = new Date(nowMs).toISOString(); task.orchestration!.lease = null; });
+      if (fault === "revision-gap") updateTask(id, (task) => { task.updated_at = new Date(nowMs).toISOString(); });
+      if (fault === "settle-lock") writeFileSync(join(state, "locks/budgets.lock"), "synthetic unknown owner");
+      if (fault === null) expect(await budgets.settle(proof, null, 130, false)).toMatchObject({ complete: false });
+      else await expect(budgets.settle(proof, 3, 130, false)).rejects.toThrow(/unavailable/);
+      return { outcome: "needs-review" as const, retryable: false, stale: false };
+    });
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), runAttempt: run });
+    expect(await worker.runOnce()).toBe(1); await worker.stop();
+    const ledger = readBudgetLedger(ledgerPath)!, reservation = Object.values(ledger.reservations)[0]!;
+    expect(reservation.held.concurrent_reads).toBe(1); expect(reservation.status).toBe(fault === "settle-lock" ? "active" : "unknown");
+    expect(Object.values(ledger.charges)[0]!.observed_total_tokens).toBe(3); expect(budgetExecutionOwner(proof, "B-1", readTask("B-1")!.orchestration!.last_failure?.run_id ?? "unknown")).toBeNull();
+    expect(await worker.runOnce()).toBe(0); expect(run).toHaveBeenCalledOnce();
+  });
+  it.each([false, true])("top-ups known retries without cumulative leaf runtime or duplicate token/slot holds parent=%s", async (parent) => {
+    const policy = source(parent ? { runtime_ms: 2000 } : {}); bind("B-1", policy); const budgets = controller(policy), caps: number[] = [];
+    const run = vi.fn(async (id: string, options: TaskRunOptions) => {
+      caps.push(budgets.prepare(options.budgetExecution!).maxRuntimeMs);
+      return terminal(id, options, run.mock.calls.length === 1 ? 2 : 3, run.mock.calls.length === 1 ? 1500 : parent ? 200 : 1500, run.mock.calls.length === 1);
+    });
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), retryBaseMs: 100, runAttempt: run });
+    expect(await worker.runOnce()).toBe(1); await vi.waitFor(() => expect(readTask("B-1")!.lifecycle).toBe("queued"));
+    const retained = Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]!; expect(retained.held).toMatchObject({ total_tokens: 8, concurrent_reads: 1, runtime_ms: 0 });
+    nowMs += 100; expect(await worker.runOnce()).toBe(1); await worker.stop();
+    expect(caps).toEqual([2000, parent ? 500 : 2000]); expect(readTask("B-1")!.orchestration).toMatchObject({ attempts: 2, cumulative_tokens: 5, max_runtime_ms: 2000 });
+    const charges = Object.values(readBudgetLedger(ledgerPath)!.charges); expect(charges).toHaveLength(2); expect(charges.reduce((sum, charge) => sum + charge.runtime_ms, 0)).toBe(parent ? 1700 : 3000);
+    expect(charges.reduce((sum, charge) => sum + charge.observed_total_tokens!, 0)).toBe(5); expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]!.status).toBe("settled");
+  });
+  it.each(["attempts", "tokens"] as const)("denies a known exhausted retry after current %s ceiling tightens without new charges", async (ceiling) => {
+    bind(); const budgets = controller();
+    const run = vi.fn(async (id: string, options: TaskRunOptions) => terminal(id, options, 2, 100, true));
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), retryBaseMs: 100, runAttempt: run });
+    try {
+      expect(await worker.runOnce()).toBe(1); await vi.waitFor(() => expect(readTask("B-1")!.lifecycle).toBe("queued"));
+      updateTask("B-1", (task) => {
+        if (ceiling === "attempts") task.orchestration!.max_attempts = 1;
+        else task.orchestration!.max_total_tokens = 2;
+      });
+      const bytes = readFileSync(join(state, "tasks/B-1.json")), ledger = readFileSync(ledgerPath), events = readTaskEvents("B-1");
+      expect(() => budgets.prepareClaim("B-1", "denied-new-run", "synthetic-worker")).toThrow(/unavailable/);
+      nowMs += 100; expect(await worker.runOnce()).toBe(0); expect(run).toHaveBeenCalledOnce();
+      expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(bytes); expect(readFileSync(ledgerPath)).toEqual(ledger);
+      expect(readTaskEvents("B-1")).toEqual(events); expect(Object.values(readBudgetLedger(ledgerPath)!.charges)).toHaveLength(1);
+      expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]!.status).toBe("active");
+    } finally { await worker.stop(); }
+  });
+  it("retains a proven late receipt on foreign-worker ownership loss without foreign task progress", async () => {
+    bind(); const budgets = controller(); let proof!: object, runId!: string, foreignBytes!: Buffer;
+    const run = vi.fn(async (id: string, options: TaskRunOptions) => {
+      proof = options.budgetExecution!; runId = options.runId!;
+      updateTask(id, (task) => { task.orchestration!.lease!.worker_id = "foreign-worker"; });
+      foreignBytes = readFileSync(join(state, "tasks/B-1.json"));
+      await expect(budgets.observe(proof, 15, 100, true)).rejects.toThrow(/unavailable/);
+      expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(foreignBytes);
+      expect(budgetExecutionOwner(proof, id, runId)).toBeNull();
+      const retained = readFileSync(ledgerPath);
+      await expect(budgets.observe(proof, 999, 999, true)).rejects.toThrow(/unavailable/);
+      expect(readFileSync(ledgerPath)).toEqual(retained);
+      return null;
+    });
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), runAttempt: run });
+    expect(await worker.runOnce()).toBe(1); await worker.stop();
+    expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(foreignBytes);
+    expect(readTask("B-1")!.orchestration).toMatchObject({ cumulative_tokens: 0, lease: { worker_id: "foreign-worker", run_id: runId } });
+    expect(Object.values(readBudgetLedger(ledgerPath)!.charges)[0]).toMatchObject({ run_id: runId, observed_total_tokens: 15, runtime_ms: 100, status: "running" });
+    expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1 } });
+    expect(await worker.runOnce()).toBe(0); expect(run).toHaveBeenCalledOnce();
+  });
+  it.each(["worker", "attempt"] as const)("unexpected failure and cancellation preserve a same-run foreign %s snapshot", async (changed) => {
+    bind(); const budgets = controller(); let foreignBytes!: Buffer;
+    const run = vi.fn(async (id: string) => {
+      updateTask(id, (task) => {
+        if (changed === "worker") task.orchestration!.lease!.worker_id = "foreign-worker";
+        else task.orchestration!.attempts += 1;
+      });
+      foreignBytes = readFileSync(join(state, "tasks/B-1.json"));
+      expect(() => worker.cancel(id)).toThrow(/Budget-bound/);
+      throw new Error("Synthetic stale executor exception");
+    });
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), runAttempt: run });
+    expect(await worker.runOnce()).toBe(1); await worker.stop();
+    expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(foreignBytes);
+    expect(readTask("B-1")!.lifecycle).toBe("running"); expect(readTaskEvents("B-1").map((event) => event.type)).toEqual(["claimed"]);
+    expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1 } });
+  });
+  it.each(["worker", "attempt"] as const)("heartbeat denies a same-run foreign %s inserted between its guard and locked mutation", async (changed) => {
+    bind(); const budgets = controller(); let signal!: AbortSignal, foreignBytes!: Buffer, replaced = false;
+    const run = vi.fn(async (_id: string, options: TaskRunOptions) => new Promise<null>((resolve) => {
+      signal = options.signal!; signal.addEventListener("abort", () => resolve(null), { once: true });
+    }));
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), heartbeatMs: 10, runAttempt: run });
+    try {
+      expect(await worker.runOnce()).toBe(1); await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      const original = taskStore.updateTask;
+      vi.spyOn(taskStore, "updateTask").mockImplementation((id, mutate, directory) => {
+        if (!replaced) {
+          replaced = true;
+          original(id, (task) => {
+            if (changed === "worker") task.orchestration!.lease!.worker_id = "foreign-worker";
+            else task.orchestration!.attempts += 1;
+          }, directory);
+          foreignBytes = readFileSync(join(state, `tasks/${id}.json`));
+        }
+        return original(id, mutate, directory);
+      });
+      await vi.waitFor(() => expect(signal.aborted).toBe(true)); await worker.stop();
+      expect(replaced).toBe(true); expect(readFileSync(join(state, "tasks/B-1.json"))).toEqual(foreignBytes);
+      expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1 } });
+      expect(readTaskEvents("B-1").map((event) => event.type)).toEqual(["claimed"]);
+    } finally { await worker.stop(); }
+  });
+  it.each(["runtime-tightened", "policy-drift"] as const)("heartbeat aborts owned %s work without renewing/releasing unavailable authority", async (fault) => {
+    const activeSource = source(); bind("B-1", activeSource); const budgets = controller(activeSource); let signal!: AbortSignal;
+    const run = vi.fn(async (_id: string, options: TaskRunOptions) => new Promise<null>((resolve) => {
+      signal = options.signal!; signal.addEventListener("abort", () => resolve(null), { once: true });
+    }));
+    const worker = new TaskOrchestrator({ budgets, now: () => new Date(nowMs), heartbeatMs: 10, runAttempt: run });
+    try {
+      expect(await worker.runOnce()).toBe(1); await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+      if (fault === "runtime-tightened") { updateTask("B-1", (task) => { task.orchestration!.max_runtime_ms = 1000; }); nowMs += 1500; }
+      else activeSource.fingerprint = "b".repeat(64);
+      const lease = readTask("B-1")!.orchestration!.lease;
+      await vi.waitFor(() => expect(signal.aborted).toBe(true)); await worker.stop();
+      expect(readTask("B-1")!.orchestration!.lease).toEqual(lease); expect(Object.values(readBudgetLedger(ledgerPath)!.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1 } });
+      expect(await worker.runOnce()).toBe(0); expect(run).toHaveBeenCalledOnce();
+    } finally { await worker.stop(); }
   });
 });

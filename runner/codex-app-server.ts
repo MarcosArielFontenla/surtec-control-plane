@@ -1,6 +1,6 @@
 import { createInterface, type Interface as ReadLineInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
-import type { AgentEvent, AgentEventSink, AgentRunInput, AgentRunResult, AgentUsage } from "./agent-executor";
+import { isCompleteAgentUsage, type AgentEvent, type AgentEventSink, type AgentRunInput, type AgentRunResult, type AgentUsage } from "./agent-executor";
 import type { ServerNotification } from "./generated/codex-app-server/ServerNotification";
 import type { InitializeParams } from "./generated/codex-app-server/InitializeParams";
 import type { JsonValue } from "./generated/codex-app-server/serde_json/JsonValue";
@@ -62,15 +62,34 @@ function usageFrom(value: unknown): AgentUsage | null {
   if (!isObject(value)) return null;
   const tokenUsage = isObject(value.tokenUsage) ? value.tokenUsage : null;
   const last = tokenUsage && isObject(tokenUsage.last) ? tokenUsage.last : null;
-  if (!last) return null;
-  const number = (key: string): number => typeof last[key] === "number" ? last[key] : 0;
-  return {
-    inputTokens: number("inputTokens"),
-    cachedInputTokens: number("cachedInputTokens"),
-    outputTokens: number("outputTokens"),
-    reasoningOutputTokens: number("reasoningOutputTokens"),
-    totalTokens: number("totalTokens"),
+  const total = tokenUsage && isObject(tokenUsage.total) ? tokenUsage.total : null;
+  const normalized = (counters: JsonObject | null): AgentUsage | null => {
+    if (!counters || !Number.isSafeInteger(counters.cacheWriteInputTokens) || (counters.cacheWriteInputTokens as number) < 0) return null;
+    const usage = {
+      inputTokens: counters.inputTokens,
+      cachedInputTokens: counters.cachedInputTokens,
+      outputTokens: counters.outputTokens,
+      reasoningOutputTokens: counters.reasoningOutputTokens,
+      totalTokens: counters.totalTokens,
+    };
+    return isCompleteAgentUsage(usage) ? Object.freeze(usage) : null;
   };
+  // Both real protocol breakdowns must be complete. The thread total is not
+  // attributed to this turn, especially after resume; preserve the existing
+  // last-sample semantics without fabricating a missing counter or final total.
+  const latest = normalized(last);
+  return latest && normalized(total) ? latest : null;
+}
+
+function usageHighWater(previous: AgentUsage | null, next: AgentUsage): AgentUsage {
+  if (!previous) return Object.freeze({ ...next });
+  return Object.freeze({
+    inputTokens: Math.max(previous.inputTokens, next.inputTokens),
+    cachedInputTokens: Math.max(previous.cachedInputTokens, next.cachedInputTokens),
+    outputTokens: Math.max(previous.outputTokens, next.outputTokens),
+    reasoningOutputTokens: Math.max(previous.reasoningOutputTokens, next.reasoningOutputTokens),
+    totalTokens: Math.max(previous.totalTokens, next.totalTokens),
+  });
 }
 
 function itemStatus(item: JsonObject): string | undefined {
@@ -106,6 +125,7 @@ export class CodexAppServerClient {
   private input: AgentRunInput | null = null;
   private finalText = "";
   private usage: AgentUsage | null = null;
+  private provenUsage: AgentUsage | null = null;
   private exited = false;
   private closing = false;
   private notificationQueue: Promise<void> = Promise.resolve();
@@ -224,6 +244,10 @@ export class CodexAppServerClient {
         threadId: activeThreadId,
         turnId: activeTurnId,
         usage: this.usage,
+        // Stable TurnCompletedNotification carries no usage or final-usage
+        // marker. Completion alone cannot prove the latest sample is final.
+        usageComplete: false,
+        usageHighWater: this.provenUsage,
       };
     } finally {
       signal.removeEventListener("abort", onAbort);
@@ -373,10 +397,14 @@ export class CodexAppServerClient {
         break;
       }
       case "thread/tokenUsage/updated": {
+        if (!threadId || !turnId || threadId !== this.activeThreadId || turnId !== this.activeTurnId) break;
         const usage = usageFrom(params);
+        this.usage = usage;
         if (usage) {
-          this.usage = usage;
+          this.provenUsage = usageHighWater(this.provenUsage, usage);
           await this.emit({ type: "usage", at, threadId, turnId, usage });
+        } else {
+          await this.emit({ type: "usage-unknown", at, threadId, turnId, reason: "invalid-usage" });
         }
         break;
       }
@@ -389,7 +417,10 @@ export class CodexAppServerClient {
         break;
       }
       case "turn/completed": {
+        const completedTurnId = isObject(params) && isObject(params.turn) ? stringField(params.turn, "id") : null;
+        if (!threadId || !completedTurnId || threadId !== this.activeThreadId || completedTurnId !== this.activeTurnId) break;
         const completed = notification.params as TurnCompletedNotification;
+        await this.emit({ type: "usage-unknown", at, threadId: completed.threadId, turnId: completed.turn.id, reason: "final-usage-unproven" });
         await this.emit({ type: "turn-completed", at, threadId: completed.threadId, turnId: completed.turn.id, status: completed.turn.status });
         this.completedTurns.set(completed.turn.id, completed);
         if (this.turnWaiter && this.turnWaiter.threadId === completed.threadId && this.turnWaiter.turnId === completed.turn.id) {
@@ -407,7 +438,7 @@ export class CodexAppServerClient {
   private waitForTurn(threadId: string, turnId: string): Promise<TurnCompletedNotification> {
     if (this.fatalError) return Promise.reject(this.fatalError);
     const completed = this.completedTurns.get(turnId);
-    if (completed) return Promise.resolve(completed);
+    if (completed?.threadId === threadId && completed.turn.id === turnId) return Promise.resolve(completed);
     return new Promise((resolve, reject) => {
       this.turnWaiter = { threadId, turnId, resolve, reject };
     });

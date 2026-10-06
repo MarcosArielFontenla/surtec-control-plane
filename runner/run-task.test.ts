@@ -7,7 +7,7 @@ import { localGitEnvironment } from "../lib/security/environment";
 import { evidenceHash, testingEvidenceStatus } from "../lib/context/testing-evidence";
 import type { AgentRoleRegistry, ContextAdmissionV2 } from "../lib/context/types";
 import { createContextService } from "../dashboard/src/server/context-service";
-import { createTask } from "../dashboard/src/server/dispatch";
+import { createTask, prepareTaskBudgetAdmission } from "../dashboard/src/server/dispatch";
 import { createIssueService } from "../dashboard/src/server/issue-service";
 import * as issueModule from "../dashboard/src/server/issue-service";
 import * as contextModule from "../dashboard/src/server/context-service";
@@ -28,10 +28,15 @@ import { captureVerification, runVerification } from "./verify";
 import { runTask } from "./run-task";
 import { readTask, writeTask } from "../lib/state/store";
 import { updateTask } from "../lib/state/store";
+import * as taskStore from "../lib/state/store";
 import { defaultTaskOrchestration } from "../lib/state/orchestration";
 import { readTaskEvents } from "../lib/state/events";
 import { assembleContext, contextHash } from "../lib/context/assemble";
-import { TaskOrchestrator } from "./task-orchestrator";
+import { BudgetExecutionScaffold, TaskOrchestrator } from "./task-orchestrator";
+import { mutateBudgetLedger, readBudgetLedger } from "../lib/state/budgets";
+import { budgetStatePath } from "../lib/state/paths";
+import { reserveTaskBudget, commitTaskBudget } from "../lib/budgets/reservations";
+import type { BudgetPolicySource } from "../lib/budgets/policy";
 
 let root: string;
 let repo: string;
@@ -142,6 +147,7 @@ afterEach(() => {
   delete process.env.SURTEC_STATE_DIR;
   delete process.env.SURTEC_PROJECTS_ROOT;
   rmSync(root, { recursive: true, force: true });
+  expect(existsSync(root)).toBe(false);
 });
 
 describe("runTask", () => {
@@ -237,6 +243,153 @@ describe("runTask", () => {
     const preview = context.preview({ kind: "analysis", project: "stock-control", agent: "backend-engineer", role_id: "software-engineer", instructions: "Inspect fixture." });
     return createTask({ project: "stock-control", agent: "backend-engineer", role_id: "software-engineer", instructions: "Inspect fixture.", preview_fingerprint: preview.fingerprint }, root, undefined, { context }).id;
   }
+  function budgetFixture(claim = true, id = analysisFixture()) {
+    const record = readTask(id)!, context = record.envelope.context_admission!;
+    const source: BudgetPolicySource = { policy: parse(readFileSync("registry/budget-policy.yml", "utf8")), fingerprint: contextHash("Synthetic neutral policy") };
+    const attribution = { company_id: "surtec" as const, objective_ids: [], project_ids: [record.envelope.project], issue_id: context.schema_version === 2 ? context.issue_id : context.kind === "issue" ? context.issue_id! : null, role_id: record.envelope.context_manifest!.role_id, execution_id: id };
+    const draft = prepareTaskBudgetAdmission(record, { source, attribution });
+    mutateBudgetLedger((tx) => reserveTaskBudget(tx, { source, admission: draft.admission }), budgetStatePath(), draft.admission.created_at);
+    writeTask(draft.task);
+    mutateBudgetLedger((tx) => commitTaskBudget(tx, { admission: draft.admission, persisted_admission: readTask(id)!.envelope.budget_admission! }));
+    const budgets = new BudgetExecutionScaffold({ resolve: () => ({ source }) }), runId = "budget-fixture-run";
+    if (!claim) return { id, budgets, runId, proof: undefined };
+    const proof = budgets.prepareClaim(id, runId, "budget-fixture-worker");
+    updateTask(id, (task) => {
+      const at = new Date().toISOString(); task.lifecycle = "running"; task.started_at = at; task.updated_at = at;
+      task.orchestration!.attempts += 1;
+      task.orchestration!.lease = { run_id: runId, worker_id: "budget-fixture-worker", acquired_at: at, heartbeat_at: at, expires_at: new Date(Date.now() + 600_000).toISOString() };
+    });
+    budgets.bindClaim(proof);
+    return { id, budgets, runId, proof };
+  }
+  it.each(["absent", "forged", "copied", "wrong-run", "revoked"])("denies %s budget proof before any task/report/model effects", async (kind) => {
+    const { id, budgets, runId, proof } = budgetFixture(kind !== "absent");
+    const path = join(root, "state/tasks", `${id}.json`), before = readFileSync(path), ledgerBefore = readBudgetLedger(), eventsBefore = readTaskEvents(id);
+    if (kind === "revoked") budgets.release(proof!);
+    const supplied = kind === "forged" ? { owner: budgets, taskId: id, runId } : kind === "copied" ? { ...proof } : proof;
+    expect(await runTask(id, root, executor, { runId: kind === "wrong-run" ? "foreign-run" : kind === "absent" ? undefined : runId, budgetExecution: supplied })).toBeNull();
+    expect(readFileSync(path).equals(before)).toBe(true); expect(readBudgetLedger()).toEqual(ledgerBefore);
+    expect(readTaskEvents(id)).toEqual(eventsBefore);
+    expect(existsSync(join(root, "reports"))).toBe(false);
+    for (const effect of [run, createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
+  });
+  it("fences admission insertion between the preliminary read and locked direct claim", async () => {
+    const { id } = budgetFixture(false), bound = readTask(id)!, path = join(root, "state/tasks", `${id}.json`);
+    const boundBytes = readFileSync(path), unbound = structuredClone(bound), beforeEvents = readTaskEvents(id);
+    delete unbound.envelope.budget_admission; writeTask(unbound);
+    const realUpdate = taskStore.updateTask;
+    vi.spyOn(taskStore, "updateTask").mockImplementationOnce((taskId, mutate, dir) => {
+      writeTask(bound); return realUpdate(taskId, mutate, dir);
+    });
+    expect(await runTask(id, root, executor)).toBeNull();
+    expect(readFileSync(path).equals(boundBytes)).toBe(true); expect(readTaskEvents(id)).toEqual(beforeEvents);
+    expect(existsSync(join(root, "reports"))).toBe(false); expect(run).not.toHaveBeenCalled(); expect(createWorktree).not.toHaveBeenCalled();
+  });
+  it.each([null, { schema_version: 99 }, { schema_version: 1, private: "Synthetic future data" }])("preserves invalid/future budget bytes without legacy fallback %j", async (binding) => {
+    const task = queuedRecord(); writeTask(task);
+    const path = join(root, "state/tasks/T-1.json");
+    Object.assign(task.envelope, { budget_admission: binding }); writeFileSync(path, JSON.stringify(task)); const before = readFileSync(path);
+    await expect(runTask("T-1", root, executor)).rejects.toThrow(/invalid task record/);
+    expect(readFileSync(path).equals(before)).toBe(true); expect(readTaskEvents("T-1")).toEqual([]);
+    expect(existsSync(join(root, "reports"))).toBe(false); expect(run).not.toHaveBeenCalled();
+  });
+  it("settles complete known usage only after the owned terminal task snapshot", async () => {
+    const { id, budgets, runId, proof } = budgetFixture();
+    const settle = budgets.settle.bind(budgets);
+    vi.spyOn(budgets, "settle").mockImplementation(async (...args) => {
+      expect(readTask(id)).toMatchObject({ lifecycle: "finished", outcome: "completed", orchestration: { lease: null, cumulative_tokens: 15 } });
+      const held = Object.values(readBudgetLedger()!.reservations)[0]!;
+      expect(held.status).toBe("active"); expect(held.held.concurrent_reads).toBe(1);
+      return settle(...args);
+    });
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "completed", retryable: false, stale: false });
+    expect(run).toHaveBeenCalledOnce();
+    const ledger = readBudgetLedger()!;
+    expect(Object.values(ledger.reservations)[0]).toMatchObject({ status: "settled", uncertain_dimensions: [] });
+    expect(Object.values(ledger.charges)[0]).toMatchObject({ status: "terminal", observed_total_tokens: 15, usage_state: "complete" });
+  });
+  it.each(["missing", "incomplete", "invalid", "stream-invalid", "malformed-complete", "invalid-highwater"])("retains known charges and unknown holds on %s final accounting", async (kind) => {
+    const { id, runId, proof } = budgetFixture();
+    run.mockImplementation(async (_input, events) => {
+      await events({ type: "usage", at: new Date().toISOString(), threadId: "thread-1", turnId: "turn-1", usage: agentRun().usage! });
+      if (kind === "stream-invalid") await events({ type: "usage", at: new Date().toISOString(), threadId: "thread-1", turnId: "turn-1", usage: { totalTokens: -1 } as any });
+      return agentRun(kind === "missing" ? { usage: null } : kind === "incomplete" ? { usageComplete: false } : kind === "invalid" ? { usage: { totalTokens: -1 } as any }
+        : kind === "malformed-complete" ? { usageComplete: "true" as any } : kind === "invalid-highwater" ? { usageHighWater: { totalTokens: -1 } as any } : {});
+    });
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "needs-review", retryable: false });
+    const ledger = readBudgetLedger()!, reservation = Object.values(ledger.reservations)[0]!;
+    expect(reservation.status).toBe("unknown"); expect(reservation.held.concurrent_reads).toBe(1);
+    expect(reservation.uncertain_dimensions).toContain("total_tokens");
+    expect(Object.values(ledger.charges)[0]).toMatchObject({ observed_total_tokens: 15, usage_state: "unknown" });
+    expect(readTask(id)!.orchestration!.cumulative_tokens).toBe(15);
+    expect(commitAndDiff).not.toHaveBeenCalled(); expect(captureVerification).not.toHaveBeenCalled();
+  });
+  it("distinguishes explicit complete zero from unavailable final usage", async () => {
+    const { id, runId, proof } = budgetFixture();
+    run.mockResolvedValue(agentRun({ usageComplete: true, usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 } }));
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "completed" });
+    expect(Object.values(readBudgetLedger()!.charges)[0]).toMatchObject({ observed_total_tokens: 0, usage_state: "complete" });
+    expect(Object.values(readBudgetLedger()!.reservations)[0]!.status).toBe("settled");
+  });
+  it("never promotes known intermediate usage into certainty after executor interruption", async () => {
+    const { id, runId, proof } = budgetFixture();
+    run.mockImplementation(async (_input, events) => {
+      await events({ type: "usage", at: new Date().toISOString(), threadId: "thread-1", turnId: "turn-1", usage: agentRun().usage! });
+      throw new Error("Synthetic interrupted turn");
+    });
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "needs-review", retryable: false });
+    expect(Object.values(readBudgetLedger()!.charges)[0]).toMatchObject({ observed_total_tokens: 15, usage_state: "unknown" });
+    expect(Object.values(readBudgetLedger()!.reservations)[0]!.held.concurrent_reads).toBe(1);
+  });
+  it("conserves holds and refuses retry when post-snapshot settlement fails", async () => {
+    const { id, budgets, runId, proof } = budgetFixture();
+    vi.spyOn(budgets, "settle").mockRejectedValue(new Error("Synthetic ledger I/O failure"));
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "needs-review", retryable: false, stale: false });
+    expect(readTask(id)).toMatchObject({ lifecycle: "finished", outcome: "needs-review", orchestration: { lease: null, cumulative_tokens: 15, last_failure: { kind: "terminal" } } });
+    expect(Object.values(readBudgetLedger()!.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1 } });
+    expect(Object.values(readBudgetLedger()!.charges)[0]).toMatchObject({ observed_total_tokens: 15, status: "terminal" });
+    expect(() => new TaskOrchestrator({ repoRoot: root, executor }).retry(id)).toThrow();
+  });
+  it("retains a late owned receipt without changing a foreign worker lease or its task progress", async () => {
+    const { id, runId, proof } = budgetFixture(); let foreignBytes!: Buffer;
+    run.mockImplementation(async () => {
+      updateTask(id, (task) => { task.orchestration!.lease!.worker_id = "foreign-worker"; });
+      foreignBytes = readFileSync(join(root, "state/tasks", `${id}.json`)); return agentRun({ usageComplete: true });
+    });
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ stale: true, retryable: false });
+    expect(readFileSync(join(root, "state/tasks", `${id}.json`)).equals(foreignBytes)).toBe(true);
+    expect(readTask(id)!.orchestration!.cumulative_tokens).toBe(0);
+    expect(Object.values(readBudgetLedger()!.charges)[0]!.observed_total_tokens).toBe(15);
+    expect(Object.values(readBudgetLedger()!.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1 } });
+  });
+  it("counts duplicate and decreasing samples once without refunding proven usage", async () => {
+    const { id, runId, proof } = budgetFixture();
+    run.mockImplementation(async (_input, events) => {
+      for (const totalTokens of [15, 15, 12]) await events({ type: "usage", at: new Date().toISOString(), threadId: "thread-1", turnId: "turn-1", usage: { ...agentRun().usage!, totalTokens } });
+      return agentRun({ usageComplete: true, usage: { ...agentRun().usage!, totalTokens: 5 } });
+    });
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "completed" });
+    expect(readTask(id)!.orchestration!.cumulative_tokens).toBe(15);
+    expect(Object.values(readBudgetLedger()!.charges)).toHaveLength(1);
+    expect(Object.values(readBudgetLedger()!.charges)[0]!.observed_total_tokens).toBe(15);
+  });
+  it("fences a tightened current runtime before any post-model effect", async () => {
+    const { id, runId, proof } = budgetFixture(); vi.useFakeTimers();
+    run.mockImplementation(async () => {
+      updateTask(id, (task) => { task.orchestration!.max_runtime_ms = 1000; });
+      vi.setSystemTime(Date.now() + 1500); return agentRun({ usageComplete: true });
+    });
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "failed", retryable: false });
+    expect(readTask(id)!.orchestration!.last_failure).toMatchObject({ kind: "budget", message: "runtime budget exhausted (1000ms)" });
+    expect(Object.values(readBudgetLedger()!.charges)[0]!.runtime_ms).toBeGreaterThanOrEqual(1500);
+    expect(commitAndDiff).not.toHaveBeenCalled(); expect(captureVerification).not.toHaveBeenCalled();
+  });
+  it.each([null, { totalTokens: -1 }, { totalTokens: 1.5 }, { totalTokens: Number.NaN }])("does not persist invalid custom usage %j as zero or corrupt counters", async (usage) => {
+    writeTask(queuedRecord()); run.mockResolvedValue(agentRun({ usage: usage as any }));
+    await runTask("T-1", root, executor);
+    expect(readTask("T-1")!.orchestration!.cumulative_tokens).toBe(0);
+    expect((readTask("T-1")!.envelope.metadata.run as any).usage).toBeNull();
+  });
   async function testingFixture(strict = false, initialValue = 0, verify = true, refactor = false) {
     contextFixture();
     const source = `import {readFileSync} from 'node:fs'; const ok=JSON.parse(readFileSync('src/value.json','utf8')).value===1; console.log(JSON.stringify({schema_version:1,assertions:[{id:'behavior',status:ok?'passed':'assertion-failed'}]})); process.exit(ok?0:1);`;
@@ -263,6 +416,42 @@ describe("runTask", () => {
     const { taskId } = issues.dispatch(issue.id, issue.revision, "backend-engineer", { role_id: "software-engineer", preview_fingerprint: preview.fingerprint });
     return { taskId, issues, issue };
   }
+  it.each([true, false])("runs an isolated budget writer and admits commit/verification only with complete usage=%s", async (complete) => {
+    const { taskId } = await testingFixture(), { id, runId, proof } = budgetFixture(true, taskId);
+    run.mockImplementation(async (input) => {
+      writeFileSync(join(input.cwd, "src/value.json"), JSON.stringify({ value: 1 }));
+      return agentRun({ usageComplete: complete });
+    });
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: complete ? "completed" : "needs-review", retryable: false });
+    expect(createWorktree).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledOnce();
+    if (complete) {
+      expect(commitAndDiff).toHaveBeenCalledOnce(); expect(captureVerification).toHaveBeenCalledOnce();
+      expect(testingEvidenceStatus(readTask(id)!.testing_evidence!)).toBe("passed");
+      expect(Object.values(readBudgetLedger()!.reservations)[0]!.status).toBe("settled");
+    } else {
+      expect(commitAndDiff).not.toHaveBeenCalled(); expect(captureVerification).not.toHaveBeenCalled();
+      expect(Object.values(readBudgetLedger()!.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_writes: 1 } });
+    }
+  }, 20_000);
+  it("denies the next verification command after runtime tightens past elapsed time, even with an earlier ledger sample", async () => {
+    const { taskId } = await testingFixture(false, 0, true, true), { id, runId, proof } = budgetFixture(true, taskId);
+    vi.useFakeTimers(); const admittedCommands: string[] = [];
+    run.mockImplementation(async (input) => {
+      writeFileSync(join(input.cwd, "src/value.json"), JSON.stringify({ value: 1 })); return agentRun({ usageComplete: true });
+    });
+    vi.mocked(captureVerification).mockImplementationOnce(async (_cwd, runners, options) => {
+      expect(runners).toHaveLength(2); expect(options.ownsAttempt()).toBe(true);
+      expect(options.authorizeCommand!(runners[0]!.command)).toBe(true); admittedCommands.push(runners[0]!.command);
+      updateTask(id, (task) => { task.orchestration!.max_runtime_ms = 1000; });
+      vi.setSystemTime(Date.now() + 1200);
+      expect(Object.values(readBudgetLedger()!.charges)[0]!.runtime_ms).toBeLessThan(1000);
+      expect(options.ownsAttempt()).toBe(false); expect(options.authorizeCommand!(runners[1]!.command)).toBe(false);
+      return { observations: [], report: { status: "failed", checks: [{ command: runners[0]!.command, ok: false, output_tail: "Synthetic bounded command stopped" }] } };
+    });
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "needs-review", retryable: false });
+    expect(admittedCommands).toEqual(["node verify.mjs"]); expect(captureVerification).toHaveBeenCalledOnce();
+    expect(Object.values(readBudgetLedger()!.charges)[0]!.runtime_ms).toBeGreaterThanOrEqual(1200);
+  }, 20_000);
   it.each([{ strict: false, refactor: false }, { strict: true, refactor: false }, { strict: true, refactor: true }])("captures ordered evidence with real isolated Git and one fake turn strict=$strict refactor=$refactor", async ({ strict, refactor }) => {
     const { taskId, issues, issue } = await testingFixture(strict, 0, true, refactor);
     run.mockImplementation(async (input) => {

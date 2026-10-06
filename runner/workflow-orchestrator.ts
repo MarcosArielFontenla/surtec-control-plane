@@ -16,10 +16,11 @@ import { createWorkflowContextService } from "../dashboard/src/server/workflow-c
 import { resolveWorkflowTemplate } from "../lib/workflows/templates";
 import { hasConcreteCorrectionFinding } from "../lib/workflows/policy";
 import { prepareWorkflowStage, validateWorkflowStageOutput } from "./workflow-stage";
+import { assertBudgetWorkflowExecution, budgetExecutionOwner } from "./task-orchestrator";
 
 // Process-local identity, never persisted, accepted from JSON or inferred from
 // a live task lease alone. Durable authority is rechecked independently.
-const executions = new WeakMap<object, { owner: WorkflowOrchestrator; taskId: string; runId: string }>();
+const executions = new WeakMap<object, { owner: WorkflowOrchestrator; taskId: string; runId: string; budgetProof?: object }>();
 export function workflowExecutionOwner(proof: unknown, taskId: string, runId: string): WorkflowOrchestrator | null {
   const entry = proof && typeof proof === "object" ? executions.get(proof) : undefined;
   return entry?.taskId === taskId && entry.runId === runId ? entry.owner : null;
@@ -62,7 +63,8 @@ export class WorkflowOrchestrator {
       || intent.context_fingerprint !== admission.manifest_fingerprint) throw new ContextContractError("Current workflow intent or authority differs");
     return { document, workflow, stage, admission };
   }
-  canClaim(task: TaskRecord): boolean {
+  canClaim(task: TaskRecord, budgetProof?: object): boolean {
+    assertBudgetWorkflowExecution(task, budgetProof);
     const { workflow, stage } = this.facts(task);
     const supportedStages = ["analysis", "planning", "implementation", "review", "qa", "operations", "correction"];
     if (workflow.status !== "running" || workflow.stop_requested_at || workflow.pending_decision_id || workflow.recovery_state !== "none"
@@ -73,10 +75,10 @@ export class WorkflowOrchestrator {
     this.context.revalidateTask(task);
     return true;
   }
-  claimRun(taskId: string, runId: string): object {
+  claimRun(taskId: string, runId: string, budgetProof?: object): object {
     const task = readTask(taskId);
     if (!task || task.lifecycle !== "running" || task.orchestration?.lease?.run_id !== runId || task.orchestration.lease.worker_id !== this.workerId
-      || Date.parse(task.orchestration.lease.expires_at) <= this.now().getTime() || task.orchestration.cancel_requested_at || !this.canClaim(task)) throw new ContextContractError("Workflow controller cannot claim this attempt");
+      || Date.parse(task.orchestration.lease.expires_at) <= this.now().getTime() || task.orchestration.cancel_requested_at || !this.canClaim(task, budgetProof)) throw new ContextContractError("Workflow controller cannot claim this attempt");
     const { document: snapshot, workflow, stage } = this.facts(task), at = this.now().toISOString();
     if (stage.execution_id && !snapshot.accounting[stage.execution_id]?.usage_complete) throw new ContextContractError("Previous attempt usage is unknown; execution is blocked");
     mutateWorkflowDocument((document) => {
@@ -89,7 +91,7 @@ export class WorkflowOrchestrator {
         execution_id: runId, attempt: task.orchestration!.attempts, attempt_charged: true, active_runtime_ms: 0, observed_tokens: 0, usage_complete: false, captured_at: at };
       change(document, owner, at, "stage-started", "Exact owned attempt durably charged before execution.");
     });
-    const proof = Object.freeze({}); executions.set(proof, { owner: this, taskId, runId }); return proof;
+    const proof = Object.freeze({}); executions.set(proof, { owner: this, taskId, runId, budgetProof }); return proof;
   }
   private live(proof: object) {
     const entry = executions.get(proof);
@@ -97,10 +99,12 @@ export class WorkflowOrchestrator {
     const task = readTask(entry.taskId);
     if (!task || task.lifecycle !== "running" || task.orchestration?.lease?.run_id !== entry.runId || task.orchestration.lease.worker_id !== this.workerId
       || Date.parse(task.orchestration.lease.expires_at) <= this.now().getTime()) throw new ContextContractError("Workflow execution lease was lost");
+    assertBudgetWorkflowExecution(task, entry.budgetProof);
     return { ...entry, task, ...this.facts(task) };
   }
   prepare(proof: object) {
     const live = this.live(proof);
+    if (live.budgetProof) budgetExecutionOwner(live.budgetProof, live.taskId, live.runId)!.prepare(live.budgetProof);
     return prepareWorkflowStage(live.taskId, live.runId, this.repoRoot, { context: this.context, now: () => this.now().getTime() });
   }
   observe(proof: object, tokens: number, elapsed: number, complete = false): boolean {
@@ -159,6 +163,7 @@ export class WorkflowOrchestrator {
     });
   }
   recoverExpired(task: TaskRecord): boolean {
+    if (Object.getOwnPropertyDescriptor(task.envelope, "budget_admission")) return false;
     const admission = task.envelope.context_admission;
     if (admission?.schema_version !== 2 || task.lifecycle !== "running" || (task.orchestration?.lease && Date.parse(task.orchestration.lease.expires_at) > this.now().getTime())) return false;
     const runId = task.orchestration?.lease?.run_id, at = this.now().toISOString();
@@ -236,6 +241,7 @@ export class WorkflowOrchestrator {
     const document = readWorkflowDocument(), owner = document.workflows[id], stage = owner?.current_stage_id ? document.stages[owner.current_stage_id] : null;
     if (!owner || owner.status !== "running" || !stage || stage.status !== "completed" || !stage.task_id) return;
     const task = readTask(stage.task_id), issues = readIssueDocument(), issue = issues.issues[owner.issue_id], admission = task?.envelope.context_admission;
+    if (task && Object.getOwnPropertyDescriptor(task.envelope, "budget_admission")) return;
     assertTerminalWorkflowTask(document, stage, task);
     if (!issue || admission?.schema_version !== 2) throw new ContextContractError("Completed stage lost its issue admission");
     assertOwnedWorkflowIssueProgress(document, owner, issues, admission.issue_revision);
@@ -317,6 +323,9 @@ export class WorkflowOrchestrator {
         if (!stage?.task_id) continue;
         try {
           const task = readTask(stage.task_id);
+          // P progression/cutover is not supplied by a stored binding. The
+          // fixture execution controller cannot manufacture successor admission.
+          if (task && Object.getOwnPropertyDescriptor(task.envelope, "budget_admission")) continue;
           if (owner.stop_requested_at) {
             if (task && task.lifecycle !== "finished") { this.control?.cancel(task.envelope.id); continue; }
             const at = this.now().toISOString();

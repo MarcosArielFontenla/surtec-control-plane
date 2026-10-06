@@ -3,6 +3,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentOutcome, AgentResult, TaskFailureKind, TaskRecord } from "../lib/state/types";
 import type { AgentEvent, AgentExecutor, AgentUsage } from "./agent-executor";
+import { isCompleteAgentUsage } from "./agent-executor";
 import { readTask, updateTask } from "../lib/state/store";
 import { ensureTaskOrchestration } from "../lib/state/orchestration";
 import { appendTaskEvent } from "../lib/state/events";
@@ -25,6 +26,7 @@ import { noOpTracer, type Tracer } from "../lib/observability/tracing";
 import { createIssueService, IssueScopeViolationError, pathsOutsideScope } from "../dashboard/src/server/issue-service";
 import { rejectStandaloneWorkflowStage } from "./workflow-stage";
 import { workflowExecutionOwner } from "./workflow-orchestrator";
+import { budgetExecutionOwner } from "./task-orchestrator";
 import { correctionPathReasons, readWorkflowPolicy } from "../lib/workflows/policy";
 
 export interface TaskRunOptions {
@@ -33,6 +35,8 @@ export interface TaskRunOptions {
   workerId?: string;
   tracer?: Tracer;
   workflowExecution?: object;
+  /** Process-local scaffold proof, never accepted from task/request metadata. */
+  budgetExecution?: object;
 }
 
 export interface TaskRunCompletion {
@@ -92,10 +96,35 @@ export async function runTask(
   let claimedRevision: number | null = null;
   let attempt = 0;
 
+  // Presence (including invalid/future data) must never fall back to the O path.
+  const beforeClaim = readTask(taskId);
+  const budgetPresent = (task: TaskRecord | null): boolean => !!task && Object.hasOwn(task.envelope, "budget_admission");
+  const budgetOwner = budgetExecutionOwner(options.budgetExecution, taskId, runId);
+  if (budgetPresent(beforeClaim) && !budgetOwner) return null;
+  let effectiveRuntimeMs = beforeClaim?.orchestration?.max_runtime_ms ?? 300_000;
+  let budgetStartedMs: number | null = null;
+  const prepareBudget = (): void => {
+    if (!budgetPresent(readTask(taskId))) {
+      if (budgetOwner) throw new ContextPreviewError("Budget admission changed; retained accounting requires review");
+      return;
+    }
+    if (!budgetOwner) throw new ContextPreviewError("Budget-bound execution requires its private scaffold controller");
+    try { effectiveRuntimeMs = Math.min(effectiveRuntimeMs, budgetOwner.prepare(options.budgetExecution!).maxRuntimeMs); }
+    catch { throw new ContextPreviewError("Budget execution binding, capacity or ownership is unavailable; retained facts require review"); }
+    if (budgetStartedMs !== null && Date.now() - budgetStartedMs >= effectiveRuntimeMs) {
+      throw new ContextPreviewError("Current attempt runtime capacity is exhausted; no further execution effect is admitted");
+    }
+  };
+  if (budgetOwner) {
+    // Denials must precede reports, task progress and external effects.
+    try { prepareBudget(); } catch { return null; }
+  }
+
   if (!runId) {
     runId = randomUUID();
     let claimed = false;
     const record = updateTask(taskId, (candidate) => {
+      if (budgetPresent(candidate)) return false;
       if (candidate.lifecycle !== "queued") return false;
       const orchestration = ensureTaskOrchestration(candidate);
       if (orchestration.attempts >= orchestration.max_attempts || orchestration.cumulative_tokens >= orchestration.max_total_tokens || orchestration.cancel_requested_at) return false;
@@ -130,6 +159,8 @@ export async function runTask(
 
   const initial = readTask(taskId);
   if (!initial) return null;
+  if (budgetPresent(initial) && !budgetOwner || budgetOwner && !budgetPresent(initial)) return null;
+  if (budgetOwner) { try { prepareBudget(); } catch { return null; } }
   const initialOrchestration = ensureTaskOrchestration(initial);
   if (initial.lifecycle !== "running" || initialOrchestration.lease?.run_id !== runId) return null;
   attempt = initialOrchestration.attempts;
@@ -137,6 +168,9 @@ export async function runTask(
   const workflowOwner = workflowExecutionOwner(options.workflowExecution, taskId, runId);
   let workflow: ReturnType<import("./workflow-orchestrator").WorkflowOrchestrator["prepare"]> | undefined;
   let workflowUsageComplete = true; // No model effect has begun yet.
+  let usageUncertain = false;
+  let modelInvoked = false;
+  let budgetTerminalObserved = false;
   const span = (options.tracer ?? noOpTracer).startSpan("task.attempt", {
     task_id: taskId,
     project: initial.envelope.project,
@@ -147,6 +181,7 @@ export async function runTask(
 
   mkdirSync(join(repoRoot, "reports"), { recursive: true });
   const startedAt = new Date().toISOString();
+  budgetStartedMs = Date.parse(startedAt);
   const logsPath = join("reports", `${initial.envelope.id}-${initial.envelope.agent}-${startedAt.replace(/[:.]/g, "")}.jsonl`);
   const absLogsPath = join(repoRoot, logsPath);
   let attemptTokens = 0;
@@ -156,8 +191,11 @@ export async function runTask(
   const ownedMutation = (mutate: (record: TaskRecord) => void): TaskRecord | null => {
     let owned = false;
     const updated = updateTask(taskId, (record) => {
+      if (budgetPresent(record) && (!budgetOwner || budgetExecutionOwner(options.budgetExecution, taskId, runId) !== budgetOwner)
+        || budgetOwner && (!budgetPresent(record) || JSON.stringify(record.envelope.budget_admission) !== JSON.stringify(initial.envelope.budget_admission))) return false;
       const orchestration = ensureTaskOrchestration(record);
       if (record.lifecycle !== "running" || orchestration.lease?.run_id !== runId) return false;
+      if (budgetOwner && (orchestration.lease.worker_id !== initialOrchestration.lease?.worker_id || orchestration.attempts !== attempt)) return false;
       if (record.envelope.context_manifest && Date.parse(orchestration.lease.expires_at) <= Date.now()) return false;
       mutate(record);
       record.updated_at = new Date().toISOString();
@@ -185,13 +223,31 @@ export async function runTask(
     });
   };
 
-  const finish = (
+  const finish = async (
     outcome: AgentOutcome,
     result: AgentResult,
     retryable: boolean,
     failureKind?: TaskFailureKind,
     reason?: string,
-  ): TaskRunCompletion => {
+  ): Promise<TaskRunCompletion> => {
+    if (budgetOwner) {
+      try {
+        const observed = await budgetOwner.observe(options.budgetExecution!, workflowUsageComplete && !usageUncertain ? attemptTokens : null,
+          Math.max(0, Date.now() - Date.parse(startedAt)), true);
+        budgetTerminalObserved = true;
+        if (observed.unknown || !workflowUsageComplete || usageUncertain) {
+          retryable = false;
+          if (outcome === "completed" || outcome === "partial" || outcome === "failed") {
+            outcome = "needs-review"; failureKind = "terminal"; reason = "Final budget usage is unknown; retained charges and holds require review";
+            result = failureResult(initial.envelope, reason, logsPath); result.status = "needs-review";
+          }
+        }
+      } catch {
+        budgetOwner.abandon(options.budgetExecution!);
+        outcome = "needs-review"; retryable = false; failureKind = "terminal"; reason = "Budget completion accounting could not be fenced; retained facts require review";
+        result = failureResult(initial.envelope, reason, logsPath); result.status = "needs-review";
+      }
+    }
     if (workflowOwner) {
       try {
         workflowOwner.settle(options.workflowExecution!, attemptTokens, Math.max(0, Date.now() - Date.parse(startedAt)), workflowUsageComplete);
@@ -218,6 +274,28 @@ export async function runTask(
     });
     if (!finished) return { outcome, retryable: false, reason, stale: true };
     appendOwnedEvent(finished, eventType(outcome), { outcome, retryable, ...(reason ? { reason } : {}) });
+    if (budgetOwner) {
+      try {
+        const settled = await budgetOwner.settle(options.budgetExecution!, workflowUsageComplete && !usageUncertain ? attemptTokens : null,
+          Math.max(0, Date.now() - Date.parse(startedAt)), retryable);
+        if (!settled.complete) throw new Error("Budget settlement is unknown");
+      } catch {
+        budgetOwner.abandon(options.budgetExecution!);
+        // A task snapshot and the ledger are not one transaction. Do not refund
+        // or schedule a retry when the post-snapshot accounting is unproven.
+        outcome = "needs-review"; retryable = false; reason = "Budget settlement is unknown; inspect retained task and ledger facts";
+        let downgraded = false;
+        const revised = updateTask(taskId, (record) => {
+          if (record.lifecycle !== "finished" || JSON.stringify(record) !== JSON.stringify(finished)
+            || !record.orchestration) return false;
+          record.outcome = outcome;
+          record.result = failureResult(initial.envelope, reason!, logsPath); record.result.status = "needs-review";
+          record.orchestration.last_failure = { kind: "terminal", message: reason!, at: new Date().toISOString(), run_id: runId };
+          downgraded = true;
+        });
+        if (revised && downgraded) appendOwnedEvent(revised, "needs-review", { outcome, retryable, reason });
+      }
+    }
     spanStatus = outcome === "completed" || outcome === "partial" ? "ok" : "error";
     span.addEvent("task.finished", { outcome, retryable });
     return { outcome, retryable, reason, stale: false };
@@ -253,9 +331,9 @@ export async function runTask(
     if (controller.signal.aborted) return;
     abortKind = "timeout";
     controller.abort(new Error("task runtime budget exhausted"));
-  }, initialOrchestration.max_runtime_ms);
+  }, Math.min(effectiveRuntimeMs, initialOrchestration.max_runtime_ms));
 
-  const recordUsage = (usage: AgentUsage): boolean => {
+  const recordUsage = async (usage: AgentUsage): Promise<boolean> => {
     const delta = Math.max(0, usage.totalTokens - attemptTokens);
     attemptTokens = Math.max(attemptTokens, usage.totalTokens);
     let cumulative = initialOrchestration.cumulative_tokens;
@@ -272,6 +350,15 @@ export async function runTask(
     if (workflowOwner && workflowOwner.observe(options.workflowExecution!, attemptTokens, Math.max(0, Date.now() - Date.parse(startedAt))) && !controller.signal.aborted) {
       abortKind = "tokens"; controller.abort(new Error("workflow aggregate budget exhausted"));
     }
+    if (budgetOwner) {
+      const elapsed = Math.max(0, Date.now() - Date.parse(startedAt));
+      const observed = await budgetOwner.observe(options.budgetExecution!, attemptTokens, elapsed);
+      if ((observed.exhausted || observed.unknown) && !controller.signal.aborted) {
+        effectiveRuntimeMs = Math.min(effectiveRuntimeMs, readTask(taskId)?.orchestration?.max_runtime_ms ?? effectiveRuntimeMs);
+        abortKind = elapsed >= effectiveRuntimeMs ? "timeout" : "tokens";
+        controller.abort(new Error("budget execution accounting is exhausted or unknown"));
+      }
+    }
     if (cumulative > maxTokens && !controller.signal.aborted) {
       abortKind = "tokens";
       controller.abort(new Error("task token budget exhausted"));
@@ -280,6 +367,11 @@ export async function runTask(
   };
 
   const handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+    if (event.type === "usage-unknown" || event.type === "usage" && !isCompleteAgentUsage(event.usage)) {
+      usageUncertain = true; workflowUsageComplete = false;
+      writeLog({ usage_unknown: true });
+      return;
+    }
     writeLog({ event });
     if (event.type === "thread-started" || event.type === "turn-started") {
       const updated = ownedMutation((record) => {
@@ -292,7 +384,7 @@ export async function runTask(
       return;
     }
     if (event.type === "usage") {
-      recordUsage(event.usage);
+      await recordUsage(event.usage);
       span.addEvent("agent.usage", { total_tokens: event.usage.totalTokens });
       return;
     }
@@ -314,6 +406,18 @@ export async function runTask(
       if (updated) appendOwnedEvent(updated, "warning", { message: event.message.slice(0, 1_000) });
       span.addEvent("agent.warning");
     }
+  };
+
+  const acceptAgentUsage = async (agentRun: import("./agent-executor").AgentRunResult): Promise<void> => {
+    if (isCompleteAgentUsage(agentRun.usageHighWater)) await recordUsage(agentRun.usageHighWater);
+    else if (agentRun.usageHighWater !== undefined && agentRun.usageHighWater !== null) usageUncertain = true;
+    const valid = isCompleteAgentUsage(agentRun.usage);
+    workflowUsageComplete = valid && (agentRun.usageComplete === true || !Object.hasOwn(agentRun, "usageComplete")) && !usageUncertain;
+    if (!valid) { agentRun.usage = null; usageUncertain = true; }
+    if (valid && await recordUsage(agentRun.usage!)) {
+      const error = new Error("task token budget exhausted"); error.name = "AbortError"; throw error;
+    }
+    if (budgetOwner && !workflowUsageComplete) throw new ContextPreviewError("Final budget usage is unknown; no further execution effect is admitted");
   };
 
   try {
@@ -352,7 +456,7 @@ export async function runTask(
         result.next_steps = [gate === "candidate-ready"
           ? "Review the existing candidate and its evidence; no files were changed by this recovered attempt."
           : "Resolve the issue decision or scope revision, then dispatch a new linked task." ];
-        return finish("needs-review", result, false, "terminal", reason);
+        return await finish("needs-review", result, false, "terminal", reason);
       }
     }
     const policy = new PolicyService(repoRoot);
@@ -405,9 +509,12 @@ export async function runTask(
       appendOwnedEvent(contextRecord, "policy-evaluated", { boundary: "execution-context", allowed: true, fingerprint: governed.preview.fingerprint, role_id: governed.preview.manifest.role_id, bytes: prompts!.bytes, lines: prompts!.lines });
     }
     const runAgent = (runCwd: string) => {
+      prepareBudget();
       if (controller.signal.aborted) { const error = new Error("task interrupted before model invocation"); error.name = "AbortError"; throw error; }
       if (!ownedMutation(() => {})) throw new ContextPreviewError("Attempt ownership changed before model invocation");
-      if (workflowOwner) { workflowOwner.prepare(options.workflowExecution!); workflowUsageComplete = false; }
+      if (workflowOwner) workflowOwner.prepare(options.workflowExecution!);
+      workflowUsageComplete = false;
+      modelInvoked = true;
       return executor.run(
         {
           cwd: runCwd,
@@ -428,6 +535,7 @@ export async function runTask(
     };
 
     if (initial.envelope.sandbox === "workspace-write") {
+      prepareBudget();
       if (controller.signal.aborted) { const error = new Error("task interrupted before worktree creation"); error.name = "AbortError"; throw error; }
       if (!ownedMutation(() => {})) throw new ContextPreviewError("Attempt ownership changed before worktree creation");
       if (!existsSync(join(cwd, ".git"))) throw new PolicyError(`not a git repository: ${cwd}`);
@@ -446,12 +554,14 @@ export async function runTask(
       if (!worktreeRecord) return { outcome: "failed", retryable: false, reason: "attempt lease is no longer current", stale: true };
       appendOwnedEvent(worktreeRecord, "worktree-created", { branch });
       span.addEvent("worktree.created", { branch });
-      const captureOptions = { signal: controller.signal, deadline: Date.parse(startedAt) + initialOrchestration.max_runtime_ms, ownsAttempt: () => {
+      const captureOptions = { signal: controller.signal, deadline: Date.parse(startedAt) + Math.min(effectiveRuntimeMs, initialOrchestration.max_runtime_ms), ownsAttempt: () => {
+        try { prepareBudget(); } catch { return false; }
         const current = readTask(taskId);
         return current?.lifecycle === "running" && current.orchestration?.lease?.run_id === runId && !current.orchestration.cancel_requested_at && Date.parse(current.orchestration.lease.expires_at) > Date.now();
       }, controlPlaneRoot: repoRoot, authorizeCommand: (command: string) => {
         if (!governed || !governed.preview.manifest.tools.includes("verify-configured") || initial.envelope.self_verify !== true) return false;
         try {
+          prepareBudget();
           const currentPolicy = new PolicyService(repoRoot);
           const current = currentPolicy.authorizeTask(initial.envelope);
           currentPolicy.authorizeRole({ project: initial.envelope.project, agent: initial.envelope.agent, roleId: governed.preview.manifest.role_id, taskKind: initial.envelope.task_type, sandbox: initial.envelope.sandbox, selfVerify: true });
@@ -468,6 +578,7 @@ export async function runTask(
         if (!ownedMutation((record) => { record.testing_evidence = testingEvidence; })) throw new ContextPreviewError("Attempt ownership changed before testing evidence persistence");
       };
       if (governed?.testingPlan.mode === "strict-tdd") {
+        prepareBudget();
         const red = await captureVerification(worktreePath, governed.testingPlan.runners.filter((runner) => runner.stage === "red"), captureOptions);
         testingEvidence!.observations.push(...red.observations);
         persistTesting();
@@ -475,18 +586,15 @@ export async function runTask(
       }
       const implementationStarted = new Date().toISOString();
       const agentRun = await runAgent(worktreePath);
-      if (workflowOwner) workflowUsageComplete = !!agentRun.usage;
+      await acceptAgentUsage(agentRun);
       if (testingEvidence) testingEvidence.implementation = { started_at: implementationStarted, finished_at: new Date().toISOString(), thread_id: agentRun.threadId, turn_id: agentRun.turnId };
-      if (agentRun.usage && recordUsage(agentRun.usage)) {
-        const error = new Error("task token budget exhausted");
-        error.name = "AbortError";
-        throw error;
-      }
       if (controller.signal.aborted) { const error = new Error("task interrupted before commit"); error.name = "AbortError"; throw error; }
       if (!ownedMutation(() => {})) return { outcome: "failed", retryable: false, reason: "attempt lease is no longer current", stale: true };
       // Re-read the exact workflow admission after the model turn and before
       // any repository write. This fences source, policy, scope and lease drift.
       if (workflowOwner) workflowOwner.prepare(options.workflowExecution!);
+      prepareBudget();
+      if (workflowOwner && !workflowUsageComplete) throw new ContextPreviewError("Workflow final usage is unknown; no commit is admitted");
       const issue = issueContext(initial, workflow);
       const issueService = issue ? createIssueService(repoRoot) : null;
       const { filesChanged, diffstat, committed, patch, patchTruncated, baseRevision, candidateRevision } = commitAndDiff(
@@ -510,11 +618,13 @@ export async function runTask(
       const candidate = issue && issueService && committed && baseRevision && candidateRevision
         ? issueService.recordCandidate({ issueId: issue.issueId, taskId: initial.envelope.id, executionId: runId, repositoryId: initial.envelope.project, baseRevision, candidateRevision, changedPaths: filesChanged, scopeRevision: issue.scopeRevision })
         : null;
+      prepareBudget();
       let verification = committed && !governed ? runVerification(worktreePath, verifyCommands) : null;
       if (governed && testingEvidence) {
         if (candidate) testingEvidence.candidate = { id: candidate.id, base_revision: candidate.base_revision, candidate_revision: candidate.candidate_revision, diff_fingerprint: candidate.diff_fingerprint };
         if (committed && candidateRevision) {
           try {
+            prepareBudget();
             const captured = await captureVerification(worktreePath, governed.testingPlan.runners.filter((runner) => runner.stage !== "red").sort((a, b) => stageOrder(a.stage) - stageOrder(b.stage)), { ...captureOptions, expectedRevision: candidateRevision });
             verification = captured.report;
             testingEvidence.observations.push(...captured.observations);
@@ -528,7 +638,7 @@ export async function runTask(
       }
       const diffPath = committed ? `reports/${initial.envelope.id}-${runId}.diff` : null;
       if (diffPath) writeFileSync(join(repoRoot, diffPath), patch, "utf8");
-      writeLog({ task_id: initial.envelope.id, mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, branch, worktree_path: worktreePath, committed, diffstat, diff_path: diffPath, diff_truncated: patchTruncated, verification, usage: agentRun.usage, structured_output: agentRun.structuredOutput });
+      writeLog({ task_id: initial.envelope.id, mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, branch, worktree_path: worktreePath, committed, diffstat, diff_path: diffPath, diff_truncated: patchTruncated, verification, usage: agentRun.usage, usage_complete: workflowUsageComplete, structured_output: agentRun.structuredOutput });
       const evidenceRecord = ownedMutation((record) => {
         record.envelope.metadata.run = {
           ...metadataRun(record),
@@ -543,6 +653,7 @@ export async function runTask(
           diff_truncated: patchTruncated,
           verification,
           usage: agentRun.usage,
+          usage_complete: workflowUsageComplete,
         };
       });
       if (evidenceRecord && diffPath) {
@@ -576,27 +687,24 @@ export async function runTask(
       const terminalReason = result.status === "needs-review"
         ? result.blockers[0] ?? "invalid structured agent output"
         : result.status === "failed" ? result.blockers[0] ?? result.summary : undefined;
-      return finish(result.status, result, false, terminalReason ? "terminal" : undefined, terminalReason);
+      return await finish(result.status, result, false, terminalReason ? "terminal" : undefined, terminalReason);
     }
 
     const agentRun = await runAgent(cwd);
-    if (workflowOwner) workflowUsageComplete = !!agentRun.usage;
-    if (agentRun.usage && recordUsage(agentRun.usage)) {
-      const error = new Error("task token budget exhausted");
-      error.name = "AbortError";
-      throw error;
-    }
-    if (!workflow) writeLog({ task_id: initial.envelope.id, mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, usage: agentRun.usage, structured_output: agentRun.structuredOutput });
+    await acceptAgentUsage(agentRun);
+    if (!workflow) writeLog({ task_id: initial.envelope.id, mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, usage: agentRun.usage, usage_complete: workflowUsageComplete, structured_output: agentRun.structuredOutput });
     ownedMutation((record) => {
-      record.envelope.metadata.run = { ...metadataRun(record), mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, usage: agentRun.usage };
+      record.envelope.metadata.run = { ...metadataRun(record), mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, usage: agentRun.usage, usage_complete: workflowUsageComplete };
     });
     if (controller.signal.aborted) { const error = new Error("task interrupted before role completion"); error.name = "AbortError"; throw error; }
+    prepareBudget();
+    if (workflowOwner && !workflowUsageComplete) throw new ContextPreviewError("Workflow final usage is unknown; role completion requires review");
     const result = workflow && workflowOwner ? workflowOwner.captureOutput(options.workflowExecution!, workflow, agentRun.structuredOutput, logsPath)
       : toAgentResult(initial.envelope, agentRun.structuredOutput, agentRun.finalText, logsPath);
     const terminalReason = result.status === "needs-review"
       ? "invalid structured agent output"
       : result.status === "failed" ? result.blockers[0] ?? result.summary : undefined;
-    return finish(result.status, result, false, terminalReason ? "terminal" : undefined, terminalReason);
+    return await finish(result.status, result, false, terminalReason ? "terminal" : undefined, terminalReason);
   } catch (error) {
     const issue = issueContext(initial, workflow);
     if (error instanceof IssueScopeViolationError) {
@@ -624,7 +732,7 @@ export async function runTask(
         reason = "cancelled by user";
       } else if (abortKind === "timeout") {
         kind = "budget";
-        reason = `runtime budget exhausted (${initialOrchestration.max_runtime_ms}ms)`;
+        reason = `runtime budget exhausted (${Math.min(effectiveRuntimeMs, initialOrchestration.max_runtime_ms)}ms)`;
       } else if (abortKind === "tokens") {
         kind = "budget";
         reason = `token budget exhausted (${initialOrchestration.max_total_tokens})`;
@@ -665,10 +773,15 @@ export async function runTask(
       result.blockers = error.paths.slice(0, 20).map((path) => redactText(path));
       result.next_steps = ["Review the recorded scope proposal. Approve a new scope revision or cancel the issue before dispatching again."];
     }
-    return finish(outcome, result, retryable, kind, reason);
+    return await finish(outcome, result, retryable, kind, reason);
   } finally {
     clearTimeout(timeout);
     options.signal?.removeEventListener("abort", onExternalAbort);
+    if (budgetOwner && !budgetTerminalObserved) {
+      try {
+        await budgetOwner.observe(options.budgetExecution!, modelInvoked ? null : 0, Math.max(0, Date.now() - Date.parse(startedAt)), true);
+      } catch { /* Retain durable holds on an interrupted or unavailable ledger. */ }
+    }
     span.end(spanStatus);
   }
 }

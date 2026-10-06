@@ -6,17 +6,38 @@ import { pushBranch, removeWorktree } from "../../../runner/worktree";
 import { ensurePullRequest, buildPrBody } from "../../../runner/github";
 import { PolicyService } from "../../../lib/policy/service";
 import { assertTaskOutsideActiveWorkflow, TaskControlError } from "../../../runner/task-orchestrator";
+import { assertTaskBudgetAdmissionBinding } from "../../../lib/state/validation";
 
 export class ReviewError extends Error {}
 export class TaskNotFoundError extends ReviewError {}
 export class ReviewConflictError extends ReviewError {}
 
+function assertBudgetReviewAvailable(rec: TaskRecord): void {
+  try { assertTaskBudgetAdmissionBinding(rec); }
+  catch { throw new ReviewConflictError("Budget admission is invalid or unavailable; publication and cleanup are denied without changing retained facts"); }
+  // T006 is a scaffold, not the operator-confirmed cooperative P cutover.
+  // Neither a stored decision nor a valid data binding is live effect proof.
+  if (Object.hasOwn(rec.envelope, "budget_admission")) {
+    throw new ReviewConflictError("Budget-bound publication and cleanup are unavailable before the proven cooperative P cutover");
+  }
+}
+
 function assertReviewOwnership(rec: TaskRecord): void {
+  assertBudgetReviewAvailable(rec);
   try { assertTaskOutsideActiveWorkflow(rec); }
   catch (error) {
     if (error instanceof TaskControlError) throw new ReviewConflictError(error.message);
     throw error;
   }
+}
+
+function assertReviewEffectOwnership(rec: TaskRecord): void {
+  const current = readTask(rec.envelope.id);
+  if (!current) throw new TaskNotFoundError(`task not found: ${rec.envelope.id}`);
+  // Re-read immediately before each later effect. An unbound detached record
+  // must not conceal a newly persisted binding between publication checkpoints.
+  assertBudgetReviewAvailable(current);
+  assertReviewOwnership(rec);
 }
 
 interface RunInfo {
@@ -110,7 +131,7 @@ export function approveTask(taskId: string, repoRoot: string = process.cwd()): R
     persistDecision(rec, decision);
 
     if (decision.pushed !== true) {
-      assertReviewOwnership(rec);
+      assertReviewEffectOwnership(rec);
       const pushed = pushBranch(repoPath, branch);
       decision.pushed = pushed.pushed;
       if (!pushed.pushed) {
@@ -124,7 +145,7 @@ export function approveTask(taskId: string, repoRoot: string = process.cwd()): R
     }
 
     if (!decision.pr_url) {
-      assertReviewOwnership(rec);
+      assertReviewEffectOwnership(rec);
       const pr = ensurePullRequest(repoPath, branch, defaultBranch, rec.envelope.title, buildPrBody(rec.envelope, rec.result));
       if (!pr.url) {
         decision.error = pr.error;
@@ -152,7 +173,7 @@ export function rejectTask(taskId: string, repoRoot: string = process.cwd()): Re
   if (rec.envelope.sandbox === "workspace-write" && branch && worktreePath && decision.cleanup_completed !== true) {
     decision.branch = branch;
     persistDecision(rec, decision);
-    assertReviewOwnership(rec);
+    assertReviewEffectOwnership(rec);
     try {
       removeWorktree(expandHome(rec.envelope.repo_path), worktreePath, branch);
     } catch (e) {

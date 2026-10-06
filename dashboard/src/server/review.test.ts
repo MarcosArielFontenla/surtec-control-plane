@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskRecord } from "../../../lib/state/types";
@@ -11,8 +11,16 @@ import { ensurePullRequest } from "../../../runner/github";
 import { approveTask, rejectTask, ReviewError, ReviewConflictError, TaskNotFoundError } from "./review";
 import { writeTask, readTask } from "../../../lib/state/store";
 import { readTaskEvents } from "../../../lib/state/events";
+import * as taskEvents from "../../../lib/state/events";
 import { mutateWorkflowDocument } from "../../../lib/state/workflows";
 import type { WorkflowStatus } from "../../../lib/workflows/types";
+import { assembleContext, contextHash } from "../../../lib/context/assemble";
+import { defaultTaskOrchestration } from "../../../lib/state/orchestration";
+import { prepareTaskBudgetAdmission } from "./dispatch";
+import { BUDGET_DIMENSIONS, type BudgetLimits } from "../../../lib/budgets/types";
+import type { BudgetPolicySource } from "../../../lib/budgets/policy";
+import { mutateBudgetLedger } from "../../../lib/state/budgets";
+import { commitTaskBudget, markBudgetUnknown, reserveTaskBudget } from "../../../lib/budgets/reservations";
 
 let root: string;
 let projectRepo: string;
@@ -31,6 +39,42 @@ function record(id: string, over: Partial<TaskRecord> & { sandbox?: "read-only" 
     updated_at: "2026-05-29T10:00:00Z", finished_at: "2026-05-29T10:30:00Z",
     result: null, logs_path: null, decision: over.decision ?? null,
   };
+}
+
+const budgetAt = "2026-10-05T12:00:00.000Z";
+function budgetSource(): BudgetPolicySource {
+  return { fingerprint: "a".repeat(64), policy: { schema_version: 1, revision: 1, pricing: { status: "unavailable", reason: "no-versioned-source" },
+    rules: [{ id: "synthetic-policy", revision: 1, scope: { kind: "company", id: "surtec" }, period: "none", warning_percent: 80,
+      limits: Object.fromEntries(BUDGET_DIMENSIONS.map((key) => [key, { status: "unconfigured" }])) as BudgetLimits }] } };
+}
+function budgetBoundRecord(id: string, version: 1 | 2 = 1, readOnly = false): TaskRecord {
+  const draft = record(id, { sandbox: readOnly ? "read-only" : "workspace-write" });
+  const scope = { expected_outcome: "Synthetic result", acceptance_criteria: ["Verified"], allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["code"], explicit_exclusions: [] };
+  const caps = { max_attempts: 2, max_runtime_ms: 2000, max_total_tokens: 100 };
+  draft.envelope.task_type = readOnly ? "analysis" : "implementation";
+  draft.envelope.metadata = readOnly || version === 2 ? {} : { issue_id: "issue-1", issue_scope_revision: 1, issue_authorized_scope: scope };
+  const role = readOnly ? "portfolio-analyst" : "software-engineer";
+  const manifest = assembleContext({ schema_version: 1, project_id: draft.envelope.project, agent_id: draft.envelope.agent, role_id: role,
+    task_kind: draft.envelope.task_type, sandbox: draft.envelope.sandbox, tools: readOnly ? ["inspect"] : ["inspect", "edit-authorized-scope"], approval_rules: [], budget: caps,
+    limits: { max_lines: 500, max_bytes: 60000, max_sources: 64 }, selected_categories: [], excluded_categories: [], omitted_sources: [],
+    routing: { work_scale: "bounded", action: "direct", review_depth: "focused", qa_required: false, reasons: ["Synthetic"], delegation: { admitted: false, executable: false, reasons: ["No execution"] } },
+    testing: { mode: "functional", minimum_review_depth: "focused", runner_ids: [], commands: [], reasons: ["Synthetic"], requires_red_evidence: false } },
+  [{ id: "runtime/safety", layer: "runtime-safety", source_type: "policy", text: "Synthetic", reason: "Fixture", sensitivity: "public" }]).manifest;
+  draft.envelope.context_manifest = manifest;
+  const binding = { manifest_fingerprint: manifest.fingerprint, instructions_hash: contextHash(draft.envelope.instructions), instructions_length: draft.envelope.instructions.length };
+  draft.envelope.context_admission = version === 2
+    ? { schema_version: 2, kind: "workflow-stage", workflow_id: "workflow-1", stage_id: "stage-1", stage_generation: 1, stage_kind: "implementation", task_id: id,
+      template_id: "trivial-change", template_version: 1, grant_id: "grant-1", authority_revision: 1, role_id: role, issue_id: "issue-1", issue_revision: 1,
+      scope_revision: 1, scope_fingerprint: contextHash(JSON.stringify(scope)), approved_plan: null, predecessor_stage_id: null, handoff_id: null, candidate: null, ...binding }
+    : { schema_version: 1, kind: readOnly ? "analysis" : "issue", ...(readOnly ? {} : { issue_id: "issue-1", issue_revision: 1, issue_status: "authorized" as const }), ...binding };
+  Object.assign(draft, { lifecycle: "queued", outcome: null, created_at: budgetAt, updated_at: budgetAt, started_at: null, finished_at: null, revision: 1,
+    orchestration: { ...defaultTaskOrchestration(), ...caps } });
+  const prepared = prepareTaskBudgetAdmission(draft, { source: budgetSource(), attribution: { company_id: "surtec", project_ids: [draft.envelope.project], objective_ids: [],
+    issue_id: readOnly ? null : "issue-1", role_id: role, execution_id: id } });
+  const result = structuredClone(prepared.task);
+  result.envelope.metadata.run = { branch: `agent/${id}-backend-engineer`, worktree_path: "/tmp/wt", committed: true };
+  Object.assign(result, { lifecycle: "finished", outcome: "completed", started_at: budgetAt, finished_at: budgetAt });
+  return result;
 }
 
 function retainWorkflow(candidateTaskId: string, status: WorkflowStatus = "running", stageTaskId: string | null = null, retainedBy: "root" | "stage" | "lineage" | "none" = "root"): void {
@@ -88,6 +132,8 @@ afterEach(() => {
   delete process.env.SURTEC_STATE_DIR;
   delete process.env.SURTEC_PROJECTS_ROOT;
   rmSync(root, { recursive: true, force: true });
+  expect(existsSync(root)).toBe(false);
+  vi.restoreAllMocks();
 });
 
 describe("approveTask", () => {
@@ -273,5 +319,80 @@ describe("active workflow review boundary", () => {
     writeTask(record("TREE-1")); const path = join(root, "state/workflows/workflows.json"); mkdirSync(join(root, "state/workflows"), { recursive: true }); writeFileSync(path, bytes);
     expect(() => approveTask("TREE-1", root)).toThrow(/ownership is unavailable/); expect(() => rejectTask("TREE-1", root)).toThrow(/ownership is unavailable/);
     expect(readFileSync(path, "utf8")).toBe(bytes); expect(readTaskEvents("TREE-1")).toEqual([]); expect(pushBranch).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
+  });
+});
+
+describe("T006 budget scaffold publication boundary", () => {
+  it.each([1, 2] as const)("denies context v%s publication and cleanup before task, event or Git effects", (version) => {
+    const task = budgetBoundRecord("BOUND-1", version); writeTask(task);
+    const path = join(root, "state/tasks/BOUND-1.json"), before = readFileSync(path);
+    expect(() => approveTask("BOUND-1", root)).toThrow(ReviewConflictError);
+    expect(() => rejectTask("BOUND-1", root)).toThrow(ReviewConflictError);
+    expect(readFileSync(path).equals(before)).toBe(true); expect(readTaskEvents("BOUND-1")).toEqual([]);
+    expect(pushBranch).not.toHaveBeenCalled(); expect(ensurePullRequest).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
+  });
+  it.each(["approving", "rejecting", "approved", "rejected"] as const)("a stored %s decision cannot bypass the budget boundary", (status) => {
+    const task = budgetBoundRecord("BOUND-1"); task.decision = { status, at: budgetAt, attempts: 1, pushed: true, cleanup_completed: true }; writeTask(task);
+    const path = join(root, "state/tasks/BOUND-1.json"), before = readFileSync(path);
+    expect(() => (status === "approving" || status === "approved" ? approveTask : rejectTask)("BOUND-1", root)).toThrow(ReviewConflictError);
+    expect(readFileSync(path).equals(before)).toBe(true); expect(readTaskEvents("BOUND-1")).toEqual([]);
+    expect(pushBranch).not.toHaveBeenCalled(); expect(ensurePullRequest).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
+  });
+  it("denies even read-only local approval without inventing a budget completion receipt", () => {
+    writeTask(budgetBoundRecord("BOUND-1", 1, true));
+    expect(() => approveTask("BOUND-1", root)).toThrow(ReviewConflictError);
+    expect(readTask("BOUND-1")!.decision).toBeNull(); expect(readTaskEvents("BOUND-1")).toEqual([]);
+  });
+  it.each(["pending", "committed", "unknown"] as const)("preserves the exact %s ledger and holds on publication refusal", (status) => {
+    const task = budgetBoundRecord("BOUND-1"), admission = task.envelope.budget_admission!, path = join(root, "state/budgets/budgets.json"); writeTask(task);
+    mutateBudgetLedger((tx) => {
+      reserveTaskBudget(tx, { admission, source: budgetSource() });
+      if (status !== "pending") commitTaskBudget(tx, { admission, persisted_admission: readTask("BOUND-1")!.envelope.budget_admission });
+      if (status === "unknown") markBudgetUnknown(tx, { reservation_id: admission.reservation_id });
+    }, path, budgetAt);
+    const before = readFileSync(path);
+    expect(() => approveTask("BOUND-1", root)).toThrow(ReviewConflictError); expect(() => rejectTask("BOUND-1", root)).toThrow(ReviewConflictError);
+    expect(readFileSync(path).equals(before)).toBe(true); expect(readTaskEvents("BOUND-1")).toEqual([]);
+    expect(pushBranch).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
+  });
+  it.each([null, {}, { schema_version: 2 }])("preserves malformed/future bound source bytes rather than taking historical fallback: %j", (budget) => {
+    writeTask(record("BOUND-1")); const path = join(root, "state/tasks/BOUND-1.json"), task = JSON.parse(readFileSync(path, "utf8"));
+    task.envelope.budget_admission = budget; const bytes = JSON.stringify(task); writeFileSync(path, bytes);
+    expect(() => approveTask("BOUND-1", root)).toThrow(); expect(() => rejectTask("BOUND-1", root)).toThrow();
+    expect(readFileSync(path, "utf8")).toBe(bytes); expect(readTaskEvents("BOUND-1")).toEqual([]);
+    expect(pushBranch).not.toHaveBeenCalled(); expect(ensurePullRequest).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
+  });
+  it("rechecks an exact persisted binding introduced between push and PR checkpoints", () => {
+    writeTask(record("BOUND-1")); let retained: Buffer | undefined;
+    vi.mocked(pushBranch).mockImplementationOnce(() => {
+      const changed = budgetBoundRecord("BOUND-1"); changed.decision = readTask("BOUND-1")!.decision;
+      writeTask(changed); retained = readFileSync(join(root, "state/tasks/BOUND-1.json"));
+      return { pushed: true };
+    });
+    expect(() => approveTask("BOUND-1", root)).toThrow(ReviewConflictError);
+    expect(pushBranch).toHaveBeenCalledTimes(1); expect(ensurePullRequest).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
+    expect(readFileSync(join(root, "state/tasks/BOUND-1.json")).equals(retained!)).toBe(true);
+    expect(readTaskEvents("BOUND-1").filter((entry) => entry.type === "review-decision")).toHaveLength(2);
+  });
+  it("rereads budget authority after the push checkpoint and before starting PR creation", () => {
+    writeTask(record("BOUND-1")); let retained: Buffer | undefined;
+    const append = taskEvents.appendTaskEvent;
+    vi.spyOn(taskEvents, "appendTaskEvent").mockImplementation((event) => {
+      const recorded = append(event);
+      if (event.type === "review-decision" && event.payload?.pushed === true) {
+        const changed = budgetBoundRecord("BOUND-1"); changed.decision = readTask("BOUND-1")!.decision;
+        writeTask(changed); retained = readFileSync(join(root, "state/tasks/BOUND-1.json"));
+      }
+      return recorded;
+    });
+    expect(() => approveTask("BOUND-1", root)).toThrow(ReviewConflictError);
+    expect(pushBranch).toHaveBeenCalledTimes(1); expect(ensurePullRequest).not.toHaveBeenCalled(); expect(removeWorktree).not.toHaveBeenCalled();
+    expect(readFileSync(join(root, "state/tasks/BOUND-1.json")).equals(retained!)).toBe(true);
+    expect(readTaskEvents("BOUND-1").filter((entry) => entry.type === "review-decision")).toHaveLength(3);
+  });
+  it("keeps separately authorized unbound O publication available beside retained P facts", () => {
+    writeTask(budgetBoundRecord("BOUND-1")); writeTask(record("FREE-1"));
+    expect(approveTask("FREE-1", root).status).toBe("approved"); expect(pushBranch).toHaveBeenCalledTimes(1);
+    expect(readTask("BOUND-1")!.decision).toBeNull(); expect(readTaskEvents("BOUND-1")).toEqual([]);
   });
 });

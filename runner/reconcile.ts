@@ -6,6 +6,8 @@ import { PolicyService } from "../lib/policy/service";
 import { canonicalPath } from "../lib/security/paths";
 import type { TaskRecord } from "../lib/state/types";
 import { listManagedWorktrees, type ManagedWorktree } from "./worktree";
+import { assertTaskBudgetAdmissionBinding } from "../lib/state/validation";
+import { types as nodeTypes } from "node:util";
 
 export interface OrphanWorktree {
   project: string;
@@ -28,6 +30,18 @@ interface ReconciliationDependencies {
   now?: () => string;
 }
 
+function ownData(value: unknown, key: string): unknown {
+  if (!value || typeof value !== "object" || nodeTypes.isProxy(value)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+}
+
+function managedPath(record: TaskRecord): string | null {
+  const envelope = ownData(record, "envelope"), metadata = ownData(envelope, "metadata");
+  const path = ownData(ownData(metadata, "run"), "worktree_path");
+  return typeof path === "string" && path.length > 0 ? path : null;
+}
+
 export function reconcileOrphanWorktrees(
   repoRoot: string = process.cwd(),
   dependencies: ReconciliationDependencies = {},
@@ -40,12 +54,20 @@ export function reconcileOrphanWorktrees(
     orphans: [],
     errors: [],
   };
-  const knownPaths = new Set(
-    tasks()
-      .map((record) => (record.envelope.metadata?.run as { worktree_path?: unknown } | undefined)?.worktree_path)
-      .filter((path): path is string => typeof path === "string" && path.length > 0)
-      .map(canonicalPath),
-  );
+  const snapshots = tasks();
+  const knownPaths = new Set(snapshots.map(managedPath).filter((path): path is string => path !== null).map(canonicalPath));
+  for (const record of snapshots) {
+    try {
+      assertTaskBudgetAdmissionBinding(record);
+      if (Object.hasOwn(record.envelope, "budget_admission")) {
+        report.errors.push("Budget-bound task remains scaffold-only; inventory does not grant recovery, execution, publication or cleanup authority.");
+      }
+    } catch {
+      // Inventory keeps safely observed paths known even when a supplied
+      // admission is invalid. Never infer a refund, replacement or deletion.
+      report.errors.push("Task budget facts are invalid or unavailable; retained bytes and managed paths require inspection.");
+    }
+  }
 
   try {
     for (const project of projects()) {

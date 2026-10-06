@@ -7,21 +7,25 @@ import { parse } from "yaml";
 import type { AgentRoleRegistry } from "../lib/context/types";
 import type { WorkflowBudget, WorkflowRoleOutput } from "../lib/workflows/types";
 import type { AgentExecutor } from "./agent-executor";
-import { listTasks, readTask, updateTask } from "../lib/state/store";
+import { listTasks, readTask, updateTask, writeTask } from "../lib/state/store";
 import { readIssueDocument } from "../lib/state/issues";
 import { mutateWorkflowDocument, readWorkflowDocument } from "../lib/state/workflows";
 import { createIssueService } from "../dashboard/src/server/issue-service";
 import { WorkflowOrchestrator, workflowExecutionOwner } from "./workflow-orchestrator";
-import { TaskOrchestrator } from "./task-orchestrator";
+import { BudgetExecutionScaffold, budgetExecutionOwner, TaskOrchestrator } from "./task-orchestrator";
 import { runTask } from "./run-task";
 import { createWorkflowService } from "../dashboard/src/server/workflow-service";
-import { createTask, createWorkflowTask } from "../dashboard/src/server/dispatch";
+import { createTask, createWorkflowTask, prepareTaskBudgetAdmission } from "../dashboard/src/server/dispatch";
 import { createContextService } from "../dashboard/src/server/context-service";
 import { createTestingEvidence, sealTestingEvidence } from "../lib/context/testing-evidence";
 import { managedGitArgs } from "../lib/security/managed-git.mjs";
 import { localGitEnvironment } from "../lib/security/environment";
 import { createWorktree, commitAndDiff } from "./worktree";
 import { captureVerification } from "./verify";
+import { mutateBudgetLedger, readBudgetLedger } from "../lib/state/budgets";
+import { commitTaskBudget, reserveTaskBudget } from "../lib/budgets/reservations";
+import { BUDGET_DIMENSIONS, type BudgetLimits } from "../lib/budgets/types";
+import type { BudgetPolicySource } from "../lib/budgets/policy";
 
 let root: string, state: string, issueId: string, worker: TaskOrchestrator | undefined;
 const roles = { "portfolio-analyst": "product-manager", planner: "tech-lead", "software-engineer": "backend-engineer", reviewer: "reality-checker", "qa-evaluator": "qa-reviewer", "operations-observer": "devops-engineer" };
@@ -64,6 +68,62 @@ function claim(f: ReturnType<typeof fixture>) {
   });
   return { proof: f.controller.claimRun(f.taskId, runId), runId };
 }
+
+describe("T006 independent workflow budget scaffold", () => {
+  function bind(f: ReturnType<typeof fixture>) {
+    const source: BudgetPolicySource = { fingerprint: "a".repeat(64), policy: { schema_version: 1, revision: 1, pricing: { status: "unavailable", reason: "no-versioned-source" },
+      rules: [{ id: "synthetic-company", revision: 1, scope: { kind: "company", id: "surtec" }, period: "none", warning_percent: 80,
+        limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "unconfigured" }])) as BudgetLimits }] } };
+    const draft = readTask(f.taskId)!, admission = draft.envelope.context_admission!;
+    if (admission.schema_version !== 2) throw new Error("Synthetic workflow lost its exact binding");
+    const prepared = prepareTaskBudgetAdmission(draft, { source, attribution: { company_id: "surtec", objective_ids: [], project_ids: ["alpha"],
+      issue_id: issueId, role_id: admission.role_id, execution_id: f.taskId } });
+    const path = join(state, "budgets/budgets.json");
+    mutateBudgetLedger((tx) => reserveTaskBudget(tx, { admission: prepared.admission, source }), path, prepared.admission.created_at);
+    writeTask(prepared.task);
+    mutateBudgetLedger((tx) => commitTaskBudget(tx, { admission: prepared.admission, persisted_admission: readTask(f.taskId)!.envelope.budget_admission }), path, prepared.admission.created_at);
+    return { source, path };
+  }
+  it("a stored admission cannot activate default workflow claim or reconciliation", async () => {
+    const f = fixture(), bound = bind(f), taskBytes = readFileSync(join(state, `tasks/${f.taskId}.json`)), workflowBytes = readFileSync(join(state, "workflows/workflows.json")), ledgerBytes = readFileSync(bound.path);
+    expect(() => f.controller.canClaim(readTask(f.taskId)!)).toThrow(/independent private/);
+    f.controller.reconcile(); expect(await worker!.runOnce()).toBe(0); expect(f.executor.run).not.toHaveBeenCalled();
+    expect(readFileSync(join(state, `tasks/${f.taskId}.json`))).toEqual(taskBytes); expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes); expect(readFileSync(bound.path)).toEqual(ledgerBytes);
+  });
+  it("an exact task lease cannot replace the independent budget proof", () => {
+    const f = fixture(), bound = bind(f), at = new Date().toISOString();
+    updateTask(f.taskId, (task) => { task.lifecycle = "running"; task.orchestration!.attempts = 1; task.orchestration!.lease = { run_id: "without-budget-proof", worker_id: worker!.workerId,
+      acquired_at: at, heartbeat_at: at, expires_at: new Date(Date.now() + 60000).toISOString() }; });
+    const before = readFileSync(join(state, "workflows/workflows.json")), ledgerBytes = readFileSync(bound.path);
+    expect(() => f.controller.claimRun(f.taskId, "without-budget-proof", {})).toThrow(/independent private/);
+    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(before); expect(readFileSync(bound.path)).toEqual(ledgerBytes); expect(f.executor.run).not.toHaveBeenCalled();
+  });
+  it("requires both private identities, accounts once, and never creates a P successor from a fixture completion", async () => {
+    const f = fixture(), bound = bind(f); await worker!.stop();
+    const controller = new WorkflowOrchestrator(root), budgets = new BudgetExecutionScaffold({ filePath: bound.path, resolve: () => ({ source: bound.source }) });
+    const run = vi.fn(async (taskId: string, options: Parameters<typeof runTask>[3]) => {
+      expect(workflowExecutionOwner(options!.workflowExecution, taskId, options!.runId!)).toBe(controller);
+      expect(budgetExecutionOwner(options!.budgetExecution, taskId, options!.runId!)).toBe(budgets);
+      expect(budgetExecutionOwner(options!.workflowExecution, taskId, options!.runId!)).toBeNull();
+      expect(workflowExecutionOwner(options!.budgetExecution, taskId, options!.runId!)).toBeNull();
+      return runTask(taskId, root, f.executor, options);
+    });
+    worker = new TaskOrchestrator({ repoRoot: root, workflows: controller, budgets, runAttempt: run }); await complete(f.taskId);
+    expect(readTask(f.taskId)?.outcome).toBe("completed"); expect(f.executor.run).toHaveBeenCalledOnce();
+    const detail = controller.service.detail(f.id); expect(detail.workflow.counters).toMatchObject({ tasks: 1, attempts: 1, total_tokens: 3, accounting_complete: true });
+    const ledger = readBudgetLedger(bound.path)!; expect(Object.values(ledger.charges)).toMatchObject([{ attempts: 1, observed_total_tokens: 3, status: "terminal" }]);
+    expect(Object.values(ledger.reservations)[0]!.status).toBe("settled");
+    controller.reconcile(); new WorkflowOrchestrator(root).reconcile(); expect(listTasks()).toHaveLength(1); expect(detail.decisions).toEqual([]); expect(detail.handoffs).toEqual([]); expect(await worker!.runOnce()).toBe(0);
+  });
+  it("bound expired history never becomes an owned workflow retry or inferred known-zero usage", () => {
+    const f = fixture(), bound = bind(f), at = new Date(Date.now() - 10000).toISOString();
+    updateTask(f.taskId, (task) => { task.lifecycle = "running"; task.orchestration!.attempts = 1; task.orchestration!.lease = { run_id: "expired-bound", worker_id: "old",
+      acquired_at: at, heartbeat_at: at, expires_at: at }; });
+    const taskBytes = readFileSync(join(state, `tasks/${f.taskId}.json`)), before = readFileSync(join(state, "workflows/workflows.json")), ledgerBytes = readFileSync(bound.path);
+    expect(f.controller.recoverExpired(readTask(f.taskId)!)).toBe(false); expect(worker!.recoverExpiredLeases()).toBe(0); new WorkflowOrchestrator(root).reconcile();
+    expect(readFileSync(join(state, `tasks/${f.taskId}.json`))).toEqual(taskBytes); expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(before); expect(readFileSync(bound.path)).toEqual(ledgerBytes); expect(f.executor.run).not.toHaveBeenCalled();
+  });
+});
 describe("finite workflow controller integration", () => {
   it.each([["analysis", "analysis"], ["implementation", "plan"], ["operations-investigation", "operations"]] as const)("runs only the exact first read-only %s stage and retains a human gate", async (template, kind) => {
     const f = fixture(template, output(kind)), issueBefore = readIssueDocument(); await complete(f.taskId);
