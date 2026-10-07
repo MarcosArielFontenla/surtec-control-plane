@@ -57,6 +57,7 @@ import { HarnessStateError, readHarnessProfiles } from "../../../lib/state/harne
 import { createContextService, ContextPreviewError, type ContextService } from "./context-service";
 import { ContextContractError } from "../../../lib/context/validation";
 import { createWorkflowService, WorkflowServiceError, type WorkflowService } from "./workflow-service";
+import { createRoutineService, RoutineServiceError, type RoutineConfigureInput, type RoutineCreateInput, type RoutineRevisionInput, type RoutineService } from "./routine-service";
 
 export interface AppDependencies {
   integrations?: ProjectIntegrationsReader;
@@ -69,6 +70,7 @@ export interface AppDependencies {
   harness?: HarnessService;
   context?: ContextService;
   workflows?: WorkflowService;
+  routines?: RoutineService;
 }
 
 type JsonBodyResult = { ok: true; value: unknown } | { ok: false; status: 400 | 413; error: string };
@@ -93,6 +95,10 @@ export function createApp(
   const taskControl = typeof taskDispatch === "function" ? null : taskDispatch;
   const onTaskCreated = typeof taskDispatch === "function" ? taskDispatch : (id: string) => taskDispatch.enqueue(id);
 
+  app.use("/api/*", async (c, next) => {
+    if (c.req.path === "/api/budgets" || c.req.path === "/api/routines" || c.req.path.startsWith("/api/routines/")) c.header("Cache-Control", "no-store");
+    await next();
+  });
   app.use("/api/*", httpSecurity.middleware);
   app.get("/api/session", (c) => {
     c.header("Cache-Control", "no-store");
@@ -110,7 +116,9 @@ export function createApp(
     readDependencies: (path) => depsCache.getObservation(path, () => readDepsStatus(path)),
   });
   const harness = dependencies.harness ?? createHarnessService(repoRoot);
+  const routines = dependencies.routines ?? createRoutineService(repoRoot);
   const signals = dependencies.signals ?? createSignalService({
+    routineWarnings: () => routines.warnings(),
     reader: createSignalEvidenceReader(repoRoot, {
       integrations,
       inboxCache,
@@ -126,6 +134,45 @@ export function createApp(
   const contextService = dependencies.context ?? createContextService(repoRoot);
   const issues = dependencies.issues ?? createIssueService(repoRoot, { context: contextService });
   const workflows = dependencies.workflows ?? createWorkflowService(repoRoot, { issues });
+
+  const routineErrorResponse = (c: Context, error: unknown) => error instanceof RoutineServiceError
+    ? c.json({ error: error.message }, error.status)
+    : c.json({ error: "Routine state, scope, policy or execution is unavailable; no run was confirmed." }, 409);
+  app.get("/api/budgets", (c) => {
+    const query = new URL(c.req.url).searchParams;
+    if ([...query.keys()].some((key) => !["project_id", "objective_id"].includes(key) || query.getAll(key).length !== 1)
+      || [...query.keys()].length > 1) return c.json({ error: "Invalid budget query fields." }, 400);
+    try { return c.json(routines.budgets(Object.fromEntries(query))); } catch (error) { return routineErrorResponse(c, error); }
+  });
+  app.use("/api/routines", async (c, next) => {
+    if (new URL(c.req.url).search) return c.json({ error: "Routine query fields are not supported." }, 400);
+    await next();
+  });
+  app.use("/api/routines/*", async (c, next) => {
+    if (new URL(c.req.url).search) return c.json({ error: "Routine query fields are not supported." }, 400);
+    await next();
+  });
+  app.get("/api/routines", (c) => {
+    try { return c.json(routines.list()); } catch (error) { return routineErrorResponse(c, error); }
+  });
+  app.get("/api/routines/:id", (c) => {
+    try { return c.json(routines.detail(c.req.param("id"))); } catch (error) { return routineErrorResponse(c, error); }
+  });
+  app.post("/api/routines", async (c) => {
+    const body = await boundedJsonBody(c, 4096);
+    if (!body.ok) return c.json({ error: body.error }, body.status);
+    try { return c.json(routines.create(body.value as RoutineCreateInput), 201); } catch (error) { return routineErrorResponse(c, error); }
+  });
+  app.put("/api/routines/:id", async (c) => {
+    const body = await boundedJsonBody(c, 4096);
+    if (!body.ok) return c.json({ error: body.error }, body.status);
+    try { return c.json(routines.configure(c.req.param("id"), body.value as RoutineConfigureInput)); } catch (error) { return routineErrorResponse(c, error); }
+  });
+  for (const action of ["run", "disable"] as const) app.post(`/api/routines/:id/${action}`, async (c) => {
+    const body = await boundedJsonBody(c, 1024);
+    if (!body.ok) return c.json({ error: body.error }, body.status);
+    try { return c.json(routines[action](c.req.param("id"), body.value as RoutineRevisionInput)); } catch (error) { return routineErrorResponse(c, error); }
+  });
 
   const workflowErrorResponse = (c: Context, error: unknown) => {
     if (error instanceof WorkflowServiceError) return c.json({ error: error.message, ...(error.workflowId ? { workflow_id: error.workflowId } : {}) }, error.status);

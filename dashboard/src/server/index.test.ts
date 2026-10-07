@@ -13,6 +13,8 @@ import { appendTaskEvent } from "../../../lib/state/events";
 import type { TaskControl } from "../../../runner/task-orchestrator";
 import { TaskControlError } from "../../../runner/task-orchestrator";
 import { createIssueService } from "./issue-service";
+import { createSignalService } from "./signal-service";
+import type { RoutineService } from "./routine-service";
 import { serve } from "@hono/node-server";
 import type { AddressInfo } from "node:net";
 import { chromium } from "playwright";
@@ -102,6 +104,35 @@ afterEach(() => {
   delete process.env.SURTEC_PROJECTS_ROOT;
   delete process.env.SURTEC_TIME_ZONE;
   rmSync(root, { recursive: true, force: true });
+});
+
+describe("T012 routine integration isolation", () => {
+  it("adds no-store to routine and budget denials before any service or dispatch", async () => {
+    const run = vi.fn(), budgets = vi.fn(), dispatch = vi.fn();
+    const app = createApp(root, dispatch, fakeManager(), undefined, { routines: { run, budgets } as unknown as RoutineService });
+    const blocked = await app.request("/api/routines/routine-1/run", { method: "POST", body: JSON.stringify({ expected_revision: 1 }) });
+    expect(blocked.status).toBe(403); expect(blocked.headers.get("cache-control")).toBe("no-store");
+    const badQuery = await app.request("/api/budgets?project_id=one&project_id=two");
+    expect(badQuery.status).toBe(400); expect(badQuery.headers.get("cache-control")).toBe("no-store");
+    expect(run).not.toHaveBeenCalled(); expect(budgets).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("keeps Today readable when optional routine warnings fail: %s", async (failure) => {
+    const reader = { read: vi.fn(async () => ({ projects: [], tasks: [], issues: [], warnings: ["Independent evidence"] })) };
+    const signals = createSignalService({ reader, routineWarnings: () => {
+      if (failure) throw new Error("PRIVATE synthetic path/token/body"); return ["Routine accounting requires review."];
+    } });
+    const app = createApp(root, () => {}, fakeManager(), undefined, { signals });
+    const response = await app.request("/api/today"); expect(response.status).toBe(200);
+    const body = await response.json(); expect(JSON.stringify(body)).toContain("Independent evidence");
+    expect(JSON.stringify(body)).toContain(failure ? "Routine state is unavailable" : "Routine accounting requires review");
+    expect(JSON.stringify(body)).not.toContain("PRIVATE"); expect(reader.read).toHaveBeenCalledOnce();
+  });
+  it.each([undefined, null, {}, Promise.resolve([]), [null], Array(1)])("isolates malformed optional routine warnings %#", async (warnings) => {
+    const signals = createSignalService({ reader: { read: async () => ({ projects: [], tasks: [], issues: [] }) },
+      routineWarnings: () => warnings as never });
+    const response = await createApp(root, () => {}, fakeManager(), undefined, { signals }).request("/api/today");
+    expect(response.status).toBe(200); expect(JSON.stringify(await response.json())).toContain("Routine state is unavailable");
+  });
 });
 
 describe("api", () => {

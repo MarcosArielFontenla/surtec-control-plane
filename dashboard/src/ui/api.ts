@@ -14,10 +14,14 @@ import type { AgentRole } from "../../../lib/context/types";
 import type { ContextPreview, ContextPreviewRequest } from "../server/context-service";
 import type { WorkflowContextService, WorkflowPreviewRequest } from "../server/workflow-context-service";
 import type { WorkflowService } from "../server/workflow-service";
+import type { BudgetReadQuery, BudgetReadView, RoutineConfigureInput, RoutineCreateInput, RoutineDetail, RoutineList,
+  RoutineRevisionInput, RoutineRunResult, RoutineSummary } from "../server/routine-service";
 import { WORKFLOW_TEMPLATES, type GovernedWorkflow } from "../../../lib/workflows/types";
 
 export type { ContextPreview, ContextPreviewRequest };
 export type { WorkflowPreviewRequest };
+export type { BudgetReadQuery, BudgetReadView, RoutineConfigureInput, RoutineCreateInput, RoutineDetail, RoutineList,
+  RoutineRevisionInput, RoutineRunResult, RoutineSummary };
 export type WorkflowPreview = ReturnType<WorkflowContextService["preview"]>;
 export type WorkflowDetail = ReturnType<WorkflowService["detail"]>;
 export type ContextRole = Pick<AgentRole, "id" | "display_name" | "responsibility" | "sandbox_ceiling"> & { agents: string[] };
@@ -439,6 +443,50 @@ async function workflowResponse<T>(path: string, body?: unknown): Promise<T> {
     throw new Error(error.error ?? `Workflow unavailable (${response.status})`);
   }
   return response.json() as Promise<T>;
+}
+
+async function routineResponse<T>(path: string, mutation?: { method: "POST" | "PUT"; body: unknown }): Promise<T> {
+  const response = mutation === undefined ? await fetch(path, { cache: "no-store" })
+    : await mutate(path, { method: mutation.method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(mutation.body) });
+  // A stale session needs a new explicit action; never replay configuration or execution.
+  if (response.status === 403) sessionTokenPromise = null;
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(error.error ?? `Operational resource unavailable (${response.status})`);
+  }
+  return response.json() as Promise<T>;
+}
+
+export function fetchRoutines(): Promise<RoutineList> {
+  return routineResponse("/api/routines");
+}
+
+export function fetchRoutine(id: string): Promise<RoutineDetail> {
+  return routineResponse(`/api/routines/${encodeURIComponent(id)}`);
+}
+
+export function createRoutine(input: RoutineCreateInput): Promise<RoutineDetail> {
+  return routineResponse("/api/routines", { method: "POST", body: input });
+}
+
+export function configureRoutine(id: string, input: RoutineConfigureInput): Promise<RoutineDetail> {
+  return routineResponse(`/api/routines/${encodeURIComponent(id)}`, { method: "PUT", body: input });
+}
+
+export function runRoutine(id: string, expectedRevision: number): Promise<RoutineRunResult> {
+  return routineResponse(`/api/routines/${encodeURIComponent(id)}/run`, { method: "POST", body: { expected_revision: expectedRevision } });
+}
+
+export function disableRoutine(id: string, expectedRevision: number): Promise<RoutineDetail> {
+  return routineResponse(`/api/routines/${encodeURIComponent(id)}/disable`, { method: "POST", body: { expected_revision: expectedRevision } });
+}
+
+export function fetchBudgets(query: BudgetReadQuery = {}): Promise<BudgetReadView> {
+  const parameters = new URLSearchParams();
+  if ("project_id" in query && query.project_id !== undefined) parameters.set("project_id", query.project_id);
+  if ("objective_id" in query && query.objective_id !== undefined) parameters.set("objective_id", query.objective_id);
+  const suffix = parameters.toString();
+  return routineResponse(`/api/budgets${suffix ? `?${suffix}` : ""}`);
 }
 
 function supportedWorkflow(value: GovernedWorkflow | null | undefined): boolean {

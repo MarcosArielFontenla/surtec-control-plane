@@ -17,6 +17,7 @@ export interface SignalServiceDependencies {
   reader: SignalEvidenceReader | { read(): Promise<SignalEvidenceSnapshot> };
   statePath?: string;
   clock?: () => Date;
+  routineWarnings?: () => string[];
 }
 
 function safeWarnings(values: string[]): string[] {
@@ -31,11 +32,19 @@ export function createSignalService(dependencies: SignalServiceDependencies): Si
     const now = clock();
     const evidence = await dependencies.reader.read();
     const signals = generateSignals(evidence, now);
+    let routineWarnings: string[] = [];
+    try {
+      const values = dependencies.routineWarnings === undefined ? [] : dependencies.routineWarnings();
+      if (!Array.isArray(values) || values.length > 50 || Array.from(values).some((value) => typeof value !== "string")) throw new Error("Invalid optional routine warning data");
+      routineWarnings = values;
+    }
+    catch { routineWarnings = ["Routine state is unavailable; other operating evidence remains independent."]; }
     return {
       now,
       signals,
       warnings: safeWarnings([
         ...(evidence.warnings ?? []),
+        ...routineWarnings,
         ...(signals.length === 5000 ? ["Signal feed reached its 5,000-item limit; lower-ranked signals may be omitted."] : []),
       ]),
     };

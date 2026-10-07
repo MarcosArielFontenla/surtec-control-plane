@@ -9,7 +9,7 @@ approvedAt: "2026-10-05T21:25:15Z"
 
 # Phase P - approved ordered tasks
 
-The repository owner approved the exact design/spec/T001-T026 on 2026-10-05. Approval permits implementation, not a claim of acceptance. T001-T011 have their own completed implementation/validation checkpoints below; T012-T026 remain pending. Historical phases/tasks remain unchanged. Stop at P; publication and paid calls need separate authority. Each slice reads its routed instructions/evidence completely and decomposes context rather than raising the 500-line ceiling.
+The repository owner approved the exact design/spec/T001-T026 on 2026-10-05. Approval permits implementation, not a claim of acceptance. T001-T012 have their own completed implementation/validation checkpoints below; T013-T026 remain pending. Historical phases/tasks remain unchanged. Stop at P; publication and paid calls need separate authority. Each slice reads its routed instructions/evidence completely and decomposes context rather than raising the 500-line ceiling.
 
 Tests precede or accompany behavior. New budget/routine/restore effects remain disabled until their enforcement dependencies exist. T005/T006 are scaffolding/fixtures: production P admission cutover is blocked until T015-T017 prove the complete cooperative boundary and the operator confirms the exact procedure; caller/task/environment metadata cannot activate it. Each checkpoint records focused outcomes, security/compatibility impact, local commit and next validation. No parallel marker or document metadata grants authority.
 
@@ -41,7 +41,7 @@ The draft was split into T001-T026 before human approval so API/UI, maintenance 
 ## Phase 4 - protected API and separate dashboard slices
 
 <!-- maps to: ac-behavior,ac-types,ac-build -->
-- [ ] T012 (depends: T011) Expose protected revisioned routine configuration/run/disable and read-only budget provenance/freshness, rejecting stale sessions/revisions/injection without effects -> dashboard/src/server/routine-service.ts, dashboard/src/server/routine-service.test.ts, dashboard/src/server/routine-api.test.ts, dashboard/src/server/budget-api.test.ts, dashboard/src/server/index.ts, dashboard/src/server/index.test.ts, dashboard/src/server/signal-service.ts, dashboard/src/ui/api.ts
+- [x] T012 (depends: T011) Expose protected revisioned routine configuration/run/disable and read-only budget provenance/freshness, rejecting stale sessions/revisions/injection without effects -> dashboard/src/server/routine-service.ts, dashboard/src/server/routine-service.test.ts, dashboard/src/server/routine-api.test.ts, dashboard/src/server/budget-api.test.ts, dashboard/src/server/index.ts, dashboard/src/server/index.test.ts, dashboard/src/server/signal-service.ts, dashboard/src/ui/api.ts
 - [ ] T013 (depends: T012) Add the small budget/provenance/denial summary to current context, workflow, issue and project views without changing operating navigation or authority -> dashboard/src/ui/components/BudgetSummary.tsx, dashboard/src/ui/components/BudgetSummary.test.tsx, dashboard/src/ui/components/ContextPreview.tsx, dashboard/src/ui/components/ContextPreview.test.tsx, dashboard/src/ui/components/WorkflowPanel.tsx, dashboard/src/ui/components/WorkflowPanel.test.tsx, dashboard/src/ui/views/IssuesView.tsx, dashboard/src/ui/views/IssuesView.test.tsx, dashboard/src/ui/views/ProjectDetailView.tsx, dashboard/src/ui/views/ProjectDetailView.test.tsx
 - [ ] T014 (depends: T013) Add bounded routine configure/run/disable, Today last/next/failure/partial freshness and UI state-reset tests using existing layout controls -> dashboard/src/ui/components/RoutinePanel.tsx, dashboard/src/ui/components/RoutinePanel.test.tsx, dashboard/src/ui/views/TodayView.tsx, dashboard/src/ui/views/TodayView.test.tsx, dashboard/src/ui/api.ts, dashboard/src/ui/styles/dashboard.css
 
@@ -349,3 +349,51 @@ On failure, share the exact command, failing test/assertion or smoke stage, sani
 The agent-execution-safety, file-state-contracts and local-dashboard-validation skills guided private execution fences, conservative cross-store accounting and automatic isolated compatibility acceptance. No pins, command catalog, snapshots, versions, route ceilings or approvals changed. The cooperative single-user filesystem boundary is not hostile same-user isolation or automatic crash recovery; ambiguous ownership/accounting still requires review. Paid smoke, normal-state operation, full guarded P acceptance and separate workflow browser opt-ins were not run. Production activation remains unavailable.
 
 Local commit message: `feat(routines): integrate finite worker execution`; exact SHA is reported after creation. No push, merge, deployment or external message. Both private prompts and the unrelated untracked directory stay excluded. Stop at accepted T011; next is T012's protected routine configuration/run/disable and read-only budget API, not automatic continuation or Phase P completion.
+
+## T012 final acceptance - 2026-10-07 UTC
+
+The owner authorized T012 against the approved design/spec/ordered plan. The exact implementation scope is the eight code/test targets in the checked row above, plus this task checkpoint and the corresponding design checkpoint as evidence-only updates. The resumed turn reviewed the pre-existing interrupted implementation and completed independent boundary/service/browser review reports; no source/test edit was needed during resumed acceptance. Routed runtime/state/dashboard instructions and affected contracts were read completely. No new delegation, scope expansion, schema, migration, permission, cap, dependency, timeout or Harness pin/catalog/snapshot/route change is included.
+
+The optional routine service and protected loopback routes expose list/detail, server-owned creation, exact-revision configuration/disable/run and bounded current/history summaries. Closed bodies/queries and existing Host/origin/session checks precede effects; responses, including denials, are no-store. New routines default to disabled/manual. Configuration appends immutable definitions and anchors each new interval revision at its own transaction time. Stale revisions/sessions, injection, malformed stores, busy ownership and unauthorized execution preserve existing bytes/timestamps and do not dispatch work. Policy outages do not prevent safe disable. Production composition remains inactive and never labels an unexecuted run as successful, including when a matching fixture-owned slot already exists.
+
+Explicit trusted synthetic composition uses the registered private runner, current trusted scope/policy/capacity and exact durable occurrence/worker/attribution/accounting bindings. One admitted manual slot returns its stored identity; duplicates do not replay. A clock advance is confirmed against the runner's actual slot. Foreign or mismatched inventory cannot announce owned success; private cancellation precedes provider effects on mismatches. Disable cancels only tracked owned work, preserving active holds and history without automatic refund, takeover or crash replay. Detail is bounded to the latest 20 receipts without deleting older evidence.
+
+Read-only budget views report observation time, ledger state/revision, validated static-policy source revision/fingerprint, applicable ancestry/caps, proven consumption/reserved holds and sanitized denials. Absent, malformed, future, linked or unsafe-precision accounting is unavailable rather than zero or unlimited. Canonical unknown high-water and retained holds remain visible across period rollover. Overflow preserves independently valid policy provenance/caps while marking balances unknown and the accounting denial accurately. Known empty accounting, configured zero and unconfigured caps remain distinct. Primary objective ancestry does not multiply secondary-objective consumption; personal projects do not invent an objective. Pricing remains explicitly unavailable without a versioned source. GET never reserves capacity, creates a session/store, repairs state or grants execution.
+
+Today incorporates bounded sanitized routine warnings while malformed/unavailable optional sources degrade independently. Seven typed client wrappers use the real API/session cache. A 403 clears cached session state without automatic mutation replay; only a new explicit action obtains a fresh session. This slice adds no visual routine/budget components or navigation changes; those belong to T013/T014.
+
+Fresh frozen-source acceptance:
+
+- `pnpm exec vitest run dashboard/src/server/routine-service.test.ts dashboard/src/server/routine-api.test.ts dashboard/src/server/budget-api.test.ts dashboard/src/server/index.test.ts --maxWorkers=1`: exit 0, four files, 324 passed/two browser opt-ins skipped (326 total; 33.37 s). This includes 256 new unit/API cases and 68 retained server cases; the skips are not passes.
+- With both `SURTEC_ROUTINE_API_BROWSER_SMOKE=1` and `SURTEC_BUDGET_API_BROWSER_SMOKE=1`, the two API files passed 161/161 (97 routine, 64 budget; 17.93 s). Process environment values were restored. Real Chromium, loopback API and Vite exercised all seven wrappers, explicit inactive-run denial, exact stale-session rejection without replay, a fresh explicit action, four retained definitions, reload/API restart/session rotation, immutable budget reads and closed queries. Browser fixtures prohibit external provider requests; synthetic readers/runner only, no paid runtime or normal-state writes.
+- Standalone `pnpm typecheck` and `pnpm audit:check` exited 0; audit found no known vulnerabilities.
+- `pnpm ci:check` exited 0: 137 files, 4021 passed/three opt-ins skipped (4024 total; Vitest 696.35 s), repository/Harness/secret checks (1197 files), 61 schemas, evaluations (36/36 coverage, 42/42 expectations, 8/8 outcomes), typecheck and the 1922-module build (3.61 s). Two default skips are the T012 browser campaigns explicitly run above; the retained separate workflow opt-in is not claimed as executed. Four specs/plans were structurally checked; zero guarded whole-P feature checks ran.
+- `pnpm smoke:local:playwright` exited 0 on the first fresh resumed campaign: real isolated API/Vite/dashboard PASS for all five Phase O templates, exact human gates, candidate-only review/QA, verified receipts, one bounded correction/second-correction refusal, task/mobile ownership, active-role cancellation and reload/restart/no replay/session rotation, retaining prior K-N flows. Exactly 31 synthetic turns occurred (4 v1 + 27 workflow), with no paid runtime or provider writes. This is existing dashboard compatibility coverage, not future T013/T014 visual or whole-P acceptance.
+
+The smoke cleanup marker for `surtec-local-dashboard-wYzfXw` reported browser/Vite/API closed, workspace removed and no failures. Exact fixture absence was independently verified; zero routine-service/routine-API/budget-API temporary roots remained. All eight SHA-256 source/test hashes matched before/after focused/browser acceptance, CI and legacy browser smoke. No fresh acceptance failure or post-freeze source/selector/deadline/assertion change was observed. Delivery records post-documentation Harness/secret/whitespace, exact staged scope and local commit results.
+
+No manual T012 acceptance is required or delegated. Optional ordered local reproduction:
+
+1. Run the focused four-file command above; expect 324 passed and two explicit opt-in skips.
+2. Run the real-browser opt-ins using the PowerShell block below; expect 161 passed with neither browser case skipped.
+3. Run `pnpm ci:check`; expect exit 0, successful schemas/types/build and three explicit default opt-in skips.
+4. Run `pnpm audit:check`; expect no known vulnerabilities.
+5. Run `pnpm smoke:local:playwright`; expect PASS, exactly 31 synthetic turns, every cleanup flag true and no failures.
+
+```powershell
+$t012PriorRoutineOptIn = [Environment]::GetEnvironmentVariable('SURTEC_ROUTINE_API_BROWSER_SMOKE', 'Process')
+$t012PriorBudgetOptIn = [Environment]::GetEnvironmentVariable('SURTEC_BUDGET_API_BROWSER_SMOKE', 'Process')
+try {
+  $env:SURTEC_ROUTINE_API_BROWSER_SMOKE = '1'
+  $env:SURTEC_BUDGET_API_BROWSER_SMOKE = '1'
+  pnpm exec vitest run dashboard/src/server/routine-api.test.ts dashboard/src/server/budget-api.test.ts --maxWorkers=1
+  if ($LASTEXITCODE -ne 0) { throw 'T012 browser acceptance failed' }
+} finally {
+  [Environment]::SetEnvironmentVariable('SURTEC_ROUTINE_API_BROWSER_SMOKE', $t012PriorRoutineOptIn, 'Process')
+  [Environment]::SetEnvironmentVariable('SURTEC_BUDGET_API_BROWSER_SMOKE', $t012PriorBudgetOptIn, 'Process')
+}
+```
+
+On failure, share the exact command, failed assertion/API status or smoke stage, sanitized stack, final pass/skip counts and cleanup marker; exclude credentials, session values, private source/state and raw internal records. Runtime/state/dashboard skills guided strict private execution bindings, conservative no-migration accounting and real isolated browser acceptance. The cooperative single-user filesystem boundary is not hostile same-user isolation; ambiguous ownership/accounting still requires review. Production activation remains blocked pending T015-T017 and exact operator confirmation; normal-state operation, paid smoke, separate workflow browser opt-ins and guarded whole-P acceptance remain unexecuted.
+
+Local commit message: `feat(api): expose protected routines and budget provenance`; exact SHA is reported after creation. No push, merge, deployment or external message. Both private prompts and the unrelated untracked directory stay excluded. Stop at accepted T012; next is T013's small budget/provenance/denial summary in existing context, workflow, issue and project views. T013-T026 and Phase P acceptance remain pending.
