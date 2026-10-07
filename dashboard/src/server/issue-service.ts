@@ -29,6 +29,13 @@ import { readBudgetLedger } from "../../../lib/state/budgets";
 import { budgetStatePath } from "../../../lib/state/paths";
 import { readBudgetPolicy, resolveBudgetPolicy } from "../../../lib/budgets/policy";
 import { inspectBudgetStopReceipt } from "../../../runner/task-orchestrator";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, type Stats } from "node:fs";
+import { isAbsolute, join, parse, resolve } from "node:path";
+import { assertRoutineOwnership } from "../../../lib/state/routines";
+import { assertRoutineOccurrence, routineProposalKey } from "../../../lib/routines/validation";
+import { assertRoutineActionBudget, assertRoutineSignalFact, RoutineActionEffectError, type RoutineIssueProposal } from "../../../lib/routines/actions";
+import type { RoutineOccurrence } from "../../../lib/routines/types";
+import { isSafeIdentifier } from "../../../lib/security/identifiers";
 
 export class IssueServiceError extends Error {
   constructor(message: string, readonly status: 400 | 404 | 409 = 400) { super(message); }
@@ -46,6 +53,148 @@ export interface IssueServiceOptions {
   createTask?: typeof createTask;
   projectIds?: () => string[];
   now?: () => Date;
+}
+
+export interface RoutineIssueProposerOptions {
+  state_root: string;
+  /** Trusted application composition, not a caller field or stored approval. */
+  assert_current: (occurrence: Readonly<RoutineOccurrence>, boundary: "proposal") => void;
+  projectIds?: () => string[];
+  now?: () => Date;
+}
+const ROUTINE_PROPOSAL_EVENT = "routine-issue-proposed";
+function routineIssueBoundary(root: string): void {
+  const absolute = resolve(root), drive = parse(absolute).root;
+  if (/^[\\/]{2}/.test(root)) throw new IssueServiceError("Routine issue boundary must be local", 409);
+  let current = drive;
+  for (const part of absolute.slice(drive.length).split(/[\\/]/).filter(Boolean)) {
+    current = join(current, part);
+    const stat = lstatSync(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new IssueServiceError("Routine issue boundary is unsafe", 409);
+  }
+  if (!isAbsolute(root) || absolute === drive || realpathSync(absolute).toLowerCase() !== absolute.toLowerCase()) throw new IssueServiceError("Routine issue boundary must be an explicit canonical local root", 409);
+  for (const name of ["issues", "locks"]) {
+    const directory = join(absolute, name);
+    try { const stat = lstatSync(directory); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new IssueServiceError("Routine issue boundary is unsafe", 409); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  try {
+    const stat = lstatSync(join(absolute, "issues/issues.json"));
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 16 * 1024 * 1024) throw new IssueServiceError("Routine issue evidence is unsafe or oversized", 409);
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+function routineIssueBytes(root: string): Buffer | null {
+  routineIssueBoundary(root); const path = join(root, "issues/issues.json"); let before: Stats;
+  try { before = lstatSync(path); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw new IssueServiceError("Routine issue evidence is unavailable", 409); }
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 16 * 1024 * 1024) throw new IssueServiceError("Routine issue evidence is unsafe or oversized", 409);
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const same = (stat: Stats) => stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.dev === before.dev && stat.ino === before.ino
+      && stat.size === before.size && stat.mtimeMs === before.mtimeMs && stat.ctimeMs === before.ctimeMs;
+    if (!same(fstatSync(fd))) throw new Error("changed");
+    const buffer = Buffer.alloc(before.size + 1); let length = 0;
+    while (length < buffer.length) { const count = readSync(fd, buffer, length, buffer.length - length, null); if (!count) break; length += count; }
+    if (length !== before.size || !same(fstatSync(fd)) || !same(lstatSync(path))) throw new Error("changed");
+    routineIssueBoundary(root);
+    const bytes = buffer.subarray(0, length);
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes); // Reject lossy legacy decoding before any read/modify/write.
+    return bytes;
+  } catch { throw new IssueServiceError("Routine issue evidence is invalid or unavailable; bytes were preserved", 409); }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+const sameRoutineIssueBytes = (first: Buffer | null, second: Buffer | null) => first === null ? second === null : second !== null && first.equals(second);
+/** Internal-only safe proposal writer. Neither the proposal nor a digest authorizes work. */
+export function createRoutineIssueProposer(repoRoot: string, options: RoutineIssueProposerOptions) {
+  const root = resolve(options.state_root), issuePath = join(root, "issues/issues.json"), routinePath = join(root, "routines/routines.json");
+  const projectIds = options.projectIds ?? (() => new PolicyService(repoRoot).listProjects().map((project) => project.id));
+  const now = options.now ?? (() => new Date());
+  if (!isAbsolute(options.state_root) || typeof options.assert_current !== "function" || nodeTypes.isAsyncFunction(options.assert_current)
+    || nodeTypes.isProxy(options.assert_current)) throw new IssueServiceError("Routine proposal requires trusted synchronous application gates", 409);
+  class AlreadyProposed extends Error { constructor(readonly id: string) { super("Routine proposal already retained"); } }
+  return (input: RoutineIssueProposal, check: () => void): string => {
+    if (!input || typeof input !== "object" || nodeTypes.isProxy(input) || Object.getPrototypeOf(input) !== Object.prototype
+      || Reflect.ownKeys(input).sort().join(",") !== "fingerprint,key,occurrence,ownership,signal"
+      || Object.values(Object.getOwnPropertyDescriptors(input)).some((item) => !item.enumerable || !Object.hasOwn(item, "value"))) {
+      throw new IssueServiceError("Routine proposal data is invalid", 409);
+    }
+    assertRoutineOccurrence(input.occurrence); assertRoutineSignalFact(input.signal);
+    if (typeof check !== "function" || nodeTypes.isProxy(check) || nodeTypes.isAsyncFunction(check)) throw new IssueServiceError("Routine proposal gate must be synchronous", 409);
+    const fence = (): Readonly<RoutineOccurrence> => {
+      if (check() !== undefined) throw new IssueServiceError("Routine proposal gate must be synchronous", 409);
+      routineIssueBoundary(root);
+      if (Object.hasOwn(Object.prototype, "toJSON") || Object.hasOwn(Array.prototype, "toJSON")) throw new IssueServiceError("Routine issue serialization boundary is unavailable", 409);
+      const occurrence = assertRoutineOwnership(input.ownership, routinePath);
+      if (!isDeepStrictEqual(occurrence, input.occurrence) || occurrence.definition.action !== "propose-issues"
+        || !occurrence.project_ids.includes(input.signal.project_id) || !isSafeIdentifier(input.signal.project_id)
+        || !projectIds().includes(input.signal.project_id) || input.fingerprint !== input.signal.fingerprint
+        || input.key !== routineProposalKey(occurrence.occurrence_key, input.fingerprint)) throw new IssueServiceError("Routine proposal has stale scope or occurrence bindings", 409);
+      assertRoutineActionBudget(occurrence, root);
+      if (options.assert_current(occurrence, "proposal") !== undefined) throw new IssueServiceError("Routine proposal gate must be synchronous", 409);
+      if (!isDeepStrictEqual(assertRoutineOwnership(input.ownership, routinePath), occurrence)) throw new IssueServiceError("Routine proposal ownership changed during validation", 409);
+      assertRoutineActionBudget(occurrence, root);
+      if (check() !== undefined) throw new IssueServiceError("Routine proposal gate must be synchronous", 409);
+      return occurrence;
+    };
+    const occurrence = fence();
+    const binding = { routine_proposal_key: input.key, routine_id: occurrence.routine_id, routine_revision: occurrence.routine_revision,
+      occurrence_id: occurrence.id, occurrence_key: occurrence.occurrence_key, proposal_fingerprint: input.fingerprint,
+      project_id: input.signal.project_id, policy_fingerprint: occurrence.definition.policy.fingerprint, cap_fingerprint: occurrence.budget.cap_fingerprint };
+    const retained = (document: IssueDocument): string | null => {
+      const matches = document.events.filter((event) => event.payload.routine_proposal_key === input.key);
+      if (!matches.length) return null;
+      const event = matches[0]!, issue = document.issues[event.issue_id];
+      if (matches.length !== 1 || event.type !== ROUTINE_PROPOSAL_EVENT || !isDeepStrictEqual(event.payload, binding)
+        || !issue || issue.project_id !== input.signal.project_id) throw new IssueServiceError("Routine proposal history conflicts; no replay is allowed", 409);
+      return issue.id; // Human progression never reopens or edits this historical proposal.
+    };
+    const originalBytes = routineIssueBytes(root), original = readIssueDocument(issuePath);
+    if (!sameRoutineIssueBytes(originalBytes, routineIssueBytes(root))) throw new IssueServiceError("Routine issue evidence changed before proposal", 409);
+    const previous = retained(original);
+    if (previous) { fence(); return previous; }
+    const at = now().toISOString();
+    if (Date.parse(at) < Date.parse(occurrence.started_at!)) throw new IssueServiceError("Routine proposal clock regressed", 409);
+    const outcome = "Review the observed routine signal and explicitly decide whether work is needed.";
+    const criteria = ["Inspect current evidence before deciding.", "Record a human scope decision before any execution."];
+    const issue: WorkIssue = { schema_version: 1, id: `I-${randomUUID()}`, project_id: input.signal.project_id,
+      objective_id: null, parent_issue_id: null, title: "Review routine signal", expected_outcome: outcome, acceptance_criteria: criteria,
+      status: "proposed", work_scale: "bounded", classification_inputs: { affected_domains: ["operations"], requires_migration: false, security_impact: false },
+      classification_rationale: ["Routine evidence requires a human decision, not automatic execution."], plan: [],
+      authorized_scope: { expected_outcome: outcome, acceptance_criteria: criteria, allowed_path_patterns: ["**"], excluded_path_patterns: [],
+        allowed_change_categories: ["inspection"], explicit_exclusions: ["No execution, publication or configuration change is authorized by this proposal."] },
+      scope_revision: 1, scope_changed_at: null, scope_change_approval_id: null, scope_change_proposal: null, priority: 50, criticality: "low",
+      blocked_by_issue_ids: [], assigned_role_id: null, related_commitment_ids: [], external_references: [],
+      next_action: "Inspect routine evidence and define an exact scope before human authorization.", task_ids: [], evidence_ids: [], candidate_ids: [],
+      created_at: at, updated_at: at, revision: 1 };
+    try {
+      return mutateIssueDocument((document) => {
+        fence(); const existing = retained(document); if (existing) throw new AlreadyProposed(existing);
+        if (!sameRoutineIssueBytes(originalBytes, routineIssueBytes(root))) throw new IssueServiceError("Routine issue evidence changed before proposal", 409);
+        if (Object.keys(document.issues).length >= 500) throw new IssueServiceError("Local issue capacity reached", 409);
+        document.issues[issue.id] = issue;
+        addEvidence(document, issue, { task_id: null, execution_id: null, candidate_id: null, candidate_revision: null, diff_fingerprint: null,
+          scope_revision: null, kind: "provider", label: "Routine signal requires human review", reference: `Routine proposal ${input.key}`, status: "informational" }, at);
+        appendEvent(document, issue, ROUTINE_PROPOSAL_EVENT, binding, at);
+        fence();
+        if (Buffer.byteLength(JSON.stringify(document, null, 2)) > 16 * 1024 * 1024) throw new IssueServiceError("Routine issue document capacity reached", 409);
+        if (check() !== undefined) throw new IssueServiceError("Routine proposal gate must be synchronous", 409);
+        return issue.id;
+      }, issuePath);
+    } catch (error) {
+      if (error instanceof AlreadyProposed) return error.id;
+      // Separate stores/lock release are not a transaction. Preserve an exact
+      // durable effect after an ambiguous writer fault; do not claim rollback.
+      try {
+        const bytes = routineIssueBytes(root), current = readIssueDocument(issuePath);
+        if (sameRoutineIssueBytes(bytes, routineIssueBytes(root))) {
+          const id = retained(current);
+          if (id) throw new RoutineActionEffectError({ key: input.key, fingerprint: input.fingerprint, issue_id: id });
+        }
+      } catch (observed) { if (observed instanceof RoutineActionEffectError) throw observed; }
+      throw error;
+    }
+  };
 }
 
 type IssueBudgetReadiness = { task_id: string; availability: "available" | "unavailable"; readiness: ReturnType<typeof taskBudgetReadiness> | null };

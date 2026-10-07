@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readTask, updateTask, writeTask } from "../../../lib/state/store";
@@ -11,11 +11,24 @@ import { readIssueDocument } from "../../../lib/state/issues";
 import type { TaskRecord } from "../../../lib/state/types";
 import type { IssueCreateInput } from "../../../lib/issues/types";
 import type { WorkflowDocument } from "../../../lib/workflows/types";
-import { createIssueService, IssueScopeViolationError, pathsOutsideScope, projectWorkflowIssueLink } from "./issue-service";
+import { createIssueService, createRoutineIssueProposer, IssueScopeViolationError, pathsOutsideScope, projectWorkflowIssueLink } from "./issue-service";
 import { createTask, prepareTaskBudgetAdmission } from "./dispatch";
 import type { CreateTaskInput, TrustedIssueTaskContext } from "./dispatch";
 import { BUDGET_DIMENSIONS, type BudgetLimits } from "../../../lib/budgets/types";
-import type { BudgetPolicySource } from "../../../lib/budgets/policy";
+import { resolveBudgetPolicy, type BudgetPolicySource } from "../../../lib/budgets/policy";
+import type { BudgetAmounts, BudgetOccurrenceSubject } from "../../../lib/budgets/types";
+import { budgetOccurrenceIntentId, claimOccurrenceBudget, commitOccurrenceBudget, reserveOccurrenceBudget } from "../../../lib/budgets/reservations";
+import { mutateBudgetLedger } from "../../../lib/state/budgets";
+import { assertRoutineOwnership, claimRoutineOccurrence, mutateRoutineDocument, revokeRoutineOwnership, updateRoutineTransaction } from "../../../lib/state/routines";
+import { createRoutineDraft, routineProposalKey } from "../../../lib/routines/validation";
+import { routineRevisionKey, routineSlotKey } from "../../../lib/routines/schedule";
+import { executeRoutineAction, RoutineActionEffectError, routineSignalFingerprint, type RoutineIssueProposal, type RoutineSignalFact } from "../../../lib/routines/actions";
+import type { RoutineOccurrence } from "../../../lib/routines/types";
+
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>();
+  return { ...actual, renameSync: vi.fn(actual.renameSync) };
+});
 
 let root: string;
 let state: string;
@@ -111,6 +124,191 @@ afterEach(() => {
 });
 
 describe("local issue service", () => {
+  function routineProposal() {
+    const slot = "2026-10-06T12:00:00.000Z", started = "2026-10-06T12:00:01.000Z";
+    const source: BudgetPolicySource = { fingerprint: "a".repeat(64), policy: { schema_version: 1, revision: 1,
+      pricing: { status: "unavailable", reason: "no-versioned-source" }, rules: [{ id: "routine-company", revision: 1,
+        scope: { kind: "company", id: "surtec" }, period: "none", warning_percent: 80,
+        limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "unconfigured" }])) as BudgetLimits }] } };
+    const path = join(state, "routines/routines.json");
+    mutateRoutineDocument((tx) => {
+      updateRoutineTransaction(tx, (draft) => {
+        const definition = createRoutineDraft({ id: "routine-proposal", action: "propose-issues", scope: { kind: "project", id: "alpha" },
+          policy: { revision: 1, fingerprint: source.fingerprint, policy_ids: ["routine-company"] }, at: slot });
+        draft.routines[definition.id] = structuredClone(definition); draft.definitions[routineRevisionKey(definition.id, 1)] = structuredClone(definition);
+      });
+      updateRoutineTransaction(tx, (draft) => {
+        const definition = draft.routines["routine-proposal"]!; definition.revision++; definition.enabled = true;
+        draft.definitions[routineRevisionKey(definition.id, 2)] = structuredClone(definition);
+      });
+    }, path, slot);
+    const attribution = { company_id: "surtec" as const, objective_ids: [], project_ids: ["alpha"], issue_id: null, role_id: null, execution_id: "occ-proposal" };
+    const subject: BudgetOccurrenceSubject = { id: "subject-proposal", kind: "occurrence", occurrence_id: "occ-proposal", routine_id: "routine-proposal",
+      routine_revision: 2, slot, project_ids: ["alpha"], attribution };
+    const caps = { ...Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, 0])), attempts: 1, runtime_ms: 60000, concurrent_reads: 1 } as BudgetAmounts;
+    const resolved = resolveBudgetPolicy({ source, attribution, at: slot, base_caps: caps });
+    const intent = budgetOccurrenceIntentId({ subject, reservation_id: "reservation-proposal", policy_bindings: resolved.policy_bindings,
+      cap_fingerprint: resolved.cap_fingerprint, runtime_ms: 60000, created_at: slot });
+    mutateBudgetLedger((tx) => reserveOccurrenceBudget(tx, { source, subject, reservation_id: "reservation-proposal", intent_id: intent, runtime_ms: 60000 }), join(state, "budgets/budgets.json"), slot);
+    mutateRoutineDocument((tx) => updateRoutineTransaction(tx, (draft) => {
+      const definition = draft.routines[subject.routine_id]!;
+      const occurrence: RoutineOccurrence = { schema_version: 1, id: subject.occurrence_id, revision: 1, routine_id: definition.id, routine_revision: definition.revision,
+        occurrence_key: routineSlotKey(definition.id, definition.revision, slot), definition: structuredClone(definition), slot, trigger: "manual",
+        project_ids: ["alpha"], attribution, budget: { subject_id: subject.id, reservation_id: "reservation-proposal", intent_id: intent,
+          cap_fingerprint: resolved.cap_fingerprint, admitted_runtime_ms: 60000, policy_bindings: resolved.policy_bindings },
+        status: "reserved", owner: null, started_at: null, finished_at: null, cancel_requested_at: null, receipt: null, created_at: slot, updated_at: slot };
+      draft.occurrences[occurrence.id] = occurrence;
+    }), path, slot);
+    mutateBudgetLedger((tx) => commitOccurrenceBudget(tx, { subject_id: subject.id, reservation_id: "reservation-proposal", intent_id: intent }), join(state, "budgets/budgets.json"), slot);
+    const ownership = mutateRoutineDocument((tx) => claimRoutineOccurrence(tx, subject.occurrence_id, 1, "routine-test"), path, started);
+    const occurrence = assertRoutineOwnership(ownership, path);
+    mutateBudgetLedger((tx) => claimOccurrenceBudget(tx, { reservation_id: "reservation-proposal", run_id: occurrence.owner!.run_id, source }), join(state, "budgets/budgets.json"), started);
+    const projection = { id: "sig_synthetic", project_id: "alpha", source: "ci" as const, severity: "warning" as const, observed_at: started };
+    const signal: RoutineSignalFact = { ...projection, fingerprint: routineSignalFingerprint(projection) };
+    const proposal: RoutineIssueProposal = { ownership, occurrence, signal, fingerprint: signal.fingerprint, key: routineProposalKey(occurrence.occurrence_key, signal.fingerprint) };
+    const gate = vi.fn(() => {}), check = vi.fn(() => {});
+    const proposer = () => createRoutineIssueProposer(root, { state_root: state, assert_current: gate, projectIds: () => ["alpha"], now: () => new Date(started) });
+    return { proposal, path, gate, check, proposer };
+  }
+  it("atomically retains a proposal key and only a code-owned proposed issue without execution or private content", () => {
+    const fixture = routineProposal(), id = fixture.proposer()(fixture.proposal, fixture.check);
+    const document = readIssueDocument(), issue = document.issues[id]!;
+    expect(issue.status).toBe("proposed"); expect(issue.assigned_role_id).toBeNull(); expect(issue.task_ids).toEqual([]);
+    expect(issue.scope_change_approval_id).toBeNull(); expect(issue.title).toBe("Review routine signal");
+    expect(document.events.at(-1)).toMatchObject({ issue_id: id, type: "routine-issue-proposed", payload: { routine_proposal_key: fixture.proposal.key,
+      occurrence_id: fixture.proposal.occurrence.id, proposal_fingerprint: fixture.proposal.fingerprint } });
+    expect(Object.keys(document.evidence)).toHaveLength(1); expect(fakeCreateTask).not.toHaveBeenCalled();
+    expect(existsSync(join(state, "tasks"))).toBe(false); expect(existsSync(join(state, "workflows"))).toBe(false);
+    expect(fixture.gate).toHaveBeenCalled(); expect(fixture.check).toHaveBeenCalled();
+  });
+  it("does not replay, rewrite or rewind a retained proposal across new service instances or later human progression", () => {
+    const fixture = routineProposal(), id = fixture.proposer()(fixture.proposal, fixture.check);
+    const issue = readIssueDocument().issues[id]!; service().authorize(id, issue.revision, "human-test");
+    const before = readFileSync(join(state, "issues/issues.json")), inventory = readdirSync(state, { recursive: true });
+    expect(fixture.proposer()(fixture.proposal, fixture.check)).toBe(id);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(before)).toBe(true);
+    expect(readdirSync(state, { recursive: true })).toEqual(inventory); expect(Object.keys(readIssueDocument().issues)).toEqual([id]);
+    expect(readIssueDocument().issues[id]!.status).toBe("authorized"); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+  it.each(["deadline", "revoked"])("rechecks %s after the trusted proposal gate before any issue effect", (kind) => {
+    const fixture = routineProposal(), inventory = readdirSync(state, { recursive: true });
+    let elapsed = 0;
+    fixture.check.mockImplementation(() => { if (elapsed >= fixture.proposal.occurrence.budget.admitted_runtime_ms) throw new Error("synthetic deadline"); });
+    fixture.gate.mockImplementation(() => {
+      if (kind === "deadline") elapsed = fixture.proposal.occurrence.budget.admitted_runtime_ms;
+      else revokeRoutineOwnership(fixture.proposal.ownership);
+    });
+    expect(() => fixture.proposer()(fixture.proposal, fixture.check)).toThrow();
+    expect(existsSync(join(state, "issues"))).toBe(false); expect(readdirSync(state, { recursive: true })).toEqual(inventory);
+    expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+  it.each(["copy-proof", "revoked", "key", "fingerprint", "project", "action", "payload", "async-check", "async-gate", "gate-fails", "budget-unavailable"])("denies %s proposal before any issue file or dispatch", (kind) => {
+    const fixture = routineProposal();
+    if (kind === "copy-proof") fixture.proposal.ownership = {} as never;
+    if (kind === "revoked") revokeRoutineOwnership(fixture.proposal.ownership);
+    if (kind === "key") fixture.proposal.key = "b".repeat(64);
+    if (kind === "fingerprint") fixture.proposal.fingerprint = "b".repeat(64);
+    if (kind === "project") { const { fingerprint: _fp, ...projection } = fixture.proposal.signal; projection.project_id = "outside"; fixture.proposal.signal = { ...projection, fingerprint: routineSignalFingerprint(projection) }; }
+    if (kind === "action") fixture.proposal.occurrence = { ...fixture.proposal.occurrence, definition: { ...fixture.proposal.occurrence.definition, action: "refresh-evidence" } };
+    if (kind === "payload") (fixture.proposal.signal as unknown as Record<string, unknown>).title = "private fixture title";
+    if (kind === "gate-fails") fixture.gate.mockImplementation(() => { throw new Error("gate denied"); });
+    if (kind === "budget-unavailable") writeFileSync(join(state, "budgets/budgets.json"), '{"schema_version":99}');
+    const before = readdirSync(state, { recursive: true });
+    if (kind === "async-gate") {
+      expect(() => createRoutineIssueProposer(root, { state_root: state, assert_current: async () => {}, projectIds: () => ["alpha"] })).toThrow(/synchronous/);
+    } else {
+      expect(() => fixture.proposer()(fixture.proposal, kind === "async-check" ? async () => {} : fixture.check)).toThrow();
+    }
+    expect(existsSync(join(state, "issues"))).toBe(false); expect(readdirSync(state, { recursive: true })).toEqual(before); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+  it("retains corrupt future issue bytes and refuses to repair or fabricate empty history", () => {
+    const fixture = routineProposal(); mkdirSync(join(state, "issues")); const bytes = '{"schema_version":99,"private":"kept"}';
+    writeFileSync(join(state, "issues/issues.json"), bytes);
+    expect(() => fixture.proposer()(fixture.proposal, fixture.check)).toThrow();
+    expect(readFileSync(join(state, "issues/issues.json"), "utf8")).toBe(bytes); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+  it("rejects conflicting retained proposal provenance instead of creating a duplicate", () => {
+    const fixture = routineProposal(), id = fixture.proposer()(fixture.proposal, fixture.check), path = join(state, "issues/issues.json");
+    const value = JSON.parse(readFileSync(path, "utf8")); value.events[0].payload.occurrence_id = "different-occurrence";
+    writeFileSync(path, JSON.stringify(value)); const before = readFileSync(path);
+    expect(() => fixture.proposer()(fixture.proposal, fixture.check)).toThrow(/history conflicts/);
+    expect(readFileSync(path).equals(before)).toBe(true); expect(Object.keys(readIssueDocument().issues)).toEqual([id]);
+  });
+  it.each(["invalid-utf8", "hardlink", "redirected", "oversized"])("rejects %s issue evidence before proposal effects", (kind) => {
+    const fixture = routineProposal(), issue = service().create(input()), path = join(state, "issues/issues.json");
+    if (kind === "invalid-utf8") {
+      const bytes = readFileSync(path), index = bytes.indexOf(Buffer.from(issue.title));
+      bytes[index] = 0xff; writeFileSync(path, bytes);
+    }
+    if (kind === "hardlink") linkSync(path, join(root, "retained-issue.json"));
+    if (kind === "redirected") {
+      const directory = join(state, "issues"), target = join(root, "retained-issues");
+      renameSync(directory, target); symlinkSync(target, directory, process.platform === "win32" ? "junction" : "dir");
+    }
+    if (kind === "oversized") writeFileSync(path, Buffer.alloc(16 * 1024 * 1024 + 1, 0x20));
+    const before = readFileSync(path), inventory = readdirSync(state, { recursive: true });
+    expect(() => fixture.proposer()(fixture.proposal, fixture.check)).toThrow();
+    expect(readFileSync(path).equals(before)).toBe(true); expect(readdirSync(state, { recursive: true })).toEqual(inventory);
+    expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+  it("refuses aggregate growth beyond the exact formatted byte ceiling without changing the old bytes", () => {
+    const fixture = routineProposal(); service().create(input()); const path = join(state, "issues/issues.json");
+    const value = JSON.parse(readFileSync(path, "utf8")); value.events[0].payload.padding = "";
+    const overhead = Buffer.byteLength(JSON.stringify(value, null, 2));
+    value.events[0].payload.padding = "x".repeat(16 * 1024 * 1024 - overhead - 100);
+    const bytes = Buffer.from(JSON.stringify(value, null, 2)); writeFileSync(path, bytes);
+    expect(bytes.length).toBe(16 * 1024 * 1024 - 100);
+    expect(() => fixture.proposer()(fixture.proposal, fixture.check)).toThrow(/capacity reached/);
+    expect(readFileSync(path).equals(bytes)).toBe(true); expect(Object.keys(readIssueDocument().issues)).toHaveLength(1);
+    expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+  it.each(["before-rename", "after-rename"])("retains exact effect evidence at %s without replay or claimed rollback", async (kind) => {
+    const fixture = routineProposal(), actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(renameSync).mockImplementationOnce((source, destination) => {
+      if (kind === "after-rename") actual.renameSync(source, destination);
+      throw new Error("synthetic publication fault");
+    });
+    let failure: unknown;
+    try { fixture.proposer()(fixture.proposal, fixture.check); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error); expect(fakeCreateTask).not.toHaveBeenCalled();
+    const document = readIssueDocument();
+    if (kind === "before-rename") { expect(Object.keys(document.issues)).toEqual([]); expect(existsSync(join(state, "issues/issues.json"))).toBe(false); }
+    else {
+      expect(failure).toBeInstanceOf(RoutineActionEffectError);
+      const id = (failure as RoutineActionEffectError).committed_proposal!.issue_id!, bytes = readFileSync(join(state, "issues/issues.json"));
+      expect(Object.keys(document.issues)).toEqual([id]); expect(document.issues[id]!.status).toBe("proposed");
+      expect(fixture.proposer()(fixture.proposal, fixture.check)).toBe(id); expect(readFileSync(join(state, "issues/issues.json")).equals(bytes)).toBe(true);
+    }
+  });
+  it.each(["accessor", "proxy", "symbol", "extra"])("refuses %s proposal metadata without invoking a hook or writing state", (kind) => {
+    const fixture = routineProposal(), getter = vi.fn(), proposal: unknown = kind === "proxy" ? new Proxy({}, { getPrototypeOf: getter }) : { ...fixture.proposal };
+    if (kind === "accessor") Object.defineProperty(proposal, "signal", { enumerable: true, get: getter });
+    if (kind === "symbol") Object.defineProperty(proposal, Symbol("instruction"), { value: true, enumerable: true });
+    if (kind === "extra") Object.defineProperty(proposal, "command", { value: "never run", enumerable: true });
+    expect(() => fixture.proposer()(proposal as RoutineIssueProposal, fixture.check)).toThrow();
+    expect(getter).not.toHaveBeenCalled(); expect(existsSync(join(state, "issues"))).toBe(false); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+  it.each(["completed", "ambiguous-publish"])("composes the real owned action and proposal writer: %s", async (kind) => {
+    const fixture = routineProposal(), actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const before = readFileSync(join(state, "budgets/budgets.json"));
+    if (kind === "ambiguous-publish") vi.mocked(renameSync).mockImplementationOnce((source, destination) => {
+      actual.renameSync(source, destination); throw new Error("synthetic post-publication gap");
+    });
+    const receipt = await executeRoutineAction({ ownership: fixture.proposal.ownership }, {
+      state_root: state, assert_current: fixture.gate, propose_issue: fixture.proposer(),
+      read_evidence: async (_occurrence, options) => { options.check(); return {
+        sources: [{ kind: "ci", project_id: "alpha", state: "fresh", observed_at: fixture.proposal.signal.observed_at, fingerprint: "a".repeat(64) }],
+        signals: [fixture.proposal.signal] }; },
+      clock: () => new Date("2026-10-06T12:00:01.010Z"), monotonic: () => 0,
+    });
+    const id = receipt.proposals[0]!.issue_id!;
+    expect(receipt.counts.proposals_created).toBe(1); expect(receipt.next_action).toBe("review-proposals");
+    expect(readIssueDocument().issues[id]!.status).toBe("proposed"); expect(fakeCreateTask).not.toHaveBeenCalled();
+    expect(receipt.consumption).toMatchObject({ attempts: 1, model_calls: 0, total_tokens: 0, workspace_writes: 0 });
+    expect(receipt.failure_code).toBe(kind === "completed" ? null : "accounting-unavailable");
+    expect(receipt.budget_outcome).toBe(kind === "completed" ? "within-limit" : "unknown");
+    expect(readFileSync(join(state, "budgets/budgets.json")).equals(before)).toBe(true); // Settlement belongs to T011, never refund this gap.
+  });
   it("projects absent workflow consumption as an explicit read-only empty inventory", () => {
     const issues = service(), issue = issues.create(input()), before = readFileSync(join(state, "issues/issues.json")), inventory = readdirSync(state, { recursive: true });
     expect(issues.get(issue.id).budget_consumption).toEqual({ availability: "available", workflows: [] });

@@ -3,6 +3,10 @@ import type { DeploymentProvider, ProjectIntegrationsSnapshot } from "../../../l
 import type { PolicyProject } from "../../../lib/policy/service";
 import type { TraceSpan, Tracer } from "../../../lib/observability/tracing";
 import { createProjectIntegrationsService } from "./project-integrations";
+import { createRoutineProjectIntegrationsService, type RoutineCommandResult } from "./project-integrations";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const observedAt = "2026-09-21T12:00:00.000Z";
 
@@ -251,4 +255,144 @@ describe("createProjectIntegrationsService", () => {
       deployments: [{ provider: "http-health", configured: true, health: "unknown" }],
     });
   });
+});
+
+describe("T010 bounded async routine integrations", () => {
+  async function fixture(run: (path: string) => Promise<void>): Promise<void> {
+    const path = mkdtempSync(join(tmpdir(), "surtec-routine-integration-"));
+    try { await run(path); } finally { rmSync(path, { recursive: true, force: true }); }
+  }
+  const options = (signal = new AbortController().signal, check = vi.fn()) => ({ signal, check,
+    deadline_at: "2026-09-21T12:00:30.000Z" });
+  const gitHash = "a".repeat(40);
+  const gitOutput = `# branch.oid ${gitHash}\n# branch.head private-branch\n# branch.ab +1 -2\n1 .M N... 100644 100644 100644 ${gitHash} ${gitHash} private-path\n`;
+  const runner = () => vi.fn(async (file: string): Promise<RoutineCommandResult> => file === "git"
+    ? { status: 0, stdout: gitOutput } : { status: 0, stdout: JSON.stringify([{ status: "completed", conclusion: "failure", databaseId: 3,
+      updatedAt: observedAt, private_payload: "private-provider-payload" }]) });
+  it("uses fixed no-shell async argv, purpose environments and technical projections", async () => fixture(async (path) => {
+    const run = runner(); const doFetch = vi.fn(async (_url: string) => new Response(null, { status: 200 }));
+    const readDependencies = vi.fn(async () => 2);
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: path, railway: null }) },
+      run, fetch: doFetch as typeof fetch, readDependencies, clock: () => new Date(observedAt),
+      environment: { PATH: "safe-path", GH_TOKEN: "private-gh-value", OPENAI_API_KEY: "private-model-value", NODE_OPTIONS: "unsafe" } });
+    const result = await service.read("alpha", options());
+    expect(result.source_control).toMatchObject({ health: "ok", branch: null, dirty: true, uncommitted: 1, ahead: 1, behind: 2 });
+    expect(result.ci).toMatchObject({ status: "failing", health: "down", run_id: "3" });
+    expect(result.dependencies).toMatchObject({ health: "degraded", outdated: 2 });
+    expect(result.deployments[0]).toMatchObject({ health: "ok", http_status: 200, url: null });
+    expect(run).toHaveBeenCalledTimes(2);
+    for (const call of run.mock.calls as unknown as [string, string[], { env: NodeJS.ProcessEnv; shell: boolean }][]) {
+      expect(call[2].shell).toBe(false); expect(call[2].env.OPENAI_API_KEY).toBeUndefined(); expect(call[2].env.NODE_OPTIONS).toBeUndefined();
+      expect(call[1]).not.toContain("install"); expect(call[1]).not.toContain("update");
+      if (call[0] === "git") expect(call[2].env.GH_TOKEN).toBeUndefined(); else expect(call[2].env.GH_TOKEN).toBe("private-gh-value");
+    }
+    expect(doFetch.mock.calls[0]?.[0]).toBe("https://alpha.example.com/health");
+    const text = JSON.stringify(result);
+    for (const privateValue of ["private-branch", "private-path", "private-gh-value", "private-model-value", "private-provider-payload"]) expect(text).not.toContain(privateValue);
+  }));
+  it("keeps unsafe legacy npm checks unavailable rather than launching a shell or inventing zero", async () => fixture(async (path) => {
+    const run = runner();
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: path, repo: null, deploy_url: null, railway: null }) },
+      run, clock: () => new Date(observedAt) });
+    const result = await service.read("alpha", options());
+    expect(result.dependencies).toMatchObject({ configured: true, health: "unknown", outdated: null });
+    expect(run.mock.calls.map((call) => call[0])).toEqual(["git"]);
+  }));
+  it("does not start providers for disabled or unconfigured sources", async () => {
+    const run = runner(); const doFetch = vi.fn(); const readDependencies = vi.fn();
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: null }) },
+      run, fetch: doFetch, readDependencies, providersEnabled: false, clock: () => new Date(observedAt) });
+    await expect(service.read("alpha", options())).resolves.toMatchObject({ ci: { health: "unconfigured" }, dependencies: { outdated: null } });
+    expect(run).not.toHaveBeenCalled(); expect(doFetch).not.toHaveBeenCalled(); expect(readDependencies).not.toHaveBeenCalled();
+  });
+  it.each(["missing", "../alpha", "alpha; echo unsafe"])("rejects unknown/injected project %s before source effects", async (id) => {
+    const run = runner(); const doFetch = vi.fn();
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => { throw new Error("private-policy-error"); } },
+      run, fetch: doFetch, clock: () => new Date(observedAt) });
+    await expect(service.read(id, options())).rejects.toThrow(); expect(run).not.toHaveBeenCalled(); expect(doFetch).not.toHaveBeenCalled();
+  });
+  it.each(["file:///private", "https://user:pass@example.com"])("refuses unsafe trusted health configuration %s", async (url) => {
+    const doFetch = vi.fn(); const run = runner();
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: null, repo: null, deploy_url: url, railway: null }) },
+      run, fetch: doFetch, clock: () => new Date(observedAt) });
+    const result = await service.read("alpha", options());
+    expect(result.deployments).toHaveLength(2); expect(result.deployments[0].health).toBe("unknown"); expect(doFetch).not.toHaveBeenCalled();
+  });
+  it.each(["https://github.com/other-host.example/owner/repo", "https://github.com/owner/repo?token=private", "https://github.com/owner/../repo"])(
+    "refuses noncanonical GitHub repository selection before subprocess effects", async (repo) => {
+      const run = runner(); const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: null, repo, deploy_url: null, railway: null }) },
+        run, clock: () => new Date(observedAt) });
+      await expect(service.read("alpha", options())).resolves.toMatchObject({ ci: { health: "unconfigured" } }); expect(run).not.toHaveBeenCalled();
+    });
+  it("coalesces exact-config reads while cancellation affects only its owning consumer", async () => {
+    let finish!: (result: RoutineCommandResult) => void;
+    const run = vi.fn(() => new Promise<RoutineCommandResult>((done) => { finish = done; }));
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: null, deploy_url: null, railway: null }) },
+      run, clock: () => new Date(observedAt) });
+    const firstController = new AbortController(); const first = service.read("alpha", options(firstController.signal));
+    const firstRejected = expect(first).rejects.toThrow("stopped");
+    const second = service.read("alpha", options()); await new Promise((done) => setTimeout(done, 5));
+    firstController.abort(); await firstRejected;
+    finish({ status: 0, stdout: "[]" }); await expect(second).resolves.toMatchObject({ ci: { status: "none" } });
+    expect(run).toHaveBeenCalledOnce(); await service.read("alpha", options()); expect(run).toHaveBeenCalledOnce();
+  });
+  it("stops the last consumer, propagates cancellation, and refuses late cache publication", async () => {
+    let finish!: (result: RoutineCommandResult) => void; let seenSignal!: AbortSignal;
+    const run = vi.fn((_file, _args, config) => new Promise<RoutineCommandResult>((done) => { finish = done; seenSignal = config.signal; }));
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: null, deploy_url: null, railway: null }) },
+      run, clock: () => new Date(observedAt) });
+    const controller = new AbortController(); const pending = service.read("alpha", options(controller.signal));
+    const rejected = expect(pending).rejects.toThrow("stopped"); await new Promise((done) => setTimeout(done, 5));
+    controller.abort(); await rejected; expect(seenSignal.aborted).toBe(true);
+    finish({ status: 0, stdout: "[]" }); await new Promise((done) => setTimeout(done, 5));
+    const again = service.read("alpha", options()); await new Promise((done) => setTimeout(done, 5));
+    expect(run).toHaveBeenCalledTimes(2); finish({ status: 0, stdout: "[]" }); await again;
+  });
+  it("isolates a slow optional provider and leaves timers/heartbeat responsive", async () => fixture(async (path) => {
+    const run = runner(); let slowSignal!: AbortSignal;
+    const doFetch = vi.fn(async (_url, init) => { slowSignal = init.signal; return new Promise<Response>(() => undefined); });
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: path, railway: null }) },
+      run, fetch: doFetch as typeof fetch, sourceTimeoutMs: 30, clock: () => new Date(observedAt) });
+    let heartbeats = 0; const timer = setInterval(() => heartbeats++, 2);
+    try {
+      const result = await service.read("alpha", options());
+      expect(result.source_control.health).toBe("ok"); expect(result.ci.status).toBe("failing");
+      expect(result.deployments[0].health).toBe("unknown"); expect(slowSignal.aborted).toBe(true); expect(heartbeats).toBeGreaterThan(0);
+    } finally { clearInterval(timer); }
+  }));
+  it("deadline refusal happens before work and a short consumer deadline aborts active sources", async () => {
+    const run = vi.fn(() => new Promise<RoutineCommandResult>(() => undefined));
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: null, deploy_url: null, railway: null }) },
+      run, clock: () => new Date(observedAt) });
+    await expect(service.read("alpha", { ...options(), deadline_at: observedAt })).rejects.toThrow("stopped"); expect(run).not.toHaveBeenCalled();
+    await expect(service.read("alpha", { ...options(), deadline_at: "2026-09-21T12:00:00.010Z" })).rejects.toThrow("stopped");
+  });
+  it("invalidates changed trusted configuration and verifies it after every await", async () => {
+    let configured = project({ repo_path: null, deploy_url: null, railway: null });
+    const run = runner(); const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => configured }, run, clock: () => new Date(observedAt) });
+    await service.read("alpha", options()); configured = { ...configured, default_branch: "changed" };
+    await service.read("alpha", options()); expect(run).toHaveBeenCalledTimes(2);
+  });
+  it.each(["not-json", "{}", "[{\"status\":\"completed\"}]", "[{},{}]", " ".repeat(262145), "[".repeat(40) + "0" + "]".repeat(40)])(
+    "preserves malformed/oversized provider state as unavailable without raw output", async (stdout) => {
+      const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: null, deploy_url: null, railway: null }) },
+        run: async () => ({ status: 0, stdout }), clock: () => new Date(observedAt) });
+      await expect(service.read("alpha", options())).resolves.toMatchObject({ ci: { status: "unknown", health: "unknown" } });
+    });
+  it("uses the fixed Railway read query and refuses invalid UTF-8 even in an ignored field", async () => {
+    const valid = Buffer.from('{"data":{"deployments":{"edges":[{"node":{"status":"SUCCESS"}}]}},"ignored":"');
+    const invalid = Buffer.concat([valid, Buffer.from([0xff]), Buffer.from('"}')]); const doFetch = vi.fn(async (_url: string) => new Response(invalid));
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: null, repo: null, deploy_url: null }) },
+      fetch: doFetch as typeof fetch, environment: { RAILWAY_TOKEN: "private-token" }, clock: () => new Date(observedAt) });
+    const result = await service.read("alpha", options()); expect(result.deployments[1].health).toBe("unknown");
+    expect(doFetch.mock.calls[0]?.[0]).toBe("https://backboard.railway.com/graphql/v2");
+    expect(JSON.stringify(result)).not.toContain("private-token");
+  });
+  it.each(["# branch.oid junk\n# branch.head main\n", `# branch.oid ${gitHash}\n# branch.head main\n# branch.ab malformed\n`,
+    `# branch.oid ${gitHash}\n# branch.head main\n1 private-path\n`])("refuses malformed porcelain without fabricating clean/zero Git facts", async (stdout) => fixture(async (path) => {
+    const service = createRoutineProjectIntegrationsService("/repo", { policy: { project: () => project({ repo_path: path, repo: null, deploy_url: null, railway: null }) },
+      run: async () => ({ status: 0, stdout }), clock: () => new Date(observedAt) });
+    const result = await service.read("alpha", options());
+    expect(result.source_control).toMatchObject({ health: "unknown", dirty: null, uncommitted: null, ahead: null, behind: null });
+  }));
 });

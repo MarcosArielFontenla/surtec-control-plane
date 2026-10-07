@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ProjectProfile } from "../portfolio-profile";
-import { listProjectProfiles, upsertProjectProfile, UnsupportedPortfolioSchemaVersionError } from "./portfolio-profiles";
+import { listProjectProfiles, readProjectProfilesSnapshot, upsertProjectProfile, UnsupportedPortfolioSchemaVersionError } from "./portfolio-profiles";
 import { validatePortfolioProfilesDocument } from "./validation";
 
 let root: string;
@@ -34,6 +35,59 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe("local project profile store", () => {
+  it("reads optional absence without a lock, directory or fabricated profile", () => {
+    const missing = join(root, "missing-state/portfolio/projects.json");
+    const before = readdirSync(root, { recursive: true });
+    expect(readProjectProfilesSnapshot(missing)).toEqual({ status: "absent", schema_version: null, fingerprint: null, profiles: [] });
+    expect(readdirSync(root, { recursive: true })).toEqual(before);
+    expect(existsSync(join(root, "missing-state"))).toBe(false);
+  });
+  it.each(["client", "personal"])("validates v1 %s without migration, backup, lock or silent current evidence", (kind) => {
+    const bytes = Buffer.from(JSON.stringify({ schema_version: 1, projects: { alpha: { ...profile({ client_id: kind === "personal" ? null : "client-demo" }), schema_version: 1, kind } } }, null, 2));
+    writeFileSync(filePath, bytes);
+    const before = readdirSync(root, { recursive: true });
+    expect(readProjectProfilesSnapshot(filePath)).toEqual({ status: "migration-required", schema_version: 1,
+      fingerprint: createHash("sha256").update(bytes).digest("hex"), profiles: [] });
+    expect(readFileSync(filePath).equals(bytes)).toBe(true);
+    expect(readdirSync(root, { recursive: true })).toEqual(before);
+  });
+  it("returns detached deeply frozen validated v2 evidence and its exact byte fingerprint", () => {
+    const bytes = Buffer.from(JSON.stringify({ schema_version: 2, projects: { alpha: profile() } }, null, 2));
+    writeFileSync(filePath, bytes);
+    const before = readdirSync(root, { recursive: true });
+    const snapshot = readProjectProfilesSnapshot(filePath);
+    expect(snapshot).toEqual({ status: "current", schema_version: 2, fingerprint: createHash("sha256").update(bytes).digest("hex"), profiles: [profile()] });
+    expect(Object.isFrozen(snapshot)).toBe(true); expect(Object.isFrozen(snapshot.profiles[0]!.tags)).toBe(true);
+    expect(() => { snapshot.profiles[0]!.tags.push("changed"); }).toThrow();
+    expect(readProjectProfilesSnapshot(filePath).profiles).not.toBe(snapshot.profiles);
+    expect(readFileSync(filePath).equals(bytes)).toBe(true); expect(readdirSync(root, { recursive: true })).toEqual(before);
+  });
+  it.each(["invalid-json", "invalid-utf8", "future", "v1-invalid", "v2-invalid", "identity", "prototype", "oversized"])("refuses %s evidence without repair or private error content", (kind) => {
+    let bytes = Buffer.from("{private fixture content");
+    if (kind === "invalid-utf8") bytes = Buffer.from([0x7b, 0xff, 0x7d]);
+    if (kind === "future") bytes = Buffer.from('{"schema_version":99,"private":"never log"}');
+    if (kind === "v1-invalid") bytes = Buffer.from(JSON.stringify({ schema_version: 1, projects: { alpha: { ...profile(), schema_version: 1, kind: "unsupported" } } }));
+    if (kind === "v2-invalid") bytes = Buffer.from(JSON.stringify({ schema_version: 2, projects: { alpha: { ...profile(), priority: 99 } } }));
+    if (kind === "identity") bytes = Buffer.from(JSON.stringify({ schema_version: 2, projects: { beta: profile() } }));
+    if (kind === "prototype") bytes = Buffer.from(JSON.stringify({ schema_version: 2, projects: { constructor: profile({ project_id: "constructor" }) } }));
+    if (kind === "oversized") bytes = Buffer.alloc(2 * 1024 * 1024 + 1, 0x20);
+    writeFileSync(filePath, bytes); const before = readdirSync(root, { recursive: true });
+    expect(() => readProjectProfilesSnapshot(filePath)).toThrow(/unavailable|Unsupported|unsupported/);
+    expect(readFileSync(filePath).equals(bytes)).toBe(true); expect(readdirSync(root, { recursive: true })).toEqual(before);
+  });
+  it("refuses hardlinked profile evidence without touching either name", () => {
+    const bytes = JSON.stringify({ schema_version: 2, projects: {} }), other = join(root, "original.json");
+    writeFileSync(other, bytes); linkSync(other, filePath);
+    expect(() => readProjectProfilesSnapshot(filePath)).toThrow(/unavailable/);
+    expect(readFileSync(filePath, "utf8")).toBe(bytes); expect(readFileSync(other, "utf8")).toBe(bytes);
+    expect(existsSync(join(root, "locks"))).toBe(false);
+  });
+  it("refuses redirected ancestors even when the requested file is absent", () => {
+    const target = join(root, "actual"), redirected = join(root, "redirected"); mkdirSync(target);
+    symlinkSync(target, redirected, process.platform === "win32" ? "junction" : "dir");
+    expect(() => readProjectProfilesSnapshot(join(redirected, "portfolio/projects.json"))).toThrow(/unavailable/);
+    expect(readdirSync(target)).toEqual([]); expect(existsSync(join(root, "locks"))).toBe(false);
+  });
   it("returns an empty list without creating a file when no profiles exist", () => {
     expect(listProjectProfiles(filePath)).toEqual([]);
     expect(existsSync(filePath)).toBe(false);
