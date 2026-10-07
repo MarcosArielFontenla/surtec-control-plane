@@ -18,6 +18,11 @@ import { mutateBudgetLedger, readBudgetLedger } from "../lib/state/budgets";
 import { commitTaskBudget, markBudgetUnknown, reserveTaskBudget } from "../lib/budgets/reservations";
 import { BUDGET_DIMENSIONS, type BudgetLimits } from "../lib/budgets/types";
 import type { BudgetPolicySource } from "../lib/budgets/policy";
+import { RoutineRunner } from "./routine-runner";
+import { createRoutineDraft } from "../lib/routines/validation";
+import { routineRevisionKey } from "../lib/routines/schedule";
+import { mutateRoutineDocument, readRoutineDocument, updateRoutineTransaction } from "../lib/state/routines";
+import type { RoutineEvidenceReadOptions } from "../lib/routines/actions";
 
 function record(id: string, sandbox: SandboxMode = "read-only", project = "p", order = 0): TaskRecord {
   return {
@@ -86,6 +91,91 @@ function controlledRunner(): {
   };
   return { run, pending, finish };
 }
+
+describe("T011 existing worker background routine hook", () => {
+  let root: string, state: string, nowMs: number;
+  const workers: TaskOrchestrator[] = [];
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "surtec-worker-routine-")); state = join(root, "state"); vi.stubEnv("SURTEC_STATE_DIR", state);
+    nowMs = Date.parse("2026-09-21T10:00:00Z");
+  });
+  afterEach(async () => {
+    for (const worker of workers.splice(0)) await worker.stop(); vi.restoreAllMocks(); vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false);
+  });
+  function routines(read: (options: RoutineEvidenceReadOptions) => Promise<unknown>): RoutineRunner {
+    const at = new Date(nowMs - 900000).toISOString(), draft = createRoutineDraft({ id: "routine-1", action: "refresh-evidence",
+      scope: { kind: "company", id: "surtec" }, policy: { revision: 1, fingerprint: "a".repeat(64), policy_ids: ["company-policy"] }, at });
+    mutateRoutineDocument((tx) => {
+      updateRoutineTransaction(tx, (doc) => { doc.routines[draft.id] = structuredClone(draft); doc.definitions[routineRevisionKey(draft.id, 1)] = structuredClone(draft); });
+      updateRoutineTransaction(tx, (doc) => {
+        const enabled = { ...structuredClone(draft), revision: 2, enabled: true, schedule: "every:15m", schedule_anchor_at: at, catch_up: "run-once" as const };
+        doc.routines[enabled.id] = enabled; doc.definitions[routineRevisionKey(enabled.id, 2)] = structuredClone(enabled);
+      });
+    }, join(state, "routines/routines.json"), at);
+    return new RoutineRunner({ stateRoot: state, now: () => new Date(nowMs), execution: {
+      resolve: (_definition, id) => ({ source: { fingerprint: "a".repeat(64), policy: { schema_version: 1, revision: 1,
+        pricing: { status: "unavailable", reason: "no-versioned-source" }, rules: [{ id: "company-policy", revision: 1,
+          scope: { kind: "company", id: "surtec" }, period: "none", warning_percent: 80,
+          limits: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "unconfigured" }])) as BudgetLimits }] } },
+        attribution: { company_id: "surtec", project_ids: ["p"], objective_ids: [], issue_id: null, role_id: null, execution_id: id } }),
+      assert_current: () => undefined, monotonic: () => 0, read_evidence: async (_occurrence, options) => read(options),
+    } });
+  }
+  function fakeAttempt() {
+    const signals = new Map<string, AbortSignal>();
+    const run = vi.fn(async (id: string, options: TaskRunOptions) => new Promise<TaskRunCompletion>((done) => {
+      signals.set(id, options.signal!);
+      const finish = () => { updateTask(id, (task) => { task.lifecycle = "finished"; task.outcome = "cancelled";
+        task.finished_at = new Date(nowMs).toISOString(); task.orchestration!.lease = null; }); done({ outcome: "cancelled", stale: false, retryable: false }); };
+      if (options.signal!.aborted) finish(); else options.signal!.addEventListener("abort", finish, { once: true });
+    }));
+    return { run, signals };
+  }
+  it("starts after normal claims and does not await the slow provider or retain ticking", async () => {
+    writeTask(record("T-1")); const tasks = fakeAttempt(); let evidenceOptions!: RoutineEvidenceReadOptions;
+    const read = vi.fn(async (options: RoutineEvidenceReadOptions) => {
+      evidenceOptions = options; expect(readTask("T-1")?.lifecycle).toBe("running"); expect(tasks.run).toHaveBeenCalledOnce();
+      expect(existsSync(join(state, "locks/orchestrator-schedule.lock"))).toBe(false);
+      return new Promise<never>(() => undefined);
+    });
+    const hook = routines(read), worker = new TaskOrchestrator({ routines: hook, maxConcurrent: 3, now: () => new Date(nowMs), runAttempt: tasks.run }); workers.push(worker);
+    expect(await worker.runOnce()).toBe(1); await vi.waitFor(() => expect(read).toHaveBeenCalledOnce()); expect(hook.activeCount).toBe(1);
+    writeTask(record("T-2", "read-only", "p", 1)); expect(await worker.runOnce()).toBe(1); expect(tasks.run).toHaveBeenCalledTimes(2);
+    writeTask(record("T-3", "read-only", "p", 2)); expect(await worker.runOnce()).toBe(0); expect(readTask("T-3")?.lifecycle).toBe("queued");
+    worker.cancel("T-1"); await vi.waitFor(() => expect(tasks.signals.get("T-1")?.aborted).toBe(true));
+    expect(await worker.runOnce()).toBe(1); expect(tasks.run).toHaveBeenCalledTimes(3); expect(evidenceOptions.signal.aborted).toBe(false);
+    hook.cancel(); await hook.idle(); expect(evidenceOptions.signal.aborted).toBe(true); expect(read).toHaveBeenCalledOnce();
+  });
+  it("heartbeat renews while evidence waits and cancellation/stop settle both owned lifecycles", async () => {
+    writeTask(record("T-1")); const tasks = fakeAttempt(), read = vi.fn(async () => new Promise<never>(() => undefined)), hook = routines(read);
+    const worker = new TaskOrchestrator({ routines: hook, maxConcurrent: 2, heartbeatMs: 10, leaseMs: 1000,
+      now: () => new Date(nowMs), runAttempt: tasks.run }); workers.push(worker);
+    expect(await worker.runOnce()).toBe(1); await vi.waitFor(() => expect(read).toHaveBeenCalledOnce()); nowMs += 500;
+    await vi.waitFor(() => expect(readTask("T-1")?.orchestration?.lease?.heartbeat_at).toBe(new Date(nowMs).toISOString()));
+    expect(readTask("T-1")?.orchestration?.lease?.expires_at).toBe(new Date(nowMs + 1000).toISOString());
+    worker.cancel("T-1"); await worker.stop(); expect(readTask("T-1")?.outcome).toBe("cancelled"); expect(hook.activeCount).toBe(0);
+    expect(Object.values(readRoutineDocument(join(state, "routines/routines.json"))!.occurrences)[0].status).toBe("cancelled");
+    expect(Object.values(readBudgetLedger(join(state, "budgets/budgets.json"))!.reservations)[0].status).toBe("settled");
+    nowMs += 900000; await worker.runOnce(); expect(read).toHaveBeenCalledOnce();
+  });
+  it("full task capacity prevents routine admission without changing task scheduling", async () => {
+    writeTask(record("T-1")); const tasks = fakeAttempt(), read = vi.fn(), hook = routines(read);
+    const worker = new TaskOrchestrator({ routines: hook, maxConcurrent: 1, now: () => new Date(nowMs), runAttempt: tasks.run }); workers.push(worker);
+    expect(await worker.runOnce()).toBe(1); expect(read).not.toHaveBeenCalled(); expect(existsSync(join(state, "budgets/budgets.json"))).toBe(false);
+    expect(readTask("T-1")?.orchestration?.attempts).toBe(1);
+  });
+  it("a corrupt optional routine store does not block normal claims or leak private source", async () => {
+    writeTask(record("T-1")); const tasks = fakeAttempt(), read = vi.fn(), hook = routines(read);
+    writeFileSync(join(state, "routines/routines.json"), "synthetic-private-invalid");
+    const worker = new TaskOrchestrator({ routines: hook, now: () => new Date(nowMs), runAttempt: tasks.run }); workers.push(worker);
+    expect(await worker.runOnce()).toBe(1); expect(hook.lastFailure).toBe("state-invalid"); expect(read).not.toHaveBeenCalled(); expect(tasks.run).toHaveBeenCalledOnce();
+    expect(readFileSync(join(state, "routines/routines.json"), "utf8")).toBe("synthetic-private-invalid");
+  });
+  it("rejects a caller-shaped hook before dispatch", () => {
+    expect(() => new TaskOrchestrator({ routines: { tick: vi.fn() } as never })).toThrow(/Unrecognized routine/);
+  });
+});
 
 describe("TaskOrchestrator", () => {
   let root: string;

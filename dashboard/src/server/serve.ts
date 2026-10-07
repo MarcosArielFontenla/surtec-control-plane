@@ -9,6 +9,7 @@ import { createApp } from "./index";
 import { reconcileStartup } from "../../../runner/reconcile";
 import { TaskOrchestrator } from "../../../runner/task-orchestrator";
 import { WorkflowOrchestrator } from "../../../runner/workflow-orchestrator";
+import { RoutineRunner } from "../../../runner/routine-runner";
 
 const reconciliation = reconcileStartup();
 if (reconciliation.worktrees.orphans.length > 0) {
@@ -17,7 +18,10 @@ if (reconciliation.worktrees.orphans.length > 0) {
 for (const error of reconciliation.worktrees.errors) console.warn(`Worktree reconciliation warning: ${error}`);
 
 const workflows = new WorkflowOrchestrator();
-const orchestrator = new TaskOrchestrator({ workflows });
+// No execution composition: stored definitions/environment cannot activate P.
+// Cooperative readiness and exact operator cutover remain T015-T017.
+const routines = new RoutineRunner();
+const orchestrator = new TaskOrchestrator({ workflows, routines });
 orchestrator.start();
 const app = createApp(process.cwd(), orchestrator, undefined, undefined,
   { workflows: workflows.service, ...(process.env.SURTEC_SMOKE_DISABLE_EXTERNAL_READS === "1" ? { inbox: async () => ({ items: [], repos: [] }) } : {}) });

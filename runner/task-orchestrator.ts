@@ -22,6 +22,7 @@ import { resolveBudgetPolicy, type BudgetPolicySource, type ExistingBudgetConstr
 import { BUDGET_DIMENSIONS, type BudgetAdmission, type BudgetAmounts, type BudgetDimension, type BudgetLedger } from "../lib/budgets/types";
 import { assertBudgetLedger } from "../lib/budgets/validation";
 import type { IndependentBudgetStopData } from "../lib/workflows/policy";
+import { isRoutineRunner, type RoutineRunner } from "./routine-runner";
 
 export interface BudgetExecutionPolicy {
   source: BudgetPolicySource;
@@ -490,6 +491,8 @@ export interface TaskOrchestratorOptions {
   workflows?: WorkflowOrchestrator;
   /** Trusted test composition only; production does not supply a P controller. */
   budgets?: BudgetExecutionScaffold;
+  /** Finite worker-owned hook. The normal bootstrap supplies an inactive composition. */
+  routines?: RoutineRunner;
 }
 
 interface ActiveAttempt {
@@ -529,6 +532,7 @@ export class TaskOrchestrator implements TaskControl {
   private stopped = true;
   private readonly workflows?: WorkflowOrchestrator;
   private readonly budgets?: BudgetExecutionScaffold;
+  private readonly routines?: RoutineRunner;
 
   constructor(options: TaskOrchestratorOptions = {}) {
     this.repoRoot = options.repoRoot ?? process.cwd();
@@ -544,12 +548,15 @@ export class TaskOrchestrator implements TaskControl {
     this.workflows = options.workflows;
     if (options.budgets && !budgetControllers.has(options.budgets)) throw new TaskControlError("Unrecognized budget controller composition", 409);
     this.budgets = options.budgets;
+    if (options.routines !== undefined && !isRoutineRunner(options.routines)) throw new TaskControlError("Unrecognized routine controller composition", 409);
+    this.routines = options.routines;
     this.workflows?.connect(this, this.workerId);
   }
 
   start(): void {
     if (this.poller) return;
     this.stopped = false;
+    this.routines?.start();
     this.recoverExpiredLeases();
     this.requestTick();
     this.poller = setInterval(() => this.requestTick(), this.pollMs);
@@ -560,9 +567,10 @@ export class TaskOrchestrator implements TaskControl {
     this.stopped = true;
     if (this.poller) clearInterval(this.poller);
     this.poller = null;
+    const routineStop = this.routines?.stop();
     const pending = [...this.active.values()].map((attempt) => attempt.promise);
     for (const attempt of this.active.values()) attempt.controller.abort(new Error("worker stopping"));
-    await Promise.allSettled(pending);
+    await Promise.allSettled([...pending, ...(routineStop ? [routineStop] : [])]);
   }
 
   enqueue(_taskId: string): void {
@@ -733,7 +741,7 @@ export class TaskOrchestrator implements TaskControl {
           const now = this.now();
           const snapshots = listTasks();
           const running = snapshots.filter((record) => isLeaseCurrent(record, now.getTime()));
-          let available = Math.max(0, this.maxConcurrent - running.length);
+          let available = Math.max(0, this.maxConcurrent - running.length - (this.routines?.activeCount ?? 0));
           if (available === 0) return 0;
           const writeProjects = new Set(
             running.filter((record) => record.envelope.sandbox === "workspace-write").map((record) => record.envelope.project),
@@ -779,7 +787,7 @@ export class TaskOrchestrator implements TaskControl {
             // is not a reservation: capacity and the exact snapshot are reread.
             const eligible = withStateLock("orchestrator-schedule", () => {
               const running = listTasks().filter((task) => isLeaseCurrent(task, this.now().getTime()));
-              return running.length < this.maxConcurrent && !running.some((task) => task.envelope.project === candidate.envelope.project
+              return running.length + (this.routines?.activeCount ?? 0) < this.maxConcurrent && !running.some((task) => task.envelope.project === candidate.envelope.project
                 && task.envelope.sandbox === "workspace-write" && candidate.envelope.sandbox === "workspace-write");
             });
             if (!eligible) continue;
@@ -789,7 +797,7 @@ export class TaskOrchestrator implements TaskControl {
             const expected = this.budgets!.claimSnapshot(proof);
             const claimed = withStateLock("orchestrator-schedule", () => {
               const now = this.now(), running = listTasks().filter((task) => isLeaseCurrent(task, now.getTime()));
-              if (running.length >= this.maxConcurrent || running.some((task) => task.envelope.project === expected.envelope.project
+              if (running.length + (this.routines?.activeCount ?? 0) >= this.maxConcurrent || running.some((task) => task.envelope.project === expected.envelope.project
                 && task.envelope.sandbox === "workspace-write" && expected.envelope.sandbox === "workspace-write")) return null;
               if (expected.envelope.context_admission?.schema_version === 2 && (!this.workflows || !this.workflows.canClaim(expected, proof))) return null;
               return this.claim(expected.envelope.id, now, runId, expected, proof);
@@ -803,6 +811,10 @@ export class TaskOrchestrator implements TaskControl {
             // Cross-store gaps retain charges/holds; no effects or blind retry.
           }
         }
+        // Claims and their locks finish first. Never await routine evidence inside
+        // this tick or keep `ticking` true for a provider's completion.
+        this.routines?.tick(this.workerId, Math.max(0, this.maxConcurrent
+          - listTasks().filter((task) => isLeaseCurrent(task, this.now().getTime())).length - (this.routines?.activeCount ?? 0)));
         return count + budgetCount;
       } catch (error) {
         if (error instanceof StateLockConflictError) return 0;
