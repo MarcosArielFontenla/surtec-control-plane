@@ -796,6 +796,45 @@ button.project-detail-row:hover b { color:var(--glacier-300); }
 .workflow-evidence small { color:var(--fg3); }
 .workflow-facts dd { min-width:0; overflow-wrap:anywhere; }
 
+/* Local routine controls use the existing dashboard surfaces, not stretched
+   grid buttons or transparent native option text. */
+.routine-panel { display:grid; gap:12px; min-width:0; margin-bottom:18px; padding:18px; color:var(--fg2); font-size:12px; overflow-wrap:anywhere; }
+.routine-panel p { line-height:1.55; }
+.routine-panel h2 { font-size:var(--text-h3); }
+.routine-panel h3 { font-size:13px; color:var(--fg1); }
+.routine-panel-heading { flex-wrap:wrap; align-items:flex-start; gap:12px; margin-bottom:0; }
+.routine-panel-toolbar { display:flex; flex-wrap:wrap; align-items:flex-end; gap:10px; min-width:0; }
+.routine-panel-toolbar > label { flex:1 1 240px; max-width:560px; }
+.routine-panel label { display:grid; gap:6px; min-width:0; color:var(--fg2); }
+.routine-panel select, .routine-panel input:not([type="checkbox"]) { width:100%; min-width:0; min-height:40px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--bg-raised); color:var(--fg1); font:inherit; font-size:12px; }
+.routine-panel select { color-scheme:dark; }
+.routine-panel option { background:var(--bg-raised); color:var(--fg1); }
+.routine-panel select:focus-visible, .routine-panel input:focus-visible, .routine-panel button:focus-visible { outline:2px solid var(--glacier-400); outline-offset:2px; }
+.routine-panel-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; min-width:0; }
+.routine-panel small { color:var(--fg3); line-height:1.5; }
+.routine-panel label.routine-panel-checkbox { display:flex; align-items:center; gap:8px; align-self:center; min-height:40px; }
+.routine-panel-checkbox input { flex:none; width:16px; height:16px; accent-color:var(--glacier-400); }
+.routine-panel-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; }
+.routine-panel .ibtn { width:fit-content; max-width:100%; min-height:36px; justify-self:start; align-self:flex-start; white-space:normal; text-align:left; }
+.routine-panel .ibtn:disabled, .routine-panel select:disabled, .routine-panel input:disabled { opacity:.6; cursor:not-allowed; }
+.routine-panel-facts { min-width:0; margin:0; padding:10px 0; border-top:1px solid var(--border-soft); }
+.routine-panel-facts dd { min-width:0; overflow-wrap:anywhere; }
+.routine-panel-confirmation, .routine-panel-history { display:grid; gap:10px; min-width:0; padding:12px; border:1px solid var(--border-soft); border-radius:8px; }
+.routine-panel-history > summary { cursor:pointer; font-weight:650; color:var(--fg1); }
+.routine-panel-history article { min-width:0; padding-top:12px; border-top:1px solid var(--border-soft); }
+.routine-panel-overview { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; min-width:0; }
+.routine-panel-overview > h3, .routine-panel-overview > p { grid-column:1 / -1; }
+.routine-panel-overview article { min-width:0; padding:12px; border:1px solid var(--border-soft); border-radius:8px; }
+.routine-panel-overview h4 { color:var(--fg1); font-size:12px; margin-bottom:6px; overflow-wrap:anywhere; }
+.routine-panel-error { color:var(--danger); }
+.routine-panel-warning { color:var(--warning); }
+@media (max-width:760px) {
+  .routine-panel { padding:14px; }
+  .routine-panel-form, .routine-panel-overview { grid-template-columns:1fr; }
+  .routine-panel-facts { grid-template-columns:1fr; gap:4px; }
+  .routine-panel-facts dd { margin-bottom:8px; }
+}
+
 @media (max-width: 1050px) {
   .today-outcomes, .detail-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .today-signal-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }

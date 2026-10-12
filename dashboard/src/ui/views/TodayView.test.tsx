@@ -1,12 +1,22 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Signal } from "../../../../lib/signals/types";
 import type { ProjectView, TodayModel } from "../../../../lib/state/types";
 import { postSignalAction } from "../api";
+import { RoutinePanel } from "../components/RoutinePanel";
 import { TodayView } from "./TodayView";
 
 vi.mock("../api", () => ({ postSignalAction: vi.fn().mockResolvedValue({}) }));
+vi.mock("../components/RoutinePanel", () => ({
+  RoutinePanel: vi.fn(({ projects, refreshKey }: { projects: ProjectView[]; refreshKey: string }) => (
+    <section aria-label="Routine integration fixture" data-testid="routine-panel" data-refresh-key={refreshKey}>
+      {projects.map(({ id }) => id).join(", ")}
+    </section>
+  )),
+}));
+
+beforeEach(() => vi.clearAllMocks());
 
 const task = {
   id: "T-1", project: "alpha", agent: "engineer", title: "Ship evidence", lifecycle: "running" as const,
@@ -48,6 +58,83 @@ function model(signals: Signal[] = [], over: Partial<TodayModel> = {}): TodayMod
 }
 
 describe("TodayView", () => {
+  it("mounts the routine panel after work sessions with only discovered projects and the observed Today timestamp", () => {
+    const projects = [project];
+    const data = model();
+    const onRefresh = vi.fn(); const onOpenTask = vi.fn(); const onOpenProject = vi.fn(); const onPrepareTask = vi.fn();
+    render(<TodayView data={data} error={null} projects={projects} onOpenTask={onOpenTask}
+      onOpenProject={onOpenProject} onPrepareTask={onPrepareTask} onRefresh={onRefresh} />);
+
+    const props = vi.mocked(RoutinePanel).mock.calls.at(-1)?.[0];
+    expect(props).toEqual({ projects, refreshKey: data.generated_at });
+    expect(props?.projects).toBe(projects);
+    const panel = screen.getByTestId("routine-panel");
+    expect(panel.previousElementSibling).toContainElement(screen.getByRole("heading", { name: "Sesiones de trabajo" }));
+    expect(panel).toHaveAttribute("data-refresh-key", data.generated_at);
+    expect(onRefresh).not.toHaveBeenCalled(); expect(postSignalAction).not.toHaveBeenCalled();
+    expect(onOpenTask).not.toHaveBeenCalled(); expect(onOpenProject).not.toHaveBeenCalled(); expect(onPrepareTask).not.toHaveBeenCalled();
+  });
+
+  it("updates the routine refresh binding only when a new Today model is rendered", async () => {
+    const first = model();
+    const second = model([], { generated_at: "2026-09-21T12:01:00Z" });
+    const refresh = vi.fn().mockResolvedValue(second);
+    const common = { error: null, projects: [project], onOpenTask: vi.fn(), onOpenProject: async () => {},
+      onPrepareTask: vi.fn(), onRefresh: refresh };
+    const view = render(<TodayView data={first} {...common} />);
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar Hoy" }));
+    await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    expect(screen.getByTestId("routine-panel")).toHaveAttribute("data-refresh-key", first.generated_at);
+
+    view.rerender(<TodayView data={second} {...common} />);
+    expect(screen.getByTestId("routine-panel")).toHaveAttribute("data-refresh-key", second.generated_at);
+    expect(vi.mocked(RoutinePanel).mock.calls.at(-1)?.[0]).toEqual({ projects: common.projects, refreshKey: second.generated_at });
+    expect(postSignalAction).not.toHaveBeenCalled();
+  });
+
+  it("removes the routine panel when Today has no model and mounts it again with the new timestamp", () => {
+    const common = { error: null, onOpenTask: vi.fn(), onOpenProject: async () => {},
+      onPrepareTask: vi.fn(), onRefresh: async () => model() };
+    const view = render(<TodayView data={null} {...common} />);
+    expect(screen.queryByTestId("routine-panel")).not.toBeInTheDocument();
+    expect(screen.getByText("Cargando Hoy…")).toBeInTheDocument();
+    expect(RoutinePanel).not.toHaveBeenCalled();
+
+    view.rerender(<TodayView data={model()} {...common} />);
+    expect(vi.mocked(RoutinePanel).mock.calls.at(-1)?.[0]).toEqual({ projects: [], refreshKey: model().generated_at });
+    view.rerender(<TodayView data={null} {...common} error="Unavailable fixture" />);
+    expect(screen.queryByTestId("routine-panel")).not.toBeInTheDocument();
+    expect(screen.getByText(/No pude cargar Hoy/)).toBeInTheDocument();
+
+    const latest = model([], { generated_at: "2026-09-21T12:02:00Z" });
+    view.rerender(<TodayView data={latest} {...common} />);
+    expect(screen.getByTestId("routine-panel")).toHaveAttribute("data-refresh-key", latest.generated_at);
+    expect(postSignalAction).not.toHaveBeenCalled();
+  });
+
+  it("preserves the routine observation binding and task activity when a Today refresh fails", () => {
+    const latest = model();
+    render(<TodayView data={latest} error="Unavailable fixture" onOpenTask={vi.fn()} onOpenProject={async () => {}}
+      onPrepareTask={vi.fn()} onRefresh={async () => latest} />);
+    expect(screen.getByTestId("routine-panel")).toHaveAttribute("data-refresh-key", latest.generated_at);
+    expect(screen.getByText(/mostrando el último estado conocido/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /T-1/ })).toBeInTheDocument();
+    expect(screen.getByText("Actividad de Codex")).toBeInTheDocument();
+  });
+
+  it("keeps non-Harness recommendation navigation and explicit task preparation unchanged", async () => {
+    const item = signal(1);
+    const onOpenProject = vi.fn().mockResolvedValue(undefined); const onPrepareTask = vi.fn();
+    render(<TodayView data={model([item])} error={null} onOpenTask={vi.fn()} onOpenProject={onOpenProject}
+      onPrepareTask={onPrepareTask} onRefresh={async () => model()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Abrir proyecto" }));
+    await waitFor(() => expect(onOpenProject).toHaveBeenCalledWith(item.project_id));
+    fireEvent.click(screen.getByRole("button", { name: "Preparar tarea" }));
+    expect(onPrepareTask).toHaveBeenCalledExactlyOnceWith(item);
+    expect(screen.getByTestId("routine-panel")).toBeInTheDocument();
+    expect(postSignalAction).not.toHaveBeenCalled();
+  });
+
   it("opens Harness evidence without preparing a task or launching the editor", () => {
     const onOpenHarness = vi.fn(); const onOpenProject = vi.fn(); const onPrepareTask = vi.fn();
     render(<TodayView data={model([signal(1, { source: "harness", title: "Harness evidence" })])} error={null} onOpenTask={vi.fn()} onOpenProject={onOpenProject} onOpenHarness={onOpenHarness} onPrepareTask={onPrepareTask} onRefresh={async () => model()} />);

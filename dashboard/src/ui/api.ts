@@ -15,13 +15,14 @@ import type { ContextPreview, ContextPreviewRequest } from "../server/context-se
 import type { WorkflowContextService, WorkflowPreviewRequest } from "../server/workflow-context-service";
 import type { WorkflowService } from "../server/workflow-service";
 import type { BudgetReadQuery, BudgetReadView, RoutineConfigureInput, RoutineCreateInput, RoutineDetail, RoutineList,
-  RoutineRevisionInput, RoutineRunResult, RoutineSummary } from "../server/routine-service";
+  RoutineOccurrenceSummary, RoutineRevisionInput, RoutineRunResult, RoutineSummary } from "../server/routine-service";
 import { WORKFLOW_TEMPLATES, type GovernedWorkflow } from "../../../lib/workflows/types";
+import { ROUTINE_ACTIONS, ROUTINE_EVIDENCE_KINDS } from "../../../lib/routines/types";
 
 export type { ContextPreview, ContextPreviewRequest };
 export type { WorkflowPreviewRequest };
 export type { BudgetReadQuery, BudgetReadView, RoutineConfigureInput, RoutineCreateInput, RoutineDetail, RoutineList,
-  RoutineRevisionInput, RoutineRunResult, RoutineSummary };
+  RoutineOccurrenceSummary, RoutineRevisionInput, RoutineRunResult, RoutineSummary };
 export type WorkflowPreview = ReturnType<WorkflowContextService["preview"]>;
 export type WorkflowDetail = ReturnType<WorkflowService["detail"]>;
 export type ContextRole = Pick<AgentRole, "id" | "display_name" | "responsibility" | "sandbox_ceiling"> & { agents: string[] };
@@ -457,28 +458,187 @@ async function routineResponse<T>(path: string, mutation?: { method: "POST" | "P
   return response.json() as Promise<T>;
 }
 
-export function fetchRoutines(): Promise<RoutineList> {
-  return routineResponse("/api/routines");
+// Browser-side compatibility/receipt guards only. These do not grant consent,
+// reserve capacity or establish private worker ownership.
+function routineFields(value: unknown, keys: string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  return Reflect.ownKeys(descriptors).length === keys.length && keys.every((key) => {
+    const entry = descriptors[key]; return entry?.enumerable === true && Object.hasOwn(entry, "value");
+  });
 }
-
-export function fetchRoutine(id: string): Promise<RoutineDetail> {
-  return routineResponse(`/api/routines/${encodeURIComponent(id)}`);
+function routineArray(value: unknown, limit: number, check: (entry: any) => boolean): value is any[] {
+  if (!Array.isArray(value) || value.length > limit || Reflect.ownKeys(value).length !== value.length + 1) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (let index = 0; index < value.length; index++) {
+    const entry = descriptors[String(index)];
+    if (!entry?.enumerable || !Object.hasOwn(entry, "value") || !check(entry.value)) return false;
+  }
+  return true;
 }
-
-export function createRoutine(input: RoutineCreateInput): Promise<RoutineDetail> {
-  return routineResponse("/api/routines", { method: "POST", body: input });
+const routineInteger = (value: unknown, maximum = Number.MAX_SAFE_INTEGER): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum;
+const routineId = (value: unknown): value is string => typeof value === "string"
+  && /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$(?![\s\S])/.test(value) && !value.includes("..")
+  && !["constructor", "prototype", "__proto__"].includes(value);
+const routineHash = (value: unknown): boolean => typeof value === "string" && /^[a-f0-9]{64}$(?![\s\S])/.test(value);
+function routineTime(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$(?![\s\S])/.test(value)) return false;
+  const parsed = Date.parse(value);
+  return Number.isSafeInteger(parsed) && Number(value.slice(0, 4)) > 0 && new Date(parsed).toISOString().slice(0, 19) === value.slice(0, 19);
 }
-
-export function configureRoutine(id: string, input: RoutineConfigureInput): Promise<RoutineDetail> {
-  return routineResponse(`/api/routines/${encodeURIComponent(id)}`, { method: "PUT", body: input });
+const routineNullableTime = (value: unknown): boolean => value === null || routineTime(value);
+const routineEnum = (value: unknown, choices: readonly string[]): boolean => typeof value === "string" && choices.includes(value);
+function routineScope(value: unknown): boolean {
+  return routineFields(value, ["kind", "id"]) && routineId(value.id)
+    && (value.kind === "company" ? value.id === "surtec" : routineEnum(value.kind, ["project", "objective"]));
 }
-
-export function runRoutine(id: string, expectedRevision: number): Promise<RoutineRunResult> {
-  return routineResponse(`/api/routines/${encodeURIComponent(id)}/run`, { method: "POST", body: { expected_revision: expectedRevision } });
+function routineRecord(value: unknown): value is RoutineSummary["routine"] {
+  if (!routineFields(value, ["schema_version", "id", "revision", "action", "scope", "enabled", "schedule", "schedule_anchor_at", "concurrency", "catch_up", "policy", "limits", "created_at", "updated_at"])) return false;
+  const policy = value.policy, limits = value.limits;
+  const interval = typeof value.schedule === "string" && /^every:([1-9][0-9]*)m$(?![\s\S])/.exec(value.schedule);
+  return value.schema_version === 1 && routineId(value.id) && routineInteger(value.revision) && value.revision > 0
+    && routineEnum(value.action, ROUTINE_ACTIONS) && routineScope(value.scope) && typeof value.enabled === "boolean"
+    && (value.schedule === null ? value.schedule_anchor_at === null : !!interval && Number(interval[1]) >= 15 && Number(interval[1]) <= 10080
+      && routineTime(value.schedule_anchor_at) && routineTime(value.updated_at) && Date.parse(value.schedule_anchor_at) === Date.parse(value.updated_at))
+    && routineEnum(value.concurrency, ["skip", "coalesce"]) && routineEnum(value.catch_up, ["skip-missed", "run-once"])
+    && routineFields(policy, ["revision", "fingerprint", "policy_ids"]) && routineInteger(policy.revision) && policy.revision > 0 && routineHash(policy.fingerprint)
+    && routineArray(policy.policy_ids, 64, routineId) && policy.policy_ids.length > 0 && new Set(policy.policy_ids).size === policy.policy_ids.length
+    && routineFields(limits, ["max_projects", "max_attempts", "max_runtime_ms", "max_concurrent_occurrences"])
+    && routineInteger(limits.max_projects, 25) && limits.max_projects > 0 && limits.max_attempts === 1
+    && routineInteger(limits.max_runtime_ms, 60000) && limits.max_runtime_ms > 0 && limits.max_concurrent_occurrences === 1
+    && routineTime(value.created_at) && routineTime(value.updated_at) && Date.parse(value.created_at) <= Date.parse(value.updated_at);
 }
-
-export function disableRoutine(id: string, expectedRevision: number): Promise<RoutineDetail> {
-  return routineResponse(`/api/routines/${encodeURIComponent(id)}/disable`, { method: "POST", body: { expected_revision: expectedRevision } });
+function routineReceipt(value: unknown, occurrence: Record<string, unknown>): boolean {
+  if (!routineFields(value, ["schema_version", "occurrence_id", "occurrence_key", "routine_id", "routine_revision", "slot", "action", "scope", "policy_fingerprint", "cap_fingerprint", "project_ids", "started_at", "finished_at", "captured_at", "freshness", "sources", "counts", "consumption", "budget_outcome", "proposals", "failure_code", "next_action"])) return false;
+  const counts = value.counts, consumption = value.consumption;
+  if (!routineFields(counts, ["projects_selected", "facts_total", "facts_fresh", "facts_unavailable", "signals_evaluated", "proposals_created", "reports_written"])
+    || !routineFields(consumption, ["attempts", "runtime_ms", "runtime_state", "model_calls", "total_tokens", "workspace_writes"])) return false;
+  return value.schema_version === 1 && value.occurrence_id === occurrence.id && routineHash(value.occurrence_key)
+    && value.routine_id === occurrence.routine_id && value.routine_revision === occurrence.routine_revision
+    && routineTime(value.slot) && Date.parse(value.slot) === Date.parse(occurrence.slot as string)
+    && routineEnum(value.action, ROUTINE_ACTIONS) && routineScope(value.scope) && routineHash(value.policy_fingerprint) && routineHash(value.cap_fingerprint)
+    && routineArray(value.project_ids, 25, routineId) && new Set(value.project_ids).size === value.project_ids.length
+    && value.started_at === occurrence.started_at && value.finished_at === occurrence.finished_at && routineTime(value.captured_at)
+    && routineEnum(value.freshness, ["fresh", "partial", "stale", "unavailable"])
+    && routineArray(value.sources, 10000, (source) => routineFields(source, ["kind", "project_id", "state", "observed_at", "fingerprint"])
+      && routineEnum(source.kind, ROUTINE_EVIDENCE_KINDS) && (source.project_id === null || routineId(source.project_id) && (value.project_ids as string[]).includes(source.project_id))
+      && routineEnum(source.state, ["fresh", "stale", "unavailable"]) && routineNullableTime(source.observed_at)
+      && (source.fingerprint === null || routineHash(source.fingerprint)) && (source.observed_at === null) === (source.fingerprint === null)
+      && (source.state === "unavailable" || source.observed_at !== null) && (source.observed_at === null || Date.parse(source.observed_at as string) <= Date.parse(value.captured_at as string)))
+    && new Set(value.sources.map((source: any) => JSON.stringify([source.kind, source.project_id]))).size === value.sources.length
+    && Object.values(counts).every((count) => routineInteger(count, 10000)) && counts.projects_selected === value.project_ids.length
+    && counts.facts_total === value.sources.length && counts.facts_fresh === value.sources.filter((source: any) => source.state === "fresh").length
+    && counts.facts_unavailable === value.sources.filter((source: any) => source.state === "unavailable").length && routineInteger(counts.reports_written, 1)
+    && (consumption.attempts === null || consumption.attempts === 0 || consumption.attempts === 1)
+    && (consumption.runtime_ms === null || routineInteger(consumption.runtime_ms)) && routineEnum(consumption.runtime_state, ["complete", "unknown"])
+    && (consumption.runtime_state !== "complete" || consumption.runtime_ms !== null && consumption.attempts !== null
+      && (consumption.attempts === 0 || value.finished_at !== null))
+    && (consumption.attempts !== 0 || value.started_at === null && consumption.runtime_ms === 0 && consumption.runtime_state === "complete"
+      && counts.signals_evaluated === 0 && counts.proposals_created === 0 && counts.reports_written === 0)
+    && (consumption.attempts !== 1 || value.started_at !== null)
+    && consumption.model_calls === 0 && consumption.total_tokens === 0 && consumption.workspace_writes === 0
+    && routineEnum(value.budget_outcome, ["within-limit", "exhausted", "denied", "unknown"])
+    && routineArray(value.proposals, 10000, (proposal) => routineFields(proposal, ["key", "fingerprint", "issue_id"])
+      && routineHash(proposal.key) && routineHash(proposal.fingerprint) && (proposal.issue_id === null || routineId(proposal.issue_id)))
+    && (value.failure_code === null || routineEnum(value.failure_code, ["budget-denied", "budget-exhausted", "accounting-unavailable", "ownership-unavailable", "source-unavailable", "scope-too-large", "state-invalid", "action-failed", "cancelled", "deadline-exceeded"]))
+    && routineEnum(value.next_action, ["none", "inspect-evidence", "review-proposals", "inspect-budget", "resolve-ownership", "run-new-occurrence"])
+    && (value.started_at === null || Date.parse(value.started_at as string) <= Date.parse(value.captured_at as string))
+    && (value.finished_at === null || Date.parse(value.finished_at as string) <= Date.parse(value.captured_at as string))
+    && counts.proposals_created === value.proposals.filter((proposal: any) => proposal.issue_id !== null).length
+    && new Set(value.proposals.map((proposal: any) => proposal.key)).size === value.proposals.length
+    && new Set(value.proposals.filter((proposal: any) => proposal.issue_id !== null).map((proposal: any) => proposal.issue_id)).size === counts.proposals_created
+    && (counts.proposals_created === 0 || value.next_action === "review-proposals")
+    && (value.action === "propose-issues" || value.proposals.length === 0) && (value.action === "generate-local-report" || counts.reports_written === 0)
+    && (value.failure_code === null || value.next_action !== "none")
+    && (value.budget_outcome !== "denied" || consumption.attempts === 0 && value.failure_code !== null)
+    && (consumption.runtime_state !== "unknown" || ["unknown", "exhausted"].includes(value.budget_outcome as string))
+    && (!["unknown", "exhausted"].includes(value.budget_outcome as string) || value.freshness !== "fresh" && value.failure_code !== null)
+    && (value.freshness !== "fresh" || value.sources.length > 0 && value.sources.every((source: any) => source.state === "fresh")
+      && consumption.attempts === 1 && consumption.runtime_state === "complete" && value.finished_at !== null
+      && value.budget_outcome === "within-limit" && value.failure_code === null && (value.action !== "generate-local-report" || counts.reports_written === 1));
+}
+function routineOccurrence(value: unknown, id: string, revision = Number.MAX_SAFE_INTEGER): value is NonNullable<RoutineSummary["last_occurrence"]> {
+  return routineFields(value, ["id", "routine_id", "routine_revision", "slot", "trigger", "status", "started_at", "finished_at", "cancel_requested_at", "receipt"])
+    && routineId(value.id) && value.routine_id === id && routineInteger(value.routine_revision, revision) && value.routine_revision > 0 && routineTime(value.slot)
+    && routineEnum(value.trigger, ["scheduled", "manual", "catch-up", "coalesced"])
+    && routineEnum(value.status, ["reserved", "running", "completed", "partial", "failed", "cancelled", "needs-review"])
+    && routineNullableTime(value.started_at) && routineNullableTime(value.finished_at) && routineNullableTime(value.cancel_requested_at)
+    && (value.started_at === null || value.finished_at === null || Date.parse(value.started_at as string) <= Date.parse(value.finished_at as string))
+    && (["reserved", "running"].includes(value.status as string) ? value.receipt === null && value.finished_at === null
+      && (value.status === "reserved" ? value.started_at === null : value.started_at !== null)
+      : routineReceipt(value.receipt, value) && (value.status === "needs-review" || value.finished_at !== null)
+        && (value.status === "completed" ? (value.receipt as any).freshness === "fresh" : (value.receipt as any).freshness !== "fresh")
+        && (!["failed", "cancelled", "needs-review"].includes(value.status as string) || (value.receipt as any).failure_code !== null)
+        && (value.status !== "cancelled" || value.cancel_requested_at !== null && (value.receipt as any).failure_code === "cancelled"));
+}
+function routineSummary(value: unknown, detail = false): value is RoutineSummary {
+  return routineFields(value, ["routine", "last_occurrence", "next_slot", "occurrences_total", ...(detail ? ["occurrences", "execution"] : [])])
+    && routineRecord(value.routine) && routineInteger(value.occurrences_total, 10000)
+    && (value.occurrences_total === 0 ? value.last_occurrence === null : routineOccurrence(value.last_occurrence, value.routine.id, value.routine.revision))
+    && routineNullableTime(value.next_slot) && (value.next_slot === null || value.routine.enabled && value.routine.schedule !== null
+      && Date.parse(value.next_slot as string) > Date.parse(value.routine.schedule_anchor_at!)
+      && (Date.parse(value.next_slot as string) - Date.parse(value.routine.schedule_anchor_at!)) % (Number(value.routine.schedule.slice(6, -1)) * 60000) === 0);
+}
+function routineDetail(value: unknown, id?: string): asserts value is RoutineDetail {
+  if (!routineSummary(value, true)) throw new Error("Unsupported routine detail; reload before a new explicit action");
+  const detail = value as RoutineDetail;
+  if (id !== undefined && detail.routine.id !== id || !routineFields(detail.execution, ["state", "executable"])
+    || !routineEnum(detail.execution.state, ["inactive", "fixture-enabled"]) || detail.execution.executable !== false
+    || !routineArray(detail.occurrences, 20, (entry) => routineOccurrence(entry, detail.routine.id, detail.routine.revision))
+    || detail.occurrences.length !== Math.min(20, detail.occurrences_total) || new Set(detail.occurrences.map((entry) => entry.id)).size !== detail.occurrences.length
+    || detail.occurrences.length > 0 && JSON.stringify(detail.last_occurrence) !== JSON.stringify(detail.occurrences[0])) {
+    throw new Error("Unsupported routine detail; reload before a new explicit action");
+  }
+}
+export async function fetchRoutines(): Promise<RoutineList> {
+  const value = await routineResponse<RoutineList>("/api/routines");
+  if (!routineFields(value, ["schema_version", "state", "observed_at", "revision", "routines"]) || value.schema_version !== 1
+    || !routineEnum(value.state, ["absent", "available", "unavailable"]) || !routineNullableTime(value.observed_at)
+    || !routineArray(value.routines, 10000, (entry) => routineSummary(entry)) || new Set(value.routines.map((entry) => entry.routine.id)).size !== value.routines.length
+    || (value.state === "available" ? !routineInteger(value.revision) || value.revision < 1 || value.observed_at === null
+      : value.routines.length !== 0 || value.revision !== null || value.state === "absent" && value.observed_at === null || value.state === "unavailable" && value.observed_at !== null)) {
+    throw new Error("Unsupported routine list; no empty or fresh state is inferred");
+  }
+  return value;
+}
+export async function fetchRoutine(id: string): Promise<RoutineDetail> {
+  const value = await routineResponse<RoutineDetail>(`/api/routines/${encodeURIComponent(id)}`); routineDetail(value, id); return value;
+}
+export async function createRoutine(input: RoutineCreateInput): Promise<RoutineDetail> {
+  const value = await routineResponse<RoutineDetail>("/api/routines", { method: "POST", body: input }); routineDetail(value);
+  if (value.routine.revision !== 1 || value.routine.enabled || value.routine.schedule !== null || value.occurrences_total !== 0
+    || value.routine.action !== input.action || value.routine.scope.kind !== input.scope.kind || value.routine.scope.id !== input.scope.id) {
+    throw new Error("Unsupported routine creation receipt; inspect current evidence without replay");
+  }
+  return value;
+}
+export async function configureRoutine(id: string, input: RoutineConfigureInput): Promise<RoutineDetail> {
+  const value = await routineResponse<RoutineDetail>(`/api/routines/${encodeURIComponent(id)}`, { method: "PUT", body: input }); routineDetail(value, id);
+  if (value.routine.revision !== input.expected_revision + 1 || value.routine.action !== input.action
+    || value.routine.scope.kind !== input.scope.kind || value.routine.scope.id !== input.scope.id || value.routine.enabled !== input.enabled
+    || value.routine.schedule !== input.schedule || value.routine.concurrency !== input.concurrency || value.routine.catch_up !== input.catch_up) {
+    throw new Error("Unsupported routine configuration receipt; inspect current evidence without replay");
+  }
+  return value;
+}
+export async function runRoutine(id: string, expectedRevision: number): Promise<RoutineRunResult> {
+  const value = await routineResponse<RoutineRunResult>(`/api/routines/${encodeURIComponent(id)}/run`, { method: "POST", body: { expected_revision: expectedRevision } });
+  if (!routineFields(value, ["status", "occurrence", "execution"]) || !routineEnum(value.status, ["admitted", "existing"])
+    || !routineOccurrence(value.occurrence, id, expectedRevision) || value.occurrence.routine_revision !== expectedRevision
+    || value.occurrence.trigger !== "manual" || value.status === "admitted" && value.occurrence.status !== "running"
+    || !routineFields(value.execution, ["state", "executable"]) || value.execution.state !== "fixture-enabled" || value.execution.executable !== false) {
+    throw new Error("Unsupported routine execution receipt; inspect current evidence without replay");
+  }
+  return value;
+}
+export async function disableRoutine(id: string, expectedRevision: number): Promise<RoutineDetail> {
+  const value = await routineResponse<RoutineDetail>(`/api/routines/${encodeURIComponent(id)}/disable`, { method: "POST", body: { expected_revision: expectedRevision } }); routineDetail(value, id);
+  if (value.routine.enabled || value.routine.revision !== expectedRevision + 1) {
+    throw new Error("Unsupported routine disable receipt; inspect current evidence without replay");
+  }
+  return value;
 }
 
 export function fetchBudgets(query: BudgetReadQuery = {}): Promise<BudgetReadView> {

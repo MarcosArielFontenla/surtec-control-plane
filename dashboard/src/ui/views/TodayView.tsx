@@ -6,6 +6,7 @@ import { postSignalAction } from "../api";
 import { AttentionPanel } from "../components/AttentionPanel";
 import { InProgressColumn } from "../components/InProgressColumn";
 import { WorkSessionsPanel } from "../components/WorkSessionsPanel";
+import { RoutinePanel } from "../components/RoutinePanel";
 import { relativeTime } from "../relative-time";
 
 const TIER_LABELS: Record<Signal["ranking"]["tier"], string> = {
@@ -249,6 +250,7 @@ export function TodayView({
       </section>
 
       <WorkSessionsPanel sessions={data.portfolio.sessions} projects={projects} onChanged={onRefresh} onOpenTask={onOpenTask} />
+      <RoutinePanel projects={projects} refreshKey={data.generated_at} />
 
       <SignalSection title="Ahora · recomendaciones principales" signals={data.portfolio.recommendations} {...signalProps}
         empty={recommendationEmpty} />
