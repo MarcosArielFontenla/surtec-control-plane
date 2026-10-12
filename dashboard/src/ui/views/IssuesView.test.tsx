@@ -5,6 +5,7 @@ import { IssuesView } from "./IssuesView";
 import * as api from "../api";
 import type { Inbox } from "../../../../lib/state/types";
 import type { IssueLineage, WorkIssue } from "../../../../lib/issues/types";
+import { BUDGET_DIMENSIONS, type BudgetAmounts } from "../../../../lib/budgets/types";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -15,6 +16,7 @@ beforeEach(() => {
   vi.spyOn(api, "getContextRoles").mockResolvedValue({ roles: [] });
   vi.spyOn(api, "getClientContextOptions").mockResolvedValue({ available: false, categories: [] });
   vi.spyOn(api, "getWorkflows").mockResolvedValue({ workflows: [] });
+  vi.spyOn(api, "fetchBudgets").mockResolvedValue(projectBudget());
 });
 
 const inbox: Inbox = {
@@ -24,6 +26,16 @@ const inbox: Inbox = {
   ],
   repos: [{ id: "alpha", slug: "owner/alpha", ok: true }, { id: "beta", slug: "owner/beta", ok: true }],
 };
+
+function projectBudget(sourceId = "issue-project-policy"): api.BudgetReadView {
+  return { schema_version: 1, observed_at: "2026-10-11T12:00:00.000Z", status: "unavailable", executable: false, reserves_capacity: false,
+    ledger: { status: "unavailable", revision: null, updated_at: null }, policy: { revision: 2, fingerprint: "e".repeat(64) },
+    sources: [{ id: sourceId, kind: "policy", scope: { kind: "project", id: "alpha" }, revision: 2, fingerprint: "e".repeat(64), period: "none", bucket: "none",
+      dimensions: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: dimension === "attempts" ? "configured" : "unconfigured",
+        cap: dimension === "attempts" ? 10 : null, proven_consumed: null, consumed: null, reserved: null, remaining: null, warning: null }])) as api.BudgetReadView["sources"][number]["dimensions"] }],
+    pricing: { status: "unavailable", reason: "no-versioned-source" },
+    denials: [{ code: "budget-accounting-unavailable", dimension: "attempts", source_ids: [sourceId] }] };
+}
 
 function reviewedFixture(): IssueLineage {
   const issue: WorkIssue = {
@@ -64,6 +76,113 @@ function authorizedFixture() {
 }
 
 describe("IssuesView", () => {
+  it("does not display another issue's optional budget while preserving the exact context dispatch gate", async () => {
+    const fixture = authorizedFixture();
+    fixture.requestPreview.mockResolvedValue({ ...fixture.preview, budget_preview: {
+      schema_version: 1, observed_at: "2026-10-11T12:00:00.000Z", status: "unavailable", can_admit: false, executable: false, reserves_capacity: false,
+      ledger: { status: "unavailable", revision: null, updated_at: null },
+      binding: { attribution: { company_id: "surtec", project_ids: ["alpha"], objective_ids: [], issue_id: "different-issue",
+        role_id: "software-engineer", execution_id: "foreign-preview-only" }, cap_fingerprint: "f".repeat(64), policy_bindings: [],
+      ceilings: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, dimension === "total_tokens" ? 32109 : 1])) as BudgetAmounts },
+      resolution: null, prospective_hold: null, denials: [{ code: "budget-ledger-unavailable", source_ids: ["ledger:unavailable"] }],
+      limitation: "Synthetic informational preview only",
+    } });
+    render(<IssuesView />);
+    const button = await screen.findByRole("button", { name: "Previsualizar contexto del issue" });
+    await waitFor(() => expect(button).not.toBeDisabled());
+    fireEvent.click(button);
+    await screen.findByText("Contexto habilitado para este pedido.");
+    const context = screen.getByRole("region", { name: "Preview de contexto" });
+    const summary = within(context).getByRole("region", { name: "Presupuesto informativo del contexto" });
+    expect(summary).toHaveTextContent("Presupuesto no disponible.");
+    expect(summary).not.toHaveTextContent("32109");
+    expect(summary).not.toHaveTextContent("f".repeat(64));
+    expect(screen.getByRole("button", { name: "Despachar tarea aprobada" })).not.toBeDisabled();
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+    expect(api.fetchBudgets).not.toHaveBeenCalled();
+  });
+
+  it("reads project budget only for expanded lineage without inventing issue or objective attribution", async () => {
+    const lineage = reviewedFixture();
+    lineage.issue = { ...lineage.issue, objective_id: "explicit-issue-objective" };
+    vi.spyOn(api, "getInbox").mockResolvedValue({ items: [], repos: [] });
+    vi.mocked(api.getWorkIssues).mockResolvedValue({ issues: [lineage.issue] });
+    vi.spyOn(api, "getWorkIssue").mockResolvedValue(lineage);
+    render(<IssuesView />);
+    await screen.findByText("Review fixture");
+    expect(api.fetchBudgets).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Ver linaje y evidencia" }));
+    await screen.findAllByText(/issue-project-policy/);
+    const budget = within(screen.getByRole("region", { name: "Presupuesto del proyecto" }));
+    expect(budget.getByText("Disponibilidad informativa: no disponible.")).toBeInTheDocument();
+    expect(budget.getAllByText(/límite 10 · consumido desconocido · probado desconocido · reservado desconocido · restante desconocido/)).toHaveLength(1);
+    expect(api.fetchBudgets).toHaveBeenCalledTimes(1);
+    expect(api.fetchBudgets).toHaveBeenCalledWith({ project_id: "alpha" });
+    expect(screen.getByText("Presupuesto del proyecto")).toBeInTheDocument();
+    expect(screen.getByText(/no el presupuesto exacto del issue/)).toBeInTheDocument();
+    expect(document.body.textContent).toContain("budget-accounting-unavailable");
+    expect(document.body.textContent).not.toContain("explicit-issue-objective");
+    expect(screen.getByText(/Human acceptance evidence is missing/)).toBeInTheDocument();
+  });
+
+  it("retains the manual candidate acceptance gate when the optional project budget is unavailable", async () => {
+    const ready = reviewedFixture();
+    vi.spyOn(api, "getInbox").mockResolvedValue({ items: [], repos: [] });
+    vi.mocked(api.getWorkIssues).mockResolvedValue({ issues: [ready.issue] });
+    vi.spyOn(api, "getWorkIssue").mockResolvedValue(ready);
+    vi.mocked(api.fetchBudgets).mockRejectedValue(new Error("Synthetic private budget failure"));
+    const accept = vi.spyOn(api, "acceptWorkIssueCandidate");
+    render(<IssuesView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Revisar candidato" }));
+    await screen.findByRole("checkbox", { name: "The fixture persists" });
+    await screen.findByText("No pude consultar el presupuesto; el resto de la vista sigue disponible.");
+    expect(api.fetchBudgets).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Aceptar este candidato local" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "The fixture persists" }));
+    expect(screen.getByRole("button", { name: "Aceptar este candidato local" })).not.toBeDisabled();
+    expect(accept).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("Synthetic private budget failure");
+  });
+
+  it("refreshes budget evidence after successful issue acceptance even when the issue list revision does not advance", async () => {
+    const ready = reviewedFixture();
+    vi.spyOn(api, "getInbox").mockResolvedValue({ items: [], repos: [] });
+    vi.mocked(api.getWorkIssues).mockResolvedValue({ issues: [ready.issue] });
+    vi.spyOn(api, "getWorkIssue").mockResolvedValue(ready);
+    const accept = vi.spyOn(api, "acceptWorkIssueCandidate").mockResolvedValue({ issue: { ...ready.issue, status: "done", revision: 5 } });
+    render(<IssuesView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Revisar candidato" }));
+    await screen.findAllByText(/issue-project-policy/);
+    vi.mocked(api.fetchBudgets).mockResolvedValue(projectBudget("post-action-project-policy"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "The fixture persists" }));
+    fireEvent.click(screen.getByRole("button", { name: "Aceptar este candidato local" }));
+    await screen.findAllByText(/post-action-project-policy/);
+    expect(accept).toHaveBeenCalledWith(ready.issue, ready.candidates[0], ["The fixture persists"], false);
+    expect(api.fetchBudgets).toHaveBeenCalledTimes(2);
+    expect(api.fetchBudgets).toHaveBeenLastCalledWith({ project_id: "alpha" });
+    expect(document.body.textContent).not.toContain("issue-project-policy");
+  });
+
+  it("discards an old budget request after lineage is collapsed and reopened", async () => {
+    const ready = reviewedFixture();
+    vi.spyOn(api, "getInbox").mockResolvedValue({ items: [], repos: [] });
+    vi.mocked(api.getWorkIssues).mockResolvedValue({ issues: [ready.issue] });
+    vi.spyOn(api, "getWorkIssue").mockResolvedValue(ready);
+    let finishOld!: (value: api.BudgetReadView) => void;
+    vi.mocked(api.fetchBudgets).mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
+      .mockResolvedValueOnce(projectBudget("reopened-project-policy"));
+    render(<IssuesView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Ver linaje y evidencia" }));
+    await waitFor(() => expect(api.fetchBudgets).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Ocultar linaje" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ver linaje y evidencia" }));
+    await screen.findAllByText(/reopened-project-policy/);
+    await act(async () => finishOld(projectBudget("stale-project-policy")));
+    expect(document.body.textContent).not.toContain("stale-project-policy");
+    expect(document.body.textContent).toContain("reopened-project-policy");
+    expect(api.fetchBudgets).toHaveBeenCalledTimes(2);
+  });
+
   it("ignores an older ownership refresh that finishes after the latest snapshot", async () => {
     const fixture = authorizedFixture(); let finish!: (value: { workflows: never[] }) => void;
     vi.mocked(api.getWorkflows).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));

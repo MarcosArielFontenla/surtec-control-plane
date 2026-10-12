@@ -5,6 +5,8 @@ import type { IssueLineage, WorkIssue } from "../../../../lib/issues/types";
 import type { ContextManifest } from "../../../../lib/context/types";
 import type { WorkflowRoleId, WorkflowRoleOutput } from "../../../../lib/workflows/types";
 import type { ClientContextCategory } from "../../../../lib/client-portfolio";
+import { BUDGET_DIMENSIONS, type BudgetAmounts } from "../../../../lib/budgets/types";
+import type { BudgetPreview } from "../../server/budget-service";
 import * as api from "../api";
 import { WorkflowPanel } from "./WorkflowPanel";
 
@@ -31,6 +33,27 @@ function preview(request: api.WorkflowPreviewRequest): api.WorkflowPreview {
     role_assignments: assignments, review_policy: reviewPolicy, budget: request.budget!, correction: { enabled: false, max_corrections: 0, budget: null }, candidate: null, source_fingerprints: [], policy_fingerprint: hash, testing_policy_fingerprint: hash, minimum_review_depth: "focused", testing_mode: "functional",
     roles: assignments.map((entry) => ({ role_id: entry.role_id, manifest: { ...manifest(entry.role_id, entry.agent_id), selected_categories: entry.client_context_categories } })), allowed: true, blocked_reasons: [], runtime_read_limitation: "Runtime reads are not guaranteed project-only.", candidate_reference_limitation: "Live tree inspection is separate." };
 }
+
+function roleBudget(status: "available" | "exhausted" | "unavailable", sourceId: string): BudgetPreview {
+  const caps: BudgetAmounts = { attempts: 1, runtime_ms: 60000, total_tokens: 10000, concurrent_reads: 1, concurrent_writes: 0,
+    review_attempts: 0, review_runtime_ms: 0, review_total_tokens: 0, corrections: 0 };
+  const remaining = (dimension: typeof BUDGET_DIMENSIONS[number]) => status === "unavailable" ? null : status === "exhausted" && dimension === "total_tokens" ? 0 : caps[dimension];
+  const denials: NonNullable<BudgetPreview["resolution"]>["denials"] = status === "available" ? [] : [{ code: status === "exhausted" ? "budget-exhausted" : "budget-accounting-unavailable", dimension: "total_tokens", source_ids: [sourceId] }];
+  return { schema_version: 1, observed_at: at, status, can_admit: status === "available", executable: false, reserves_capacity: false,
+    ledger: { status: "available", revision: 2, updated_at: at }, binding: { attribution: { company_id: "surtec", project_ids: ["alpha"], objective_ids: [], issue_id: "I-1", role_id: "portfolio-analyst", execution_id: "preview-only" }, cap_fingerprint: hash, policy_bindings: [], ceilings: caps },
+    resolution: { cap_fingerprint: hash, policy_bindings: [], ceilings: caps, can_admit: status === "available", pricing: { status: "unavailable", reason: "no-versioned-source" }, denials,
+      dimensions: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { ceiling: caps[dimension], remaining: remaining(dimension), status: status === "unavailable" ? "unavailable" : status === "exhausted" && dimension === "total_tokens" ? "exhausted" : "available", warning: false, limiting_sources: [sourceId] }])) as NonNullable<BudgetPreview["resolution"]>["dimensions"],
+      sources: [{ id: sourceId, kind: "existing", period: "none", bucket: "none", revision: 1, fingerprint: hash,
+        dimensions: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: "configured", cap: caps[dimension], proven_consumed: status === "exhausted" && dimension === "total_tokens" ? caps[dimension] : 0,
+          consumed: status === "unavailable" ? null : status === "exhausted" && dimension === "total_tokens" ? caps[dimension] : 0, reserved: 0, remaining: remaining(dimension), warning: false }])) as NonNullable<BudgetPreview["resolution"]>["sources"][number]["dimensions"] }] },
+    prospective_hold: { ...caps }, denials, limitation: "Informational preview only; no capacity is reserved and no execution authority is granted." };
+}
+
+function unavailableProjectBudget(): api.BudgetReadView {
+  return { schema_version: 1, observed_at: at, status: "unavailable", executable: false, reserves_capacity: false,
+    ledger: { status: "unavailable", revision: null, updated_at: null }, policy: null, sources: [],
+    pricing: { status: "unavailable", reason: "no-versioned-source" }, denials: [{ code: "budget-accounting-unavailable", source_ids: ["ledger:unavailable"] }] };
+}
 function detail(kind: "plan-approval" | "proposal-acknowledgement" | "candidate-acceptance" | "risk-acknowledgement" | "recovery" = "plan-approval"): api.WorkflowDetail {
   const output: WorkflowRoleOutput = { schema_version: 1, kind: "plan", status: "completed", summary: "Synthetic plan ready", evidence_ids: [], unresolved_questions: [], risks: [], recommended_next_action: "Review exact plan", requested_decision: null, plan: ["Inspect bounded source", "Verify candidate"], scope_change_required: false };
   return { schema_version: 1, workflow: { schema_version: 1, id: "W-1", revision: 4, project_id: "alpha", issue_id: "I-1", scope_revision: 1, template_id: "implementation", template_version: 1, status: "waiting-human", work_scale: "trivial", current_grant_id: "G-1", authority_revision: 1, stage_ids: ["S-1"], current_stage_id: "S-1", pending_decision_id: "D-1", lineage_id: null, candidate: null, approved_plan: null, review_policy: reviewPolicy, budget, counters: { tasks: 1, attempts: 1, runtime_ms: 1200, total_tokens: 20, accounting_complete: true }, blocked_reason: null, recovery_state: "none", next_action: "Review the exact current decision", stop_requested_at: null, created_at: at, updated_at: at, completed_at: null },
@@ -51,6 +74,7 @@ beforeEach(() => {
   vi.spyOn(api, "getClientContextOptions").mockResolvedValue({ available: true, categories: ["confidential-notes", "client-identity"] });
   vi.spyOn(api, "previewWorkflow").mockImplementation(async (request) => preview(request)); vi.spyOn(api, "startWorkflow").mockResolvedValue(detail());
   vi.spyOn(api, "decideWorkflow").mockResolvedValue(detail()); vi.spyOn(api, "controlWorkflow").mockResolvedValue(detail());
+  vi.spyOn(api, "fetchBudgets").mockResolvedValue(unavailableProjectBudget());
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -74,12 +98,14 @@ describe("WorkflowPanel", () => {
   });
   it.each(["budget", "agent", "consent", "template", "role"])("invalidates preview and acknowledgement when changing %s", async (change) => {
     render(<WorkflowPanel issue={issue} onChanged={async () => {}} />); await openPreview(); fireEvent.click(screen.getByRole("checkbox", { name: /Apruebo este template/ }));
+    expect(screen.getByRole("region", { name: "Presupuesto informativo del workflow · portfolio-analyst" })).toBeInTheDocument();
     if (change === "budget") fireEvent.change(screen.getByLabelText("Tokens máximos"), { target: { value: 50000 } });
     if (change === "agent") fireEvent.change(screen.getByLabelText("Agente de portfolio-analyst"), { target: { value: "product-manager" } });
     if (change === "consent") fireEvent.click(screen.getByRole("checkbox", { name: /Notas confidenciales/ }));
     if (change === "template") fireEvent.change(screen.getByLabelText("Template de workflow"), { target: { value: "operations-investigation" } });
     if (change === "role") fireEvent.change(screen.getByLabelText("Rol de análisis"), { target: { value: "planner" } });
     expect(screen.queryByRole("region", { name: "Preview de workflow" })).toBeNull(); expect(screen.getByRole("button", { name: "Iniciar workflow aprobado" })).toBeDisabled(); expect(api.startWorkflow).not.toHaveBeenCalled();
+    expect(screen.queryByRole("region", { name: "Presupuesto informativo del workflow · portfolio-analyst" })).toBeNull();
   });
   it.each(["refresh", "revision"])("clears confidential consent and late previews after %s", async (change) => {
     let finish!: (value: api.WorkflowPreview) => void, request!: api.WorkflowPreviewRequest;
@@ -193,6 +219,62 @@ describe("WorkflowPanel", () => {
     view.rerender(<WorkflowPanel issue={otherIssue} onChanged={async () => {}} />);
     await screen.findByLabelText("Template de workflow"); await act(async () => finish(detail()));
     expect(screen.queryByLabelText("Motivo de la decisión")).toBeNull(); expect(api.decideWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("shows only the effective workflow projection per role without summing or substituting the raw role budget", async () => {
+    vi.mocked(api.previewWorkflow).mockImplementation(async (request) => ({ ...preview(request), budget_previews: [{ role_id: "portfolio-analyst", preview: roleBudget("available", "role-only-source"), workflow_preview: roleBudget("available", "workflow-effective-source") }] }));
+    render(<WorkflowPanel issue={issue} onChanged={async () => {}} />); await openPreview();
+    const summary = screen.getByRole("region", { name: "Presupuesto informativo del workflow · portfolio-analyst" });
+    expect(within(summary).getAllByText("workflow-effective-source", { exact: false }).length).toBeGreaterThan(0);
+    expect(within(summary).getByText("Disponibilidad informativa: disponible.")).toBeInTheDocument();
+    expect(within(summary).queryByText("role-only-source", { exact: false })).toBeNull();
+    expect(screen.getByText(/vistas superpuestas; no se suman/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Iniciar workflow aprobado" })).toBeDisabled();
+    expect(api.startWorkflow).not.toHaveBeenCalled(); expect(api.fetchBudgets).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "unavailable", "exhausted", "duplicate", "wrong role", "missing combined", "wrong project attribution", "wrong role attribution", "wrong issue attribution", "multiple project attribution", "missing attribution"])("keeps %s budget evidence informational and cannot enable a blocked workflow", async (state) => {
+    vi.mocked(api.previewWorkflow).mockImplementation(async (request) => {
+      const value = preview(request); value.allowed = false; value.blocked_reasons = ["Explicit synthetic workflow authority denial"];
+      if (state !== "missing") {
+        const entry = { role_id: "portfolio-analyst" as WorkflowRoleId, preview: roleBudget("available", "less-restrictive-role-only"), workflow_preview: roleBudget(state === "exhausted" ? "exhausted" : "unavailable", "effective-workflow-budget") };
+        value.budget_previews = state === "duplicate" ? [entry, entry] : [state === "wrong role" ? { ...entry, role_id: "planner" } : entry];
+        if (state === "missing combined") delete (value.budget_previews![0] as { workflow_preview?: BudgetPreview }).workflow_preview;
+        if (state === "wrong project attribution") entry.workflow_preview.binding!.attribution.project_ids = ["beta"];
+        if (state === "wrong role attribution") entry.workflow_preview.binding!.attribution.role_id = "planner";
+        if (state === "wrong issue attribution") entry.workflow_preview.binding!.attribution.issue_id = "I-other";
+        if (state === "multiple project attribution") entry.workflow_preview.binding!.attribution.project_ids = ["alpha", "beta"];
+        if (state === "missing attribution") entry.workflow_preview.binding!.attribution = null as never;
+      }
+      return value;
+    });
+    render(<WorkflowPanel issue={issue} onChanged={async () => {}} />); await openPreview();
+    const summary = screen.getByRole("region", { name: "Presupuesto informativo del workflow · portfolio-analyst" });
+    expect(summary).toBeInTheDocument();
+    expect(within(summary).queryByText("less-restrictive-role-only", { exact: false })).toBeNull();
+    if (state === "exhausted") expect(within(summary).getByText("budget-exhausted", { exact: false })).toBeInTheDocument();
+    if (state === "unavailable") expect(within(summary).getByText("budget-accounting-unavailable", { exact: false })).toBeInTheDocument();
+    if (state === "exhausted" || state === "unavailable") expect(within(summary).getByText(`Disponibilidad informativa: ${state === "exhausted" ? "agotada" : "no disponible"}.`)).toBeInTheDocument();
+    else expect(within(summary).getByText("Presupuesto no disponible.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Iniciar workflow aprobado" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /Apruebo este template/ })).toBeDisabled();
+    expect(api.startWorkflow).not.toHaveBeenCalled(); expect(api.decideWorkflow).not.toHaveBeenCalled(); expect(api.controlWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("labels current availability as project-scoped, refreshes it explicitly and preserves exact decision gates", async () => {
+    retain(); render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const summary = await screen.findByRole("region", { name: "Presupuesto actual del proyecto vinculado al workflow" });
+    await waitFor(() => expect(api.fetchBudgets).toHaveBeenCalledWith({ project_id: "alpha" }));
+    expect(summary).toBeInTheDocument();
+    expect(screen.getByText(/no demuestra capacidad disponible para este workflow/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Aprobar decisión exacta" })).toBeDisabled();
+    expect(api.decideWorkflow).not.toHaveBeenCalled(); expect(api.controlWorkflow).not.toHaveBeenCalled();
+    const priorReads = vi.mocked(api.fetchBudgets).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar workflow" }));
+    await screen.findByRole("region", { name: "Presupuesto actual del proyecto vinculado al workflow" });
+    await waitFor(() => expect(vi.mocked(api.fetchBudgets).mock.calls.length).toBeGreaterThan(priorReads));
+    expect(screen.getByRole("button", { name: "Aprobar decisión exacta" })).toBeDisabled();
+    expect(api.decideWorkflow).not.toHaveBeenCalled(); expect(api.controlWorkflow).not.toHaveBeenCalled();
   });
 });
 

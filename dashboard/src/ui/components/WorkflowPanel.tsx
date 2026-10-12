@@ -6,7 +6,9 @@ import {
   controlWorkflow, decideWorkflow, getClientContextOptions, getContextRoles, getWorkIssue, getWorkflow, getWorkflows,
   previewWorkflow, startWorkflow, type ContextRole, type WorkflowDetail, type WorkflowPreview, type WorkflowPreviewRequest,
 } from "../api";
-import { ClientContextConsent, ContextManifestEvidence, contextDisplayText } from "./ContextPreview";
+import { ClientContextConsent, ContextManifestEvidence, contextDisplayText, matchingPreviewBudget } from "./ContextPreview";
+import { BudgetSummary } from "./BudgetSummary";
+import type { BudgetPreview } from "../../server/budget-service";
 
 const LABELS: Record<WorkflowTemplateId, string> = { analysis: "Análisis", implementation: "Implementación con plan", "quality-review": "Revisión de candidato", "operations-investigation": "Investigación operativa", "trivial-change": "Cambio trivial" };
 const DEFAULT_BUDGET = { max_tasks: 7, max_attempts: 10, max_runtime_ms: 900000, max_total_tokens: 100000 };
@@ -53,6 +55,16 @@ function matchesPreview(preview: WorkflowPreview, request: WorkflowPreviewReques
 }
 function Notes({ items }: { items: string[] }) {
   return items.length ? <ul className="detail-list">{items.map((item, index) => <li key={index}>{safe(item)}</li>)}</ul> : <p className="work-issue-note">Sin registros.</p>;
+}
+
+function roleBudgetPreview(preview: WorkflowPreview, role: WorkflowRoleId): BudgetPreview | null {
+  const entries = preview.budget_previews;
+  if (!Array.isArray(entries) || entries.length !== preview.roles.length || entries.length > 6
+    || new Set(entries.map((entry) => entry?.role_id)).size !== entries.length
+    || entries.some((entry) => !entry || !preview.roles.some((assignment) => assignment.role_id === entry.role_id))) return null;
+  // The combined projection already intersects role/root/correction constraints.
+  // A missing combined field never falls back to a less restrictive role view.
+  return matchingPreviewBudget(entries.find((entry) => entry.role_id === role)?.workflow_preview, preview.request.project_id, role, preview.request.issue_id);
 }
 
 function WorkflowEvidence({ detail, lineage, onOpenTask }: { detail: WorkflowDetail; lineage: IssueLineage; onOpenTask?: (id: string) => void }) {
@@ -193,6 +205,9 @@ export function WorkflowPanel({ issue, refreshKey = 0, initialWorkflowId, onChan
     {owners && owners.length > 0 && <label className="workflow-field">Workflow registrado<select aria-label="Workflow registrado" value={selected} disabled={busy} onChange={(event) => { selection.current = event.target.value; setFacts(null); invalidate(); setEpoch((value) => value + 1); }}>{owners.map((owner) => <option key={owner.id} value={owner.id}>{LABELS[owner.template_id]} · {owner.status} · {owner.id}</option>)}</select></label>}
     {facts && <>
       <WorkflowEvidence detail={facts.detail} lineage={facts.lineage} onOpenTask={onOpenTask} />
+      <BudgetSummary projectId={issue.project_id} refreshKey={JSON.stringify([resetKey, facts.detail.workflow.id, facts.detail.workflow.revision])}
+        title="Presupuesto actual del proyecto vinculado al workflow" />
+      <p className="work-issue-note">Esta lectura tiene alcance de proyecto; no demuestra capacidad disponible para este workflow, su etapa o su candidato exactos.</p>
       <div className="workflow-decision">
         <h4>Decisión pendiente</h4><p>{decision ? `${decision.kind} · ${safe(decision.summary)}` : "Sin decisión ejecutable; no se confirma ni recupera automáticamente."}</p>
         {decision && <><p className="work-issue-note">{decision.id} · issue r{decision.expected_issue_revision} · workflow r{decision.expected_workflow_revision} · {decision.resource_fingerprint}</p>
@@ -238,6 +253,9 @@ export function WorkflowPanel({ issue, refreshKey = 0, initialWorkflowId, onChan
         <p>{preview.plan.stages.map((stage) => stage.role_id).join(" → ")} · gate final {preview.plan.final_human_gate}</p><p>Scope r{preview.scope_revision} · issue r{preview.issue_revision} · revisión {preview.review_policy.effective_depth} · QA {preview.review_policy.qa_required ? "requerido" : "no requerido"} · testing {preview.testing_mode}</p>
         <Notes items={preview.review_policy.reasons} /><p>{preview.budget.max_tasks} tareas · {preview.budget.max_attempts} intentos · {preview.budget.max_runtime_ms} ms · {preview.budget.max_total_tokens} tokens · corrección {preview.correction.enabled ? "opt-in (máximo una)" : "desactivada"}</p>
         {preview.correction.budget && <p>Corrección: {preview.correction.budget.max_tasks} tareas · {preview.correction.budget.max_attempts} intentos · {preview.correction.budget.max_runtime_ms} ms · {preview.correction.budget.max_total_tokens} tokens, descontados de la raíz.</p>}
+        <p className="work-issue-note">Cada presupuesto informativo por rol ya intersecta los límites aplicables del workflow. Son vistas superpuestas; no se suman para calcular consumo ni capacidad adicional.</p>
+        {preview.roles.map((role) => <BudgetSummary key={role.role_id} budget={roleBudgetPreview(preview, role.role_id)}
+          title={`Presupuesto informativo del workflow · ${role.role_id}`} />)}
         {preview.roles.map((role) => <details key={role.role_id}><summary>Contexto atribuido de {role.role_id}</summary><ContextManifestEvidence manifest={role.manifest} /></details>)}<p className="work-issue-note">{safe(preview.runtime_read_limitation)}</p><p className="work-issue-note">Previsualizar no crea tareas ni reserva capacidad. La confirmación permite solo la secuencia mostrada; gates humanos y revalidación siguen vigentes.</p>
       </section>}
       <label className="work-issue-toggle"><input type="checkbox" checked={Boolean(preview && rootConfirmed === requestKey)} disabled={!preview?.allowed || busy || Boolean(readError)} onChange={(event) => setRootConfirmed(event.target.checked ? requestKey : "")} />Apruebo este template, roles, scope, consentimiento y presupuesto exactos</label>

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { BUDGET_DIMENSIONS } from "../../../../lib/budgets/types";
 import type { ProjectIntegrationsSnapshot } from "../../../../lib/integrations/types";
 import type { ProjectProfile } from "../../../../lib/portfolio-profile";
 import type { OverviewModel, TodayModel } from "../../../../lib/state/types";
@@ -9,6 +10,17 @@ import * as api from "../api";
 import { ProjectDetailView } from "./ProjectDetailView";
 
 const observedAt = "2026-09-27T12:00:00.000Z";
+function budgetView(sourceId = "project-policy", projectId = "alpha"): api.BudgetReadView {
+  return { schema_version: 1, observed_at: observedAt, status: "unavailable", executable: false, reserves_capacity: false,
+    ledger: { status: "unavailable", revision: null, updated_at: null }, policy: { revision: 2, fingerprint: "d".repeat(64) },
+    sources: [{ id: sourceId, kind: "policy", scope: { kind: "project", id: projectId }, revision: 2, fingerprint: "d".repeat(64), period: "none", bucket: "none",
+      dimensions: Object.fromEntries(BUDGET_DIMENSIONS.map((dimension) => [dimension, { status: dimension === "attempts" ? "configured" : "unconfigured",
+        cap: dimension === "attempts" ? 10 : null, proven_consumed: null, consumed: null, reserved: null, remaining: null, warning: null }])) as api.BudgetReadView["sources"][number]["dimensions"] }],
+    pricing: { status: "unavailable", reason: "no-versioned-source" },
+    denials: [{ code: "budget-accounting-unavailable", dimension: "attempts", source_ids: [sourceId] }] };
+}
+
+beforeEach(() => { vi.spyOn(api, "fetchBudgets").mockResolvedValue(budgetView()); });
 const project = {
   id: "alpha", status: "active", health: null, note: null, repo: "https://github.com/owner/alpha.git",
   path: "/private/alpha", configured: true, git: null, last_activity: null,
@@ -58,9 +70,12 @@ function renderDetail(snapshot = integrations()) {
   ] });
   vi.spyOn(api, "getNotes").mockResolvedValue({ notes: [] });
   const onPrepareTask = vi.fn();
-  render(<ProjectDetailView project={project} overview={overview} today={today} profile={profile} profileReady profileLoading={false}
-    onProfileSaved={() => {}} onBack={() => {}} onOpenTask={() => {}} onPrepareTask={onPrepareTask} />);
-  return { onPrepareTask };
+  const onBack = vi.fn();
+  const onOpenTask = vi.fn();
+  const props = { project, overview, today, profile, profileReady: true, profileLoading: false,
+    onProfileSaved: vi.fn(), onBack, onOpenTask, onPrepareTask };
+  const view = render(<ProjectDetailView {...props} />);
+  return { ...view, props, onPrepareTask, onBack, onOpenTask };
 }
 
 describe("ProjectDetailView", () => {
@@ -113,5 +128,61 @@ describe("ProjectDetailView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Preparar tarea/ }));
     expect(onPrepareTask).toHaveBeenCalledWith("alpha", "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form.");
     expect(createTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps navigation and task preparation available when the project budget query fails", async () => {
+    vi.mocked(api.fetchBudgets).mockRejectedValue(new Error("Synthetic optional budget outage"));
+    const createTask = vi.spyOn(api, "createTask");
+    const { onBack, onOpenTask, onPrepareTask } = renderDetail();
+    await waitFor(() => expect(api.fetchBudgets).toHaveBeenCalledWith({ project_id: "alpha" }));
+    await screen.findByText("No pude consultar el presupuesto; el resto de la vista sigue disponible.");
+    fireEvent.click(screen.getByRole("button", { name: /Volver al portfolio/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Active fictional task/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Preparar tarea/ }));
+    expect(onBack).toHaveBeenCalledTimes(1);
+    expect(onOpenTask).toHaveBeenCalledWith("task-active");
+    expect(onPrepareTask).toHaveBeenCalledWith("alpha", expect.any(String));
+    expect(createTask).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("Synthetic optional budget outage");
+  });
+
+  it("refreshes only the project budget on explicit refresh and a new current observation", async () => {
+    const { rerender, props } = renderDetail();
+    await screen.findAllByText(/project-policy/);
+    const budget = within(screen.getByRole("region", { name: "Presupuesto del proyecto" }));
+    expect(budget.getByText("Disponibilidad informativa: no disponible.")).toBeInTheDocument();
+    expect(budget.getAllByText(/límite 10 · consumido desconocido · probado desconocido · reservado desconocido · restante desconocido/)).toHaveLength(1);
+    expect(api.fetchBudgets).toHaveBeenCalledTimes(1);
+    expect(api.fetchBudgets).toHaveBeenLastCalledWith({ project_id: "alpha" });
+    vi.mocked(api.fetchBudgets).mockResolvedValue(budgetView("refreshed-project-policy"));
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar" }));
+    await screen.findAllByText(/refreshed-project-policy/);
+    expect(api.fetchBudgets).toHaveBeenCalledTimes(2);
+    vi.mocked(api.fetchBudgets).mockResolvedValue(budgetView("observed-project-policy"));
+    rerender(<ProjectDetailView {...props} today={{ ...today, generated_at: "2026-09-27T12:01:00.000Z" }} />);
+    await screen.findAllByText(/observed-project-policy/);
+    expect(api.fetchBudgets).toHaveBeenCalledTimes(3);
+    expect(api.fetchBudgets).toHaveBeenLastCalledWith({ project_id: "alpha" });
+    expect(document.body.textContent).not.toContain("refreshed-project-policy");
+    expect(document.body.textContent).toContain("budget-accounting-unavailable");
+  });
+
+  it("fences an older project budget response across alpha to beta to alpha navigation", async () => {
+    let finishOld!: (value: api.BudgetReadView) => void;
+    vi.mocked(api.fetchBudgets).mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
+      .mockResolvedValueOnce(budgetView("beta-policy", "beta"))
+      .mockResolvedValueOnce(budgetView("current-alpha-policy"));
+    const { rerender, props } = renderDetail();
+    await waitFor(() => expect(api.fetchBudgets).toHaveBeenCalledTimes(1));
+    rerender(<ProjectDetailView {...props} project={{ ...project, id: "beta" }} />);
+    await screen.findAllByText(/beta-policy/);
+    expect(api.fetchBudgets).toHaveBeenLastCalledWith({ project_id: "beta" });
+    rerender(<ProjectDetailView {...props} />);
+    await screen.findAllByText(/current-alpha-policy/);
+    await act(async () => finishOld(budgetView("stale-alpha-policy")));
+    expect(document.body.textContent).not.toContain("stale-alpha-policy");
+    expect(document.body.textContent).not.toContain("beta-policy");
+    expect(document.body.textContent).toContain("current-alpha-policy");
+    expect(api.fetchBudgets).toHaveBeenCalledTimes(3);
   });
 });

@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
-import { ContextManifestEvidence, ContextPreview } from "./ContextPreview";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { ContextManifestEvidence, ContextPreview, useContextPreview } from "./ContextPreview";
 import { previewContext, dispatchWorkIssue, type ContextPreview as Preview } from "../api";
+import * as api from "../api";
+import type { BudgetPreview } from "../../server/budget-service";
 
 const preview: Preview = { schema_version: 1, fingerprint: "a".repeat(64), allowed: true, blocked_reasons: [], runtime_read_limitation: "Runtime reads are not guaranteed project-only.", manifest: {
   schema_version: 1, fingerprint: "a".repeat(64), project_id: "alpha", role_id: "planner", agent_id: "tech-lead", task_kind: "analysis", sandbox: "read-only", tools: ["inspect"], approval_rules: ["scope-change"],
@@ -13,12 +15,32 @@ const preview: Preview = { schema_version: 1, fingerprint: "a".repeat(64), allow
   testing: { mode: "functional", minimum_review_depth: "full", runner_ids: [], commands: ["node verify.mjs"], reasons: ["Trusted policy"], requires_red_evidence: false },
 } };
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+function unavailableBudget(): BudgetPreview {
+  return { schema_version: 1, observed_at: "2026-10-11T12:00:00Z", status: "unavailable", can_admit: false,
+    executable: false, reserves_capacity: false, ledger: { status: "unavailable", revision: null, updated_at: null },
+    binding: null, resolution: null, prospective_hold: null,
+    denials: [{ code: "budget-ledger-unavailable", source_ids: ["ledger:unavailable"] }],
+    limitation: "Informational preview only; no execution authority." };
+}
+
+function boundBudget(issueId: string | null = null): BudgetPreview {
+  return { ...unavailableBudget(), binding: { attribution: { company_id: "surtec", objective_ids: [], project_ids: ["alpha"],
+    issue_id: issueId, role_id: "planner", execution_id: "preview-context-only" }, cap_fingerprint: "c".repeat(64), policy_bindings: [],
+    ceilings: { attempts: 1, runtime_ms: 60000, total_tokens: 10000, concurrent_reads: 1, concurrent_writes: 0, review_attempts: 0, review_runtime_ms: 0, review_total_tokens: 0, corrections: 0 } } };
+}
+
+function PreviewHarness({ project = "alpha" }: { project?: string }) {
+  const state = useContextPreview({ kind: "analysis", project, agent: "tech-lead", role_id: "planner", instructions: "Inspect synthetic evidence", client_context_categories: [] });
+  return <><button onClick={() => void state.requestPreview()}>Request preview</button>{state.preview && <ContextPreview preview={state.preview} />}</>;
+}
 
 describe("safe context evidence", () => {
   it("renders attributable policy, limits, privacy, fingerprints and the runtime limitation, not private bodies", () => {
     const extra = { ...preview, rendered: "Private prompt body", manifest: { ...preview.manifest, private_body: "Confidential client text" } };
     render(<ContextPreview preview={extra} />);
+    expect(screen.getAllByRole("region", { name: /preview de contexto/i })).toHaveLength(1);
     expect(screen.getByText("Contexto habilitado para este pedido.")).toBeInTheDocument();
     expect(screen.getByText(/12 \/ 500 líneas/)).toBeInTheDocument();
     expect(screen.getByText("planner")).toBeInTheDocument();
@@ -61,5 +83,84 @@ describe("safe context evidence", () => {
     expect(new Headers(calls[1][1].headers).get("X-Surtec-Session")).toBe("synthetic-session-token");
     expect(JSON.parse(calls[1][1].body as string)).toEqual(request);
     expect(JSON.parse(calls[2][1].body as string)).toEqual({ expected_revision: 3, agent: "tech-lead", role_id: "planner", preview_fingerprint: preview.fingerprint, client_context_categories: [] });
+  });
+
+  it("keeps missing additive budget evidence unavailable without fetching a different scope or changing context authority", () => {
+    const fetchBudget = vi.spyOn(api, "fetchBudgets").mockRejectedValue(new Error("A preview must not fetch project availability"));
+    render(<ContextPreview preview={preview} />);
+    const summary = screen.getByRole("region", { name: "Presupuesto informativo del contexto" });
+    expect(summary).toBeInTheDocument();
+    expect(within(summary).getByText("Presupuesto no disponible.")).toBeInTheDocument();
+    expect(within(summary).queryByRole("button")).toBeNull();
+    expect(screen.getByText("Contexto habilitado para este pedido.")).toBeInTheDocument();
+    expect(fetchBudget).not.toHaveBeenCalled();
+  });
+
+  it("shows unavailable budget diagnostics independently from an allowed context and performs no mutation", () => {
+    const fetchBudget = vi.spyOn(api, "fetchBudgets"), dispatch = vi.spyOn(api, "dispatchWorkIssue"), workflow = vi.spyOn(api, "startWorkflow");
+    render(<ContextPreview preview={{ ...preview, budget_preview: unavailableBudget() }} />);
+    const summary = screen.getByRole("region", { name: "Presupuesto informativo del contexto" });
+    expect(within(summary).getByText("budget-ledger-unavailable", { exact: false })).toBeInTheDocument();
+    expect(within(summary).getByText("Disponibilidad informativa: no disponible.")).toBeInTheDocument();
+    expect(screen.getByText("Contexto habilitado para este pedido.")).toBeInTheDocument();
+    expect(document.body.textContent).toContain(preview.fingerprint);
+    expect(fetchBudget).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled(); expect(workflow).not.toHaveBeenCalled();
+  });
+
+  it.each(["project", "role", "issue", "multiple projects", "missing attribution"])("does not display budget caps with a mismatched %s attribution", (mismatch) => {
+    const budget = boundBudget();
+    if (mismatch === "project") budget.binding!.attribution.project_ids = ["beta"];
+    if (mismatch === "role") budget.binding!.attribution.role_id = "reviewer";
+    if (mismatch === "issue") budget.binding!.attribution.issue_id = "I-other";
+    if (mismatch === "multiple projects") budget.binding!.attribution.project_ids = ["alpha", "beta"];
+    if (mismatch === "missing attribution") budget.binding!.attribution = null as never;
+    render(<ContextPreview preview={{ ...preview, budget_preview: budget }} />);
+    const summary = screen.getByRole("region", { name: "Presupuesto informativo del contexto" });
+    expect(within(summary).getByText("Presupuesto no disponible.")).toBeInTheDocument();
+    expect(within(summary).queryByText("c".repeat(64))).toBeNull();
+    expect(screen.getByText("Contexto habilitado para este pedido.")).toBeInTheDocument();
+  });
+
+  it.each([null, "I-1"])("shows exact optional issue-bound diagnostics for %s without changing context fingerprints", (issueId) => {
+    const value = { ...preview, budget_preview: boundBudget(issueId) };
+    render(<ContextPreview preview={value} expectedIssueId={issueId} />);
+    const summary = screen.getByRole("region", { name: "Presupuesto informativo del contexto" });
+    expect(within(summary).getByText("c".repeat(64))).toBeInTheDocument();
+    expect(within(summary).getByText("Disponibilidad informativa: no disponible.")).toBeInTheDocument();
+    expect(value.fingerprint).toBe(preview.fingerprint);
+    expect(screen.getByText("Contexto habilitado para este pedido.")).toBeInTheDocument();
+  });
+
+  it("rejects a foreign issue budget despite the same displayed project and role", () => {
+    render(<ContextPreview preview={{ ...preview, budget_preview: boundBudget("I-other") }} expectedIssueId="I-1" />);
+    const summary = screen.getByRole("region", { name: "Presupuesto informativo del contexto" });
+    expect(within(summary).getByText("Presupuesto no disponible.")).toBeInTheDocument();
+    expect(within(summary).queryByText("c".repeat(64))).toBeNull();
+    expect(screen.getByText("Contexto habilitado para este pedido.")).toBeInTheDocument();
+  });
+
+  it("clears the budget with its context preview and rejects a late response after project navigation", async () => {
+    let complete!: (value: Preview) => void;
+    const read = vi.spyOn(api, "previewContext").mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    const view = render(<PreviewHarness />);
+    fireEvent.click(screen.getByRole("button", { name: "Request preview" }));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    view.rerender(<PreviewHarness project="beta" />);
+    await act(async () => complete({ ...preview, budget_preview: unavailableBudget() }));
+    expect(screen.queryByRole("region", { name: "Preview de contexto" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Presupuesto informativo del contexto" })).toBeNull();
+  });
+
+  it("replaces budget observations only through a new explicit context preview", async () => {
+    const read = vi.spyOn(api, "previewContext").mockResolvedValueOnce({ ...preview, budget_preview: unavailableBudget() })
+      .mockResolvedValueOnce({ ...preview, budget_preview: { ...unavailableBudget(), denials: [{ code: "budget-policy-unavailable", source_ids: ["policy:unavailable"] }] } });
+    render(<PreviewHarness />);
+    fireEvent.click(screen.getByRole("button", { name: "Request preview" }));
+    await screen.findByText("budget-ledger-unavailable", { exact: false });
+    expect(read).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Request preview" }));
+    await screen.findByText("budget-policy-unavailable", { exact: false });
+    expect(screen.queryByText("budget-ledger-unavailable", { exact: false })).toBeNull();
+    expect(read).toHaveBeenCalledTimes(2);
   });
 });

@@ -3,6 +3,8 @@ import type { ContextManifest } from "../../../../lib/context/types";
 import type { ClientContextCategory, ClientContextOptions } from "../../../../lib/client-portfolio";
 import { redactText } from "../../../../lib/security/redaction";
 import { previewContext, type ContextPreview as Preview, type ContextPreviewRequest } from "../api";
+import { BudgetSummary } from "./BudgetSummary";
+import type { BudgetPreview as BudgetPreviewValue } from "../../server/budget-service";
 
 export const CLIENT_CONTEXT_LABELS: Record<ClientContextCategory, string> = {
   "client-identity": "Identidad del cliente",
@@ -16,6 +18,24 @@ export const CLIENT_CONTEXT_LABELS: Record<ClientContextCategory, string> = {
 export function contextDisplayText(text: string): string {
   return redactText(text).replace(/\b[A-Za-z]:[\\/][^\s<>"`]+/g, "[LOCAL_PATH]")
     .replace(/(^|[\s(])\/[^\s<>"`]+/g, "$1[LOCAL_PATH]");
+}
+
+/** Optional diagnostics must belong to the displayed preview, not another scope. */
+export function matchingPreviewBudget(budget: BudgetPreviewValue | undefined | null, projectId: string, roleId: string, issueId: string | null = null): BudgetPreviewValue | null {
+  const own = (value: unknown, key: string): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
+  };
+  try {
+    if (!budget) return null;
+    const binding = own(budget, "binding");
+    if (binding === null) return own(budget, "status") === "unavailable" && own(budget, "resolution") === null ? budget : null;
+    const attribution = own(binding, "attribution"), projects = own(attribution, "project_ids");
+    return Array.isArray(projects) && projects.length === 1 && Object.getOwnPropertyDescriptor(projects, "0")?.value === projectId
+      && own(attribution, "company_id") === "surtec" && own(attribution, "role_id") === roleId
+      && own(attribution, "issue_id") === issueId ? budget : null;
+  } catch { return null; }
 }
 
 export function useContextPreview(request: ContextPreviewRequest | null) {
@@ -112,13 +132,14 @@ export function ContextManifestEvidence({ manifest }: { manifest: ContextManifes
   </>;
 }
 
-export function ContextPreview({ preview }: { preview: Preview }) {
+export function ContextPreview({ preview, expectedIssueId = null }: { preview: Preview; expectedIssueId?: string | null }) {
   return <section className="detail-card panel" aria-label="Preview de contexto">
     <h3>Preview de contexto</h3>
     <p role="status">{preview.allowed ? "Contexto habilitado para este pedido." : "Contexto bloqueado: no se puede despachar."}</p>
     {!preview.allowed && <EvidenceList items={preview.blocked_reasons} />}
     <p className="work-issue-note">Previsualizar no crea una tarea, no reserva capacidad y no ejecuta al agente. El servidor vuelve a validar al despachar; un preview vencido o cambiado requiere regeneración.</p>
     <ContextManifestEvidence manifest={preview.manifest} />
+    <BudgetSummary budget={matchingPreviewBudget(preview.budget_preview, preview.manifest.project_id, preview.manifest.role_id, expectedIssueId)} title="Presupuesto informativo del contexto" />
     <p className="work-issue-note">{contextDisplayText(preview.runtime_read_limitation)}</p>
   </section>;
 }

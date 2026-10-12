@@ -10,6 +10,7 @@ import { ProjectNotes } from "../components/ProjectNotes";
 import { ProjectProfileEditor } from "../components/ProjectProfileEditor";
 import { WorkSessionsPanel } from "../components/WorkSessionsPanel";
 import { ProjectHarnessPanel } from "../components/ProjectHarnessPanel";
+import { BudgetSummary } from "../components/BudgetSummary";
 import { relativeTime } from "../relative-time";
 
 const HEALTH_LABEL: Record<IntegrationHealth, string> = {
@@ -210,6 +211,7 @@ export function ProjectDetailView({
   const [activity, setActivity] = useState<ActivityFeed | null>(null);
   const [activityError, setActivityError] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
+  const [budgetEpoch, setBudgetEpoch] = useState(0);
   const id = project.id;
 
   useEffect(() => {
@@ -230,6 +232,7 @@ export function ProjectDetailView({
   }, [id]);
 
   const refreshIntegrations = async () => {
+    setBudgetEpoch((value) => value + 1);
     setRefreshing(true);
     setIntegrationsError(null);
     try { setIntegrations(await getProjectIntegrations(id, true)); }
@@ -273,7 +276,15 @@ export function ProjectDetailView({
         <div className="section-head"><h2>Perfil y próximo paso</h2><span className="meta">{profile ? PROJECT_CATEGORY_LABEL[profile.kind] : "Sin perfil"}</span></div>
         {profileError ? <div className="banner banner--warn">No pude leer el perfil operativo ({profileError}); la edición quedó desactivada para proteger el estado local.</div>
           : !profile && <p className="empty-mini">El proyecto funciona sin perfil local. Podés registrar su objetivo y próxima acción.</p>}
-        <ProjectProfileEditor projectId={id} profile={profile} ready={profileReady} loading={profileLoading} onSaved={onProfileSaved} />
+        <ProjectProfileEditor projectId={id} profile={profile} ready={profileReady} loading={profileLoading} onSaved={(savedProfile) => {
+          setBudgetEpoch((value) => value + 1);
+          onProfileSaved(savedProfile);
+        }} />
+      </section>
+
+      <section className="project-detail-section">
+        <BudgetSummary title="Presupuesto del proyecto" projectId={id}
+          refreshKey={JSON.stringify([budgetEpoch, today?.generated_at, project.last_activity, profile?.last_reviewed_at])} />
       </section>
 
       <section className="project-detail-section">

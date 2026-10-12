@@ -13,6 +13,7 @@ import {
 import { relativeTime } from "../relative-time";
 import { ClientContextConsent, ContextPreview, contextDisplayText, useContextPreview } from "../components/ContextPreview";
 import { WorkflowPanel } from "../components/WorkflowPanel";
+import { BudgetSummary } from "../components/BudgetSummary";
 
 function lines(value: string): string[] { return value.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean); }
 function words(value: string): string[] { return value.split(/[,\n]/).map((entry) => entry.trim()).filter(Boolean); }
@@ -76,7 +77,7 @@ function IssueDispatch({ issue, options, busy, perform }: {
     {!error && roles.length === 0 && <p className="work-issue-note">Sin perfil compatible disponible; no se puede despachar mientras se resuelve la política.</p>}
     <ClientContextConsent options={consentOptions} categories={categories} onChange={setCategories} disabled={busy} error={consentError} />
     {context.error && <p role="alert">{context.error}</p>}
-    {context.preview && <ContextPreview preview={context.preview} />}
+    {context.preview && <ContextPreview preview={context.preview} expectedIssueId={issue.id} />}
     {!context.preview && <p className="work-issue-note">Generá y revisá el preview antes de despachar. Actualizar el issue o cambiar perfil, agente o consentimiento requiere un preview nuevo.</p>}
     <div className="actions work-issue-actions">
       <button type="button" className="ibtn" disabled={busy || context.pending || !selectedRole || !agents.includes(agent)} onClick={() => void context.requestPreview()}>
@@ -105,6 +106,7 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
   const [localError, setLocalError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [dispatchEpoch, setDispatchEpoch] = useState(0);
+  const [budgetEpoch, setBudgetEpoch] = useState(0);
   const [workflows, setWorkflows] = useState<GovernedWorkflow[] | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [workflowExpanded, setWorkflowExpanded] = useState<Record<string, boolean>>({});
@@ -133,6 +135,7 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
 
   const refresh = useCallback(async () => {
     const generation = ++refreshSequence.current;
+    setBudgetEpoch((value) => value + 1);
     setWorkflows(null); setWorkflowError(null);
     const [localResult, externalResult, optionsResult, organizationResult, workflowResult] = await Promise.allSettled([
       getWorkIssues(), getInbox(), fetchDispatchOptions(), getOrganization(), getWorkflows(),
@@ -326,6 +329,8 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
                 {manualAllowed && issue.status === "authorized" && <IssueDispatch key={`${issue.id}:${issue.project_id}:${issue.revision}:${dispatchEpoch}`} issue={issue} options={dispatchOptions}
                   busy={busy !== null} perform={(operation) => perform(issue.id, operation)} />}
                 {expanded[issue.id] && <div className="work-issue-lineage">
+                  <BudgetSummary title="Presupuesto del proyecto" projectId={issue.project_id} refreshKey={`${issue.id}:${issue.revision}:${budgetEpoch}`} />
+                  <p className="work-issue-note">Esta consulta muestra el presupuesto del proyecto, no el presupuesto exacto del issue, su objetivo, rol o ejecución. No sustituye el preview ni la autorización vigente.</p>
                   {!detail ? <p className="empty-mini">Cargando ejecución y evidencia…</p> : <>
                     <div><b>Intentos:</b> {detail.tasks.flatMap((entry) => entry.executions).map((execution) => `#${execution.attempt} ${execution.run_id.slice(0, 8)}`).join(" · ") || "sin ejecución"}</div>
                     <div><b>Sesiones:</b> {detail.sessions.map((session) => session.objective).join(", ") || "sin sesión vinculada"}</div>
