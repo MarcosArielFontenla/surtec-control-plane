@@ -91,3 +91,13 @@ describe("immutable workflow review evidence", () => {
     expect(() => assertOwnedWorkflowIssueProgress(document, owner, unrelated, 1)).toThrow();
   });
 });
+
+describe("planner-recovery handoff denial", () => {
+  it("never seals an incomplete model plan without an exact approved human basis", () => {
+    const from: WorkflowStage = { ...reviewStage(), id: "planner-stage", kind: "planning", ordinal: 1, role_id: "planner", status: "needs-review", candidate: null,
+      output: { ...outputBase, kind: "plan", status: "needs-review", plan: ["Keep exact scope"], scope_change_required: false }, output_fingerprint: fingerprint("plan") };
+    const to = { ...from, id: "engineer-stage", ordinal: 2, kind: "implementation" as const, role_id: "software-engineer" as const, predecessor_stage_id: from.id };
+    const document = { workflows: { [from.workflow_id]: { id: from.workflow_id, issue_id: issue().id } } } as unknown as WorkflowDocument;
+    expect(() => sealWorkflowHandoff(document, from, to, evidenceDocument(), "handoff-denied", "2026-10-03T12:00:01.000Z")).toThrow();
+  });
+});

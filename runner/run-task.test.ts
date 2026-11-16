@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFailed, vi } from "vitest";
 import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { parse, stringify } from "yaml";
 import { execFileSync } from "node:child_process";
@@ -15,7 +15,8 @@ import { PolicyService } from "../lib/policy/service";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskRecord } from "../lib/state/types";
-import type { AgentExecutor, AgentRunResult } from "./agent-executor";
+import type { AgentExecutor, AgentRunInput, AgentRunResult } from "./agent-executor";
+import { createTerminalUsageEvidence } from "./terminal-usage-evidence";
 import type { Tracer } from "../lib/observability/tracing";
 
 vi.mock("./worktree", () => ({ createWorktree: vi.fn(), commitAndDiff: vi.fn() }));
@@ -41,11 +42,16 @@ import { readIssueDocument } from "../lib/state/issues";
 import * as issueState from "../lib/state/issues";
 import { readWorkflowDocument } from "../lib/state/workflows";
 import { WorkflowOrchestrator } from "./workflow-orchestrator";
+import { createGitFixtureBaselines } from "./testing/git-fixture";
+import { AGENT_REPORT_SCHEMA } from "./agent-report";
+import { BOUNDED_INSPECTION_GUIDANCE, GOVERNED_RUNTIME_CONTEXT_PROFILE, LEGACY_RUNTIME_CONTEXT_PROFILE } from "./runtime-context-profile";
 
 let root: string;
 let repo: string;
 let run: ReturnType<typeof vi.fn<AgentExecutor["run"]>>;
 let executor: AgentExecutor;
+const gitBaselines = createGitFixtureBaselines();
+afterAll(() => gitBaselines.dispose());
 
 function structuredReport(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -85,6 +91,16 @@ function queuedRecord(): TaskRecord {
     created_at: "2026-05-29T10:00:00Z", started_at: null,
     updated_at: "2026-05-29T10:00:00Z", finished_at: null, result: null, logs_path: null,
   };
+}
+
+function attestedRun(input: AgentRunInput, overrides: Partial<AgentRunResult> = {}): AgentRunResult {
+  const result = agentRun({ ...overrides, usageComplete: true });
+  result.terminalUsageEvidence = createTerminalUsageEvidence({ ...input.executionIdentity!, contextFingerprint: input.contextFingerprint!,
+    threadId: result.threadId, turnId: result.turnId, usage: result.usage!, protocolUsage: { ...result.usage!, cacheWriteInputTokens: 0 },
+    baseline: { inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 },
+    finalItemId: "item-fixture", finalPhase: "final_answer", finalItemSequence: 2, usageSequence: 3, terminalSequence: 4,
+    terminalStatus: "completed", exitCode: 0, signal: null, stdoutEof: true, stderrEof: true });
+  return result;
 }
 
 function writeRecord(): TaskRecord {
@@ -176,7 +192,7 @@ describe("runTask", () => {
     const before = readFileSync(join(root, "state/tasks/T-1.json"));
     expect(() => scheduler.retry("T-1")).toThrow(/current controller/);
     expect(await runTask("T-1", root, executor)).toBeNull();
-    expect(readFileSync(join(root, "state/tasks/T-1.json"))).toEqual(before);
+    expect(readFileSync(join(root, "state/tasks/T-1.json")).equals(before)).toBe(true);
     expect(readTask("T-1")!.orchestration).toMatchObject({ attempts: 1, cumulative_tokens: 0 });
     expect(readTask("T-1")!.envelope.context_admission).toEqual(record.envelope.context_admission);
     expect(() => scheduler.retry("T-1")).toThrow(/current controller/);
@@ -209,7 +225,7 @@ describe("runTask", () => {
     expect(scheduler.recoverExpiredLeases()).toBe(0); expect(await scheduler.runOnce()).toBe(0);
     expect(() => scheduler.retry("T-1")).toThrow(/current controller/);
     expect(await runTask("T-1", root, executor, { runId: "old-stage-run" })).toMatchObject({ stale: true, retryable: false });
-    expect(await runTask("T-1", root, executor)).toBeNull(); expect(readFileSync(path)).toEqual(before);
+    expect(await runTask("T-1", root, executor)).toBeNull(); expect(readFileSync(path).equals(before)).toBe(true);
     expect(readTask("T-1")!.envelope.context_admission).toEqual(record.envelope.context_admission);
     expect(readTaskEvents("T-1")).toEqual([]);
     for (const effect of [run, createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
@@ -218,7 +234,7 @@ describe("runTask", () => {
     const record = workflowFixture("correction"); record.lifecycle = "running"; record.orchestration!.attempts = 1;
     record.orchestration!.lease = { run_id: "stage-run", worker_id: "fixture", acquired_at: "2026-01-01T00:00:00Z", heartbeat_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-01T00:00:01Z" }; writeTask(record);
     const path = join(root, "state/tasks/T-1.json"), before = readFileSync(path);
-    expect(await runTask("T-1", root, executor, { runId: "stage-run" })).toMatchObject({ stale: true }); expect(readFileSync(path)).toEqual(before);
+    expect(await runTask("T-1", root, executor, { runId: "stage-run" })).toMatchObject({ stale: true }); expect(readFileSync(path).equals(before)).toBe(true);
     updateTask("T-1", (task) => { task.orchestration!.lease!.expires_at = new Date(Date.now() + 60_000).toISOString(); });
     expect(await runTask("T-1", root, executor, { runId: "stage-run" })).toMatchObject({ outcome: "needs-review", retryable: false });
     for (const effect of [run, createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
@@ -229,13 +245,20 @@ describe("runTask", () => {
     else if (invalid === "missing") delete (record.envelope.context_admission as unknown as Record<string, unknown>).grant_id;
     else record.envelope.metadata = { issue_id: "issue-1", issue_scope_revision: 2, issue_authorized_scope: {} };
     const path = join(root, "state/tasks/T-1.json"); writeFileSync(path, JSON.stringify(record)); const before = readFileSync(path);
-    await expect(runTask("T-1", root, executor)).rejects.toThrow(/invalid task record/); expect(readFileSync(path)).toEqual(before);
+    await expect(runTask("T-1", root, executor)).rejects.toThrow(/invalid task record/); expect(readFileSync(path).equals(before)).toBe(true);
     expect(readTaskEvents("T-1")).toEqual([]);
     for (const effect of [run, createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
   });
-  function contextFixture() {
+  function contextFixture(mode: "full" | "budget-analysis" = "full") {
+    if (mode !== "full" && mode !== "budget-analysis") throw new Error("Unsupported context fixture mode");
     for (const name of ["agents.yml", "agent-roles.yml", "context-policy.yml"]) cpSync(`registry/${name}`, join(root, "registry", name));
-    const roles = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
+    let roles = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
+    if (mode === "budget-analysis") {
+      const selected = roles.roles.filter((role) => role.id === "portfolio-analyst");
+      if (selected.length !== 1) throw new Error("Budget analysis fixture requires exactly one canonical portfolio analyst");
+      roles = { ...roles, roles: selected };
+      writeFileSync(join(root, "registry/agent-roles.yml"), stringify(roles));
+    }
     for (const path of new Set(roles.roles.flatMap((role) => role.required_evaluation_ids))) {
       mkdirSync(join(root, ...path.split("/").slice(0, -1)), { recursive: true }); cpSync(path, join(root, path));
     }
@@ -247,6 +270,146 @@ describe("runTask", () => {
     const preview = context.preview({ kind: "analysis", project: "stock-control", agent: "backend-engineer", role_id: "software-engineer", instructions: "Inspect fixture." });
     return createTask({ project: "stock-control", agent: "backend-engineer", role_id: "software-engineer", instructions: "Inspect fixture.", preview_fingerprint: preview.fingerprint }, root, undefined, { context }).id;
   }
+  it("context-economy binds the new profile and preserves it on a matching resumed attempt", async () => {
+    const id = analysisFixture(), manifest = readTask(id)!.envelope.context_manifest;
+    updateTask(id, (task) => { task.envelope.metadata.runtimeContextProfile = "caller-selected-unknown"; });
+    expect(await runTask(id, root, executor)).toMatchObject({ outcome: "completed", stale: false });
+    const first = run.mock.calls[0]![0];
+    expect(first.runtimeContextProfile).toBe(GOVERNED_RUNTIME_CONTEXT_PROFILE);
+    expect(first.developerInstructions).toContain(BOUNDED_INSPECTION_GUIDANCE);
+    expect(first.developerInstructions).toContain("SELECTED PROJECT RULE: do not publish.");
+    expect(first.mode).toBe("read-only"); expect(first.verifyCommands).toEqual([]);
+    updateTask(id, (task) => { task.lifecycle = "queued"; task.outcome = null; task.finished_at = null; });
+    expect(await runTask(id, root, executor)).toMatchObject({ outcome: "completed", stale: false });
+    expect(run.mock.calls[1]![0]).toMatchObject({ runtimeContextProfile: GOVERNED_RUNTIME_CONTEXT_PROFILE, contextFingerprint: first.contextFingerprint,
+      threadId: "thread-1", resumeContextFingerprint: first.contextFingerprint });
+    expect(readTask(id)!.envelope.context_manifest).toEqual(manifest);
+    expect(readTask(id)!.envelope.metadata.run).not.toHaveProperty("runtime_context_profile");
+    for (const effect of [createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("context-economy preserves an exact legacy binding with retained thread=%s", async (savedThread) => {
+    const id = analysisFixture(), task = readTask(id)!;
+    const fingerprint = contextHash(JSON.stringify({ manifest: task.envelope.context_manifest!.fingerprint, version: "governed-execution-v1",
+      mode: "read-only", cwd: repo, verifyCommands: [], outputSchema: AGENT_REPORT_SCHEMA }));
+    updateTask(id, (record) => { record.envelope.metadata.run = { context_fingerprint: fingerprint, ...(savedThread ? { thread_id: "retained-thread" } : {}) }; });
+    expect(await runTask(id, root, executor)).toMatchObject({ outcome: "completed", stale: false });
+    expect(run.mock.calls[0]![0]).toMatchObject({ runtimeContextProfile: LEGACY_RUNTIME_CONTEXT_PROFILE, contextFingerprint: fingerprint,
+      threadId: savedThread ? "retained-thread" : undefined });
+    expect(run.mock.calls[0]![0].developerInstructions).not.toContain(BOUNDED_INSPECTION_GUIDANCE);
+    expect(run.mock.calls[0]![0].developerInstructions).toContain("SELECTED PROJECT RULE: do not publish.");
+    expect((readTask(id)!.envelope.metadata.run as any).context_fingerprint).toBe(fingerprint);
+  });
+  it.each(["unknown-hash", "bare-thread"])("context-economy refuses %s without executor or candidate effects", async (fault) => {
+    const id = analysisFixture(), retained = fault === "unknown-hash" ? { context_fingerprint: "b".repeat(64) } : { thread_id: "bare-thread" };
+    updateTask(id, (task) => { task.envelope.metadata.run = retained; });
+    expect(await runTask(id, root, executor)).toMatchObject({ outcome: "needs-review", retryable: false, stale: false });
+    expect(readTask(id)!.envelope.metadata.run).toEqual(retained);
+    for (const effect of [run, createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
+  });
+  it("context-economy delivers durable cancellation while retaining the selected contract", async () => {
+    const id = analysisFixture(), abort = new AbortController();
+    run.mockImplementation(async (input) => {
+      expect(input.runtimeContextProfile).toBe(GOVERNED_RUNTIME_CONTEXT_PROFILE);
+      updateTask(id, (task) => { task.orchestration!.cancel_requested_at = new Date().toISOString(); });
+      abort.abort(); const error = new Error("Synthetic cancellation"); error.name = "AbortError"; throw error;
+    });
+    expect(await runTask(id, root, executor, { signal: abort.signal })).toMatchObject({ outcome: "cancelled", retryable: false, stale: false });
+    expect((readTask(id)!.envelope.metadata.run as any).context_fingerprint).toBe(run.mock.calls[0]![0].contextFingerprint);
+    for (const effect of [createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
+  });
+  it("context-economy fences a replaced lease without accepting a late terminal receipt", async () => {
+    const id = analysisFixture(); let replaced!: Buffer;
+    run.mockImplementation(async (input) => {
+      expect(input.runtimeContextProfile).toBe(GOVERNED_RUNTIME_CONTEXT_PROFILE);
+      const result = attestedRun(input);
+      updateTask(id, (task) => { task.orchestration!.lease!.run_id = "replacement-run"; });
+      replaced = readFileSync(join(root, "state/tasks", `${id}.json`)); return result;
+    });
+    expect(await runTask(id, root, executor)).toMatchObject({ stale: true, retryable: false });
+    expect(readFileSync(join(root, "state/tasks", `${id}.json`)).equals(replaced)).toBe(true);
+    expect(readTask(id)!.envelope.metadata.run).not.toHaveProperty("terminal_usage_evidence");
+    for (const effect of [createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
+  });
+  it("context-economy retains cumulative high-water and unknown final usage at the unchanged synthetic cap", async () => {
+    contextFixture();
+    const configPath = join(root, "registry/context-policy.yml"), config = parse(readFileSync(configPath, "utf8"));
+    // Synthetic admission policy, created before admission; no production cap is changed.
+    config.budgets.implementation.max_total_tokens = 78488; writeFileSync(configPath, stringify(config));
+    const context = createContextService(root), request = { kind: "analysis" as const, project: "stock-control", agent: "backend-engineer", role_id: "software-engineer", instructions: "Inspect synthetic usage only." };
+    const preview = context.preview(request);
+    const task = createTask({ project: request.project, agent: request.agent, role_id: request.role_id,
+      instructions: request.instructions, preview_fingerprint: preview.fingerprint }, root, undefined, { context });
+    const { id, budgets, runId, proof } = budgetFixture(true, task.id);
+    expect(readTask(id)!.orchestration!.max_total_tokens).toBe(78488);
+    expect(readTask(id)!.envelope.context_manifest!.budget.max_total_tokens).toBe(78488);
+    const usage = (totalTokens: number) => ({ inputTokens: totalTokens - 100, cachedInputTokens: totalTokens - 200, outputTokens: 100, reasoningOutputTokens: 50, totalTokens });
+    run.mockImplementation(async (input, events, signal) => {
+      expect(input.runtimeContextProfile).toBe(GOVERNED_RUNTIME_CONTEXT_PROFILE);
+      for (const totalTokens of [24150, 58091, 58091, 94366]) {
+        await events({ type: "usage", at: new Date().toISOString(), threadId: "thread-1", turnId: "turn-1", usage: usage(totalTokens) });
+        expect(signal.aborted).toBe(totalTokens > 78488);
+      }
+      return agentRun({ usage: usage(94366), usageHighWater: usage(94366), usageComplete: false });
+    });
+    try {
+      expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "needs-review", retryable: false, stale: false });
+      expect(run).toHaveBeenCalledOnce();
+      const saved = readTask(id)!;
+      expect(saved.orchestration).toMatchObject({ cumulative_tokens: 94366, max_total_tokens: 78488, lease: null });
+      expect(saved.envelope.context_manifest!.budget.max_total_tokens).toBe(78488);
+      expect(readTaskEvents(id).filter((event) => event.type === "usage").map((event) => event.payload.delta_tokens)).toEqual([24150, 33941, 36275]);
+      expect(Object.values(readBudgetLedger()!.charges)[0]).toMatchObject({ observed_total_tokens: 94366, usage_state: "unknown" });
+      expect(saved.envelope.metadata.run).not.toHaveProperty("terminal_usage_evidence");
+      expect(readIssueDocument().candidates).toEqual({}); expect(readWorkflowDocument().workflows).toEqual({});
+      for (const effect of [createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
+    } finally { budgets.release(proof!); }
+  });
+  it("persists only a validated exact receipt and preserves unrelated run metadata", async () => {
+    const id = analysisFixture();
+    updateTask(id, (task) => { task.envelope.metadata.run = { unrelated: "retained", terminal_usage_evidence: { stale: true } }; });
+    run.mockImplementation(async (input) => {
+      expect(input.executionIdentity).toMatchObject({ taskId: id, executionId: expect.any(String) });
+      return attestedRun(input);
+    });
+    expect(await runTask(id, root, executor)).toMatchObject({ outcome: "completed", stale: false });
+    const saved = readTask(id)!;
+    expect(saved.envelope.metadata.run).toMatchObject({ unrelated: "retained", usage_complete: true,
+      terminal_usage_evidence: { taskId: id, contextFingerprint: run.mock.calls[0]![0].contextFingerprint, version: 1, exitCode: 0, stdoutEof: true, stderrEof: true } });
+    expect(saved.orchestration!.cumulative_tokens).toBe(15);
+    expect(readTask(id)).toEqual(saved);
+  });
+  it.each(["missing", "model-lookalike", "run", "context", "digest", "usage", "stream-unknown", "below-observation"])("charges usage but rejects %s terminal evidence", async (fault) => {
+    const id = analysisFixture();
+    run.mockImplementation(async (input, events) => {
+      const result = attestedRun(input);
+      if (fault === "missing" || fault === "model-lookalike") {
+        if (fault === "model-lookalike") result.structuredOutput = { ...structuredReport(), terminal_usage_evidence: result.terminalUsageEvidence };
+        delete result.terminalUsageEvidence;
+      } else if (fault === "run") result.terminalUsageEvidence = attestedRun({ ...input, executionIdentity: { ...input.executionIdentity!, executionId: "other-run" } }).terminalUsageEvidence;
+      else if (fault === "context") result.terminalUsageEvidence = { ...result.terminalUsageEvidence!, contextFingerprint: "b".repeat(64) };
+      else if (fault === "digest") result.terminalUsageEvidence = { ...result.terminalUsageEvidence!, digest: "0".repeat(64) };
+      else if (fault === "usage") result.usage = { ...result.usage!, totalTokens: 16 };
+      if (fault === "stream-unknown") await events({ type: "usage-unknown", at: new Date().toISOString(), threadId: result.threadId, turnId: result.turnId, reason: "invalid-usage" });
+      if (fault === "below-observation") await events({ type: "usage", at: new Date().toISOString(), threadId: result.threadId, turnId: result.turnId, usage: { ...result.usage!, totalTokens: 20 } });
+      return result;
+    });
+    expect(await runTask(id, root, executor)).toMatchObject({ outcome: "needs-review", retryable: false });
+    const saved = readTask(id)!;
+    expect(saved.orchestration!.cumulative_tokens).toBe(fault === "below-observation" ? 20 : fault === "usage" ? 16 : 15);
+    expect(saved.envelope.metadata.run).not.toHaveProperty("terminal_usage_evidence");
+    expect(createWorktree).not.toHaveBeenCalled(); expect(commitAndDiff).not.toHaveBeenCalled(); expect(captureVerification).not.toHaveBeenCalled();
+  });
+  it("refuses a valid late receipt after the lease is replaced without overwriting its bytes", async () => {
+    const id = analysisFixture(); let replaced!: Buffer;
+    run.mockImplementation(async (input) => {
+      const result = attestedRun(input);
+      updateTask(id, (task) => { task.orchestration!.lease!.run_id = "replacement-run"; });
+      replaced = readFileSync(join(root, "state/tasks", `${id}.json`)); return result;
+    });
+    expect(await runTask(id, root, executor)).toMatchObject({ stale: true, retryable: false });
+    expect(readFileSync(join(root, "state/tasks", `${id}.json`)).equals(replaced)).toBe(true);
+    expect(readTask(id)!.envelope.metadata.run).not.toHaveProperty("terminal_usage_evidence");
+  });
   function budgetFixture(claim = true, id = analysisFixture()) {
     const record = readTask(id)!, context = record.envelope.context_admission!;
     const source: BudgetPolicySource = { policy: parse(readFileSync("registry/budget-policy.yml", "utf8")), fingerprint: contextHash("Synthetic neutral policy") };
@@ -266,8 +429,8 @@ describe("runTask", () => {
     budgets.bindClaim(proof);
     return { id, budgets, runId, proof };
   }
-  function governedBudgetFixture() {
-    contextFixture(); cpSync("registry/workflow-policy.yml", join(root, "registry/workflow-policy.yml"));
+  function governedBudgetFixture(mode: "full" | "budget-analysis" = "full") {
+    contextFixture(mode); cpSync("registry/workflow-policy.yml", join(root, "registry/workflow-policy.yml"));
     writeFileSync(join(root, "registry/projects.yml"), "projects:\n  stock-control:\n    allowed_agents: [backend-engineer, product-manager]\n    sandbox: { default: workspace-write }\n");
     const issues = createIssueService(root, { projectIds: () => ["stock-control"] });
     const proposed = issues.create({ project_id: "stock-control", title: "Synthetic budget evidence", expected_outcome: "Retain exact evidence", acceptance_criteria: ["No successor"],
@@ -283,24 +446,39 @@ describe("runTask", () => {
     return { ...bound, controller, workflowProof, workflowId: started.workflow.id, issueId: issue.id };
   }
   it.each(["tokens", "runtime", "unknown"] as const)("T007 relays independently proven %s stop before terminal task ownership is released", async (dimension) => {
-    const f = governedBudgetFixture();
+    type RelayPhase = "entered" | "fixture-created" | "run-armed" | "fake-result-built" | "run-returned" | "assertions-complete" | "release-returned";
+    let lastCompleted: RelayPhase = "entered";
+    const observedAt = performance.now(), phases: Array<{ phase: RelayPhase; elapsed_ms: number }> = [];
+    const completed = (phase: RelayPhase) => { lastCompleted = phase; if (dimension === "tokens") phases.push({ phase, elapsed_ms: Math.round(performance.now() - observedAt) }); };
+    if (dimension === "tokens") onTestFailed(() => {
+      console.error(`[T007 failure context] tokens: ${lastCompleted}; ${JSON.stringify(phases)}`);
+    });
+    const f = governedBudgetFixture("budget-analysis");
+    completed("fixture-created");
     if (dimension === "tokens") updateTask(f.id, (task) => { task.orchestration!.max_total_tokens = 5; });
     if (dimension === "runtime") { updateTask(f.id, (task) => { task.orchestration!.max_runtime_ms = 1000; }); vi.useFakeTimers({ toFake: ["Date"] }); }
     run.mockImplementation(async () => {
       if (dimension === "runtime") vi.setSystemTime(Date.now() + 1500);
-      return agentRun({ structuredOutput: { schema_version: 1, kind: "analysis", status: "completed", summary: "Synthetic bounded analysis", recommendations: [],
+      const result = agentRun({ structuredOutput: { schema_version: 1, kind: "analysis", status: "completed", summary: "Synthetic bounded analysis", recommendations: [],
         evidence_ids: [], unresolved_questions: [], risks: [], recommended_next_action: "Human inspection", requested_decision: null }, ...(dimension === "unknown" ? { usageComplete: false } : {}) });
+      completed("fake-result-built");
+      return result;
     });
     const stop = vi.spyOn(f.controller, "stopForIndependentBudget");
+    completed("run-armed");
     await runTask(f.id, root, executor, { runId: f.runId, budgetExecution: f.proof, workflowExecution: f.workflowProof });
+    completed("run-returned");
     expect(stop).toHaveBeenCalled(); expect(f.controller.service.detail(f.workflowId).workflow.status).toBe("needs-decision");
     const document = readIssueDocument(); expect(document.issues[f.issueId]!.status).toBe("needs-decision");
     expect(document.events.at(-1)).toMatchObject({ type: "authorization-stale", payload: { workflow_id: f.workflowId, task_id: f.id, execution_id: f.runId,
       independent_budget_exhaustion: { run_id: f.runId } } });
-    expect(readTask(f.id)!.lifecycle).toBe("finished"); expect(readTask(f.id)!.orchestration!.lease).toBeNull();
+    const finishedTask = readTask(f.id)!;
+    expect(finishedTask.lifecycle).toBe("finished"); expect(finishedTask.orchestration!.lease).toBeNull();
     expect(Object.values(readBudgetLedger()!.charges)).toHaveLength(1); expect(run).toHaveBeenCalledOnce();
     for (const effect of [createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
+    completed("assertions-complete");
     f.controller.release(f.workflowProof); f.budgets.release(f.proof!);
+    completed("release-returned");
   });
   it("T007 retains the first independent stop across an issue-write fault and later global high-water", async () => {
     const f = governedBudgetFixture();
@@ -314,13 +492,13 @@ describe("runTask", () => {
     const initial = readWorkflowDocument(), owner = initial.workflows[f.workflowId]!;
     const marker = initial.events.filter((entry) => entry.workflow_id === f.workflowId && entry.type === "budget-stopped").at(-1)!;
     expect(marker.summary).toMatch(/^Independent workflow budget stop v1:/);
-    expect(readFileSync(join(root, "state/issues/issues.json"))).toEqual(issueBefore);
+    expect(readFileSync(join(root, "state/issues/issues.json")).equals(issueBefore)).toBe(true);
     expect(f.controller.observe(f.workflowProof, owner.budget.max_total_tokens, 20)).toBe(true);
     const later = readWorkflowDocument();
     expect(later.events.filter((entry) => entry.workflow_id === f.workflowId && entry.type === "budget-stopped")).toEqual([marker]);
     expect(later.workflows[f.workflowId]!.blocked_reason).toBe(owner.blocked_reason);
     expect(later.workflows[f.workflowId]!.counters.total_tokens).toBe(owner.budget.max_total_tokens);
-    expect(readFileSync(join(root, "state/issues/issues.json"))).toEqual(issueBefore);
+    expect(readFileSync(join(root, "state/issues/issues.json")).equals(issueBefore)).toBe(true);
     expect(f.controller.stopForIndependentBudget(f.id, receipt, f.workflowProof)).toBe(true);
     const issues = readIssueDocument();
     expect(issues.issues[f.issueId]!.status).toBe("needs-decision");
@@ -328,8 +506,8 @@ describe("runTask", () => {
       denials: expect.arrayContaining([expect.objectContaining({ dimension: "total_tokens", cap: 5, proven_consumed: 5, required: 0 })]) } } });
     const issueBytes = readFileSync(join(root, "state/issues/issues.json")), workflowBytes = readFileSync(join(root, "state/workflows/workflows.json"));
     f.controller.reconcile(); new WorkflowOrchestrator(root).reconcile();
-    expect(readFileSync(join(root, "state/issues/issues.json"))).toEqual(issueBytes);
-    expect(readFileSync(join(root, "state/workflows/workflows.json"))).toEqual(workflowBytes);
+    expect(readFileSync(join(root, "state/issues/issues.json")).equals(issueBytes)).toBe(true);
+    expect(readFileSync(join(root, "state/workflows/workflows.json")).equals(workflowBytes)).toBe(true);
     expect(Object.values(readBudgetLedger()!.charges)).toHaveLength(1); expect(run).not.toHaveBeenCalled();
     for (const effect of [createWorktree, commitAndDiff, runVerification, captureVerification]) expect(effect).not.toHaveBeenCalled();
     f.controller.release(f.workflowProof); f.budgets.release(f.proof!);
@@ -398,7 +576,7 @@ describe("runTask", () => {
   });
   it("distinguishes explicit complete zero from unavailable final usage", async () => {
     const { id, runId, proof } = budgetFixture();
-    run.mockResolvedValue(agentRun({ usageComplete: true, usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 } }));
+    run.mockImplementation(async (input) => attestedRun(input, { usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 } }));
     expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "completed" });
     expect(Object.values(readBudgetLedger()!.charges)[0]).toMatchObject({ observed_total_tokens: 0, usage_state: "complete" });
     expect(Object.values(readBudgetLedger()!.reservations)[0]!.status).toBe("settled");
@@ -436,9 +614,9 @@ describe("runTask", () => {
   });
   it("counts duplicate and decreasing samples once without refunding proven usage", async () => {
     const { id, runId, proof } = budgetFixture();
-    run.mockImplementation(async (_input, events) => {
+    run.mockImplementation(async (input, events) => {
       for (const totalTokens of [15, 15, 12]) await events({ type: "usage", at: new Date().toISOString(), threadId: "thread-1", turnId: "turn-1", usage: { ...agentRun().usage!, totalTokens } });
-      return agentRun({ usageComplete: true, usage: { ...agentRun().usage!, totalTokens: 5 } });
+      return attestedRun(input);
     });
     expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "completed" });
     expect(readTask(id)!.orchestration!.cumulative_tokens).toBe(15);
@@ -447,13 +625,60 @@ describe("runTask", () => {
   });
   it("fences a tightened current runtime before any post-model effect", async () => {
     const { id, runId, proof } = budgetFixture(); vi.useFakeTimers();
-    run.mockImplementation(async () => {
+    run.mockImplementation(async (input) => {
       updateTask(id, (task) => { task.orchestration!.max_runtime_ms = 1000; });
-      vi.setSystemTime(Date.now() + 1500); return agentRun({ usageComplete: true });
+      vi.setSystemTime(Date.now() + 1500); return attestedRun(input);
     });
-    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "failed", retryable: false });
+    const completion = await runTask(id, root, executor, { runId, budgetExecution: proof });
+    console.error("TERMINAL_RUNTIME_DIAGNOSTIC", JSON.stringify({ completion: { reason: completion?.reason ?? null },
+      last_failure: readTask(id)?.orchestration?.last_failure ?? null }));
+    expect(completion).toMatchObject({ outcome: "failed", retryable: false });
     expect(readTask(id)!.orchestration!.last_failure).toMatchObject({ kind: "budget", message: "runtime budget exhausted (1000ms)" });
     expect(Object.values(readBudgetLedger()!.charges)[0]!.runtime_ms).toBeGreaterThanOrEqual(1500);
+    expect(commitAndDiff).not.toHaveBeenCalled(); expect(captureVerification).not.toHaveBeenCalled();
+  });
+  it.each(["runtime", "tokens"])("terminal receipt accounting retains known charges and budget failure for %s", async (dimension) => {
+    const { id, runId, proof } = budgetFixture();
+    const initialTokenLimit = readTask(id)!.orchestration!.max_total_tokens;
+    if (dimension === "runtime") vi.useFakeTimers({ toFake: ["Date"] });
+    run.mockImplementation(async (input) => {
+      updateTask(id, (task) => {
+        if (dimension === "runtime") task.orchestration!.max_runtime_ms = 1000;
+        else task.orchestration!.max_total_tokens = 5;
+      });
+      if (dimension === "runtime") vi.setSystemTime(Date.now() + 1500);
+      return attestedRun(input);
+    });
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: "failed", retryable: false, stale: false });
+    const task = readTask(id)!, ledger = readBudgetLedger()!;
+    expect(task.orchestration!.last_failure).toMatchObject({ kind: "budget", message: dimension === "runtime" ? "runtime budget exhausted (1000ms)" : `token budget exhausted (${initialTokenLimit})` });
+    if (dimension === "runtime") expect(task.orchestration!.max_runtime_ms).toBe(1000);
+    else expect(task.orchestration!.max_total_tokens).toBe(5);
+    expect(task.orchestration!.cumulative_tokens).toBe(15);
+    expect(task.envelope.metadata.run).toMatchObject({ usage_complete: true, terminal_usage_evidence: { taskId: id, executionId: runId } });
+    expect(Object.values(ledger.charges)[0]).toMatchObject({ status: "terminal", usage_state: "complete", runtime_state: "complete", observed_total_tokens: 15 });
+    expect(Object.values(ledger.reservations)[0]).toMatchObject({ status: "settled", uncertain_dimensions: [], held: { concurrent_reads: 0 } });
+    expect(createWorktree).not.toHaveBeenCalled(); expect(commitAndDiff).not.toHaveBeenCalled(); expect(captureVerification).not.toHaveBeenCalled();
+  });
+  it.each(["missing", "mismatch", "pre-aborted", "external", "stream-unknown"])("terminal receipt accounting cannot promote %s evidence after exhaustion", async (fault) => {
+    const { id, runId, proof } = budgetFixture();
+    const interrupted = new AbortController();
+    run.mockImplementation(async (input, events) => {
+      updateTask(id, (task) => { task.orchestration!.max_total_tokens = 5; });
+      const result = attestedRun(input);
+      if (fault === "missing") delete result.terminalUsageEvidence;
+      if (fault === "mismatch") result.terminalUsageEvidence = attestedRun({ ...input, executionIdentity: { ...input.executionIdentity!, executionId: "other-run" } }).terminalUsageEvidence;
+      if (fault === "pre-aborted") await events({ type: "usage", at: new Date().toISOString(), threadId: result.threadId, turnId: result.turnId, usage: result.usage! });
+      if (fault === "external") interrupted.abort();
+      if (fault === "stream-unknown") await events({ type: "usage-unknown", at: new Date().toISOString(), threadId: result.threadId, turnId: result.turnId, reason: "invalid-usage" });
+      return result;
+    });
+    expect(await runTask(id, root, executor, { runId, budgetExecution: proof, signal: interrupted.signal })).toMatchObject({ outcome: "needs-review", retryable: false });
+    const task = readTask(id)!, ledger = readBudgetLedger()!;
+    expect(task.orchestration!.cumulative_tokens).toBe(15);
+    expect(task.envelope.metadata.run).not.toHaveProperty("terminal_usage_evidence");
+    expect(Object.values(ledger.charges)[0]).toMatchObject({ usage_state: "unknown", observed_total_tokens: 15 });
+    expect(Object.values(ledger.reservations)[0]).toMatchObject({ status: "unknown", held: { concurrent_reads: 1 } });
     expect(commitAndDiff).not.toHaveBeenCalled(); expect(captureVerification).not.toHaveBeenCalled();
   });
   it.each([null, { totalTokens: -1 }, { totalTokens: 1.5 }, { totalTokens: Number.NaN }])("does not persist invalid custom usage %j as zero or corrupt counters", async (usage) => {
@@ -477,8 +702,15 @@ describe("runTask", () => {
       else config.testing.no_refactor_justification = "Only a bounded behavior value changes; no structural refactoring is required.";
       writeFileSync(join(root, "registry/context-policy.yml"), stringify(config));
     }
-    const git = (args: string[]) => execFileSync("git", managedGitArgs(["-C", repo, ...args], root), { env: localGitEnvironment(), windowsHide: true });
-    git(["init", "--quiet"]); git(["config", "user.name", "Synthetic"]); git(["config", "user.email", "fixture@example.test"]); git(["add", "."]); git(["commit", "--quiet", "-m", "base"]);
+    const files: Record<string, string> = { "AGENTS.md": "SELECTED PROJECT RULE: do not publish.\n", "src/value.json": JSON.stringify({ value: initialValue }), "verify.mjs": source };
+    if (refactor) files["refactor.mjs"] = "process.exit(0)";
+    gitBaselines.attach({
+      caseRoot: root, repository: repo, key: `value-${initialValue}-${refactor ? "refactor" : "plain"}`, files,
+      initialize: ({ repository, root: seedRoot }) => {
+        const git = (args: string[]) => execFileSync("git", managedGitArgs(["-C", repository, ...args], seedRoot), { env: localGitEnvironment(), windowsHide: true });
+        git(["init", "--quiet"]); git(["config", "user.name", "Synthetic"]); git(["config", "user.email", "fixture@example.test"]); git(["add", "."]); git(["commit", "--quiet", "-m", "base"]);
+      },
+    });
     const real = await vi.importActual<typeof import("./worktree")>("./worktree");
     vi.mocked(createWorktree).mockImplementation(real.createWorktree); vi.mocked(commitAndDiff).mockImplementation(real.commitAndDiff);
     const context = createContextService(root), issues = createIssueService(root, { context, projectIds: () => ["stock-control"] });
@@ -488,11 +720,12 @@ describe("runTask", () => {
     const { taskId } = issues.dispatch(issue.id, issue.revision, "backend-engineer", { role_id: "software-engineer", preview_fingerprint: preview.fingerprint });
     return { taskId, issues, issue };
   }
-  it.each([true, false])("runs an isolated budget writer and admits commit/verification only with complete usage=%s", async (complete) => {
+  it.each(["complete", "incomplete", "forged"])("runs an isolated budget writer and admits commit/verification only with terminal evidence=%s", async (evidence) => {
+    const complete = evidence === "complete";
     const { taskId } = await testingFixture(), { id, runId, proof } = budgetFixture(true, taskId);
     run.mockImplementation(async (input) => {
       writeFileSync(join(input.cwd, "src/value.json"), JSON.stringify({ value: 1 }));
-      return agentRun({ usageComplete: complete });
+      return complete ? attestedRun(input) : agentRun({ usageComplete: evidence === "forged" });
     });
     expect(await runTask(id, root, executor, { runId, budgetExecution: proof })).toMatchObject({ outcome: complete ? "completed" : "needs-review", retryable: false });
     expect(createWorktree).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledOnce();
@@ -509,7 +742,7 @@ describe("runTask", () => {
     const { taskId } = await testingFixture(false, 0, true, true), { id, runId, proof } = budgetFixture(true, taskId);
     vi.useFakeTimers(); const admittedCommands: string[] = [];
     run.mockImplementation(async (input) => {
-      writeFileSync(join(input.cwd, "src/value.json"), JSON.stringify({ value: 1 })); return agentRun({ usageComplete: true });
+      writeFileSync(join(input.cwd, "src/value.json"), JSON.stringify({ value: 1 })); return attestedRun(input);
     });
     vi.mocked(captureVerification).mockImplementationOnce(async (_cwd, runners, options) => {
       expect(runners).toHaveLength(2); expect(options.ownsAttempt()).toBe(true);

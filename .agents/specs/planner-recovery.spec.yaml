@@ -1,0 +1,77 @@
+schema_version: 1
+name: Factory Local F3 - human recovery of a retained Planner proposal
+entity: GovernedWorkflow
+domains: [workflow-policy, context-admission, task-orchestration, file-state, dashboard]
+purpose: Offer an unchanged valid incomplete Planner proposal for exact human approval without rewriting its result, rerunning the model or refunding consumed resources.
+requirements:
+  - id: req-eligibility
+    description: Permit recovery only for the first and sole admitted read-only planning stage of an existing implementation workflow stopped for a valid needs-review plan with unchanged scope, no successor/candidate/stop/cancellation and no prior recovery. Other roles, output outcomes, missing facts and production P budget-admission scaffolds remain ineligible.
+  - id: req-binding
+    description: Require exact task/run/context/grant/authority/issue/scope/source/policy/testing bindings, committed intent, complete charged accounting and an independently validated existing terminal-usage receipt. Reconstruct the normalized role result to distinguish incomplete model status from malformed output or other failures; an error-string match or caller-provided verified flag is insufficient.
+  - id: req-preserve
+    description: Preserve original task/result/failure/metadata/terminal receipt/event bytes, output/fingerprint, grants, accounting and counters. Only the exact retained running planning stage may become needs-review to reflect its already finished task. No completed model stage, new task/attempt, retry, replacement grant, reset, refund or historical repair is produced.
+  - id: req-state
+    description: Add one optional closed independently versioned planner_recovery v1 facet to the existing workflow v1 aggregate. Store exact immutable source fingerprints, human recovery request and question/risk dispositions plus the plan-decision binding. Append once under the existing workflow lock with revision fences, validation and atomic replacement, without nested store locks or cross-store transaction claims.
+  - id: req-human
+    description: A confirmed recovery request creates only one pending exact-plan decision. Bind that decision to both original output and recovery fingerprints; keep the existing approved-plan reference shape. A separate current human approval precedes Engineer, while rejection retains evidence and forbids automatic recovery replacement. Design approval and synthetic results are not operational approval.
+  - id: req-questions
+    description: Preserve every original question, risk and requested decision. Require explicit indexed/hash-bound question dispositions and individual risk acknowledgements without prose heuristics, plan editing, material scope changes or waiver of trusted checks. Human clarification remains attributed task data and does not prove technical feasibility.
+  - id: req-continuation
+    description: Integrate a specifically scoped human-adopted planning basis into plan approval, controller reconciliation, successor admission, handoff, generated context and final workflow validation. Keep ordinary completed-role guards strict, preserve needs-review on the original task/stage, admit at most the existing finite successor once and label human adoption separately from model success.
+  - id: req-limits
+    description: Preserve all existing root/role/task/runtime/token/attempt/context/capture/HTTP bounds, scheduler/lease/write exclusion, review depth, testing and publication controls. Validate remaining slots for the three downstream roles and current budget intersections without increasing capacity or claiming the fixed verification reserve proves feasibility.
+  - id: req-http-ui
+    description: Add a no-effect detail recovery offer and a closed explicit 4-KiB protected no-store planner-recovery POST with current revisions, offer fingerprint and human confirmation. UI recovery offering is distinct from unstarted reconciliation and exact plan approval; reset acknowledgements on changed/unknown facts and never automatically replay requests.
+  - id: req-privacy
+    description: Reject sensitive or unsafe recovery text and retain only bounded attributed operational data, never credentials, prompts, source bodies or raw reasoning. Private clarification bodies stay out of workflow list/operating summaries and generic prefills. Public artifacts contain no private pilot identifiers or paths.
+  - id: req-compat
+    description: Missing recovery facets retain current ordinary behavior without backfill; malformed/null/future facets fail closed and preserve bytes. Recovery receipts are immutable across rejection/completion/restart. Existing unstarted-admission recovery and ordinary success remain supported; rollback never strips the facet or rewrites newer state.
+  - id: req-acceptance
+    description: Require design commands C01-C07 in addition to the four catalog checks, with actual native results and owned cleanup. Exercise exact preservation, denials/races/restart, independent human gates, inactive candidate-bound Reviewer/QA and criterion acceptance using synthetic state and forbidden paid runtime. Technical acceptance does not complete real F3, renew writer ownership or authorize F5.
+constraints:
+  - Follow docs/proposals/factory-local-f3-planner-recovery-design.md and .agents/specs/tasks/f3-planner-recovery.tasks.md only after actual human approval of this prospective design, specification and ordered tasks.
+  - This explicitly extends planning-continuation authority through a human-origin exception; it does not retroactively reinterpret the original model outcome or authorize a generic needs-review override.
+  - The exact target set is the 32 paths in the design. Preserve all existing user changes and historical private state/runtime/verifier evidence.
+  - The ordinary terminal-success guard remains strict for other roles; current policy, scope, receipt, accounting, ownership, candidate, testing, review and publication denials cannot be waived.
+  - Recovery is limited to an unchanged authorized/working issue; no canonical issue lifecycle edge, issue-service mutation, grant replacement or production P cutover is introduced.
+  - Preserve existing request limit of 4 KiB, context defaults of 500 lines and 60000 bytes, aggregate bounds, test/HTTP deadlines and 900 seconds per native command; do not add retries or new wait allowances.
+  - Keep model/runtime configuration unchanged. No paid call, new runtime/protocol, dependency/lockfile, registry/Harness validator/catalog/pin, installation/download, normal-state migration, sibling source change, commit, push or merge is included.
+  - Proposal-time checks are documentary and structural only, without -Run or -ConfirmExecution. Review metadata remains null until actual human approval.
+  - Every failed/unknown acceptance result is retained and stops dependent execution. Routine scoped diagnosis follows standing authority; material scope/contract/limit changes require renewed human review.
+  - Full-suite, CI, eval and audit campaigns are outside this bounded technical acceptance. Existing global debt remains open, not waived or relabeled passing.
+  - Real application of recovery, current source/runtime qualification, renewed writer/instance coverage, exact plan approval and final candidate acceptance remain later explicit operational decisions. The prior writer window expired.
+nonGoals:
+  - Automatically converting incomplete output to completed, changing the plan text or fabricating model completion.
+  - Retrying Planner, creating a replacement workflow/grant, transferring unknown historical consumption or replenishing budget.
+  - Recovery of interrupted, unknown-accounting, scope-changing, malformed, blocked, failed or cancelled attempts, or recovery for Engineer/Reviewer/QA.
+  - A plan editor, arbitrary human-authored replacement, new workflow template, scheduler, lifecycle, database or generic recovery framework.
+  - Claiming that human risk acknowledgement proves verification feasibility, provider-final billing or an accepted real delivery.
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-11-03T15:04:07Z"
+  acceptanceChecks:
+    - id: ac-schemas
+      requirementIds: [req-binding, req-state, req-human, req-compat]
+      description: Compile the strict additive workflow facet and unchanged compatible contracts. Mandatory C01-C04 separately prove mutation, cross-record, receipt and recovery behavior.
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-eligibility, req-binding, req-preserve, req-state, req-human, req-questions, req-continuation, req-limits, req-http-ui, req-privacy, req-compat, req-acceptance]
+      description: Typecheck exact contracts, consumer guards and UI. The executable focused C01-C04 commands and actual API/browser C06-C07 in the design are additionally mandatory; compilation is not behavioral acceptance.
+      command: pnpm typecheck
+      expectedExitCode: 0
+    - id: ac-build
+      requirementIds: [req-human, req-continuation, req-http-ui, req-acceptance]
+      description: Build the dashboard with explicit recovery provenance and separate human gates; C06-C07 must independently prove real API/browser behavior and cleanup.
+      command: pnpm build
+      expectedExitCode: 0
+    - id: ac-secrets
+      requirementIds: [req-preserve, req-privacy, req-acceptance]
+      description: Run the existing bounded secret scanner; negative recovery fixtures and documentary privacy checks remain required and no universal secret-detection claim is made.
+      command: pnpm secrets:check
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications: []
+# Technical acceptance observed 2026-11-03: C01-C07 complete; tasks/f3-planner-recovery.tasks.md is done.
+# Real recovery, paid successors and F3/F5 delivery acceptance remain separate operational decisions.

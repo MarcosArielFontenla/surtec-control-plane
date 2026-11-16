@@ -47,7 +47,7 @@ import type { ClientCommitment, ClientPortfolioDocument, ClientRecord } from "..
 import type { CompanyProfile, Objective, OrganizationDocument } from "../organization";
 import type { Signal, SignalAction, SignalFeed, SignalHumanStateDocument } from "../signals/types";
 import type { ProjectStatusOverride, TaskEvent, TaskRecord, WorkSession } from "./types";
-import type { IssueDocument, IssueEvidenceReference, ReviewCandidate, WorkIssue } from "../issues/types";
+import type { DeliveryObservation, IssueDocument, IssueEvidenceReference, IssueIntakeReceipt, ReviewCandidate, WorkIssue } from "../issues/types";
 import type { ContextAdmissionV2, ContextManifest } from "../context/types";
 import type { WorkflowStageKind } from "../workflows/types";
 
@@ -331,6 +331,61 @@ export const validateWorkIssue = ajv.compile(workIssueSchema) as ValidateFunctio
 export const validateReviewCandidate = ajv.compile(reviewCandidateSchema) as ValidateFunction<ReviewCandidate>;
 export const validateIssueEvidence = ajv.compile(issueEvidenceSchema) as ValidateFunction<IssueEvidenceReference>;
 export const validateIssueDocument = ajv.compile(issueDocumentSchema) as ValidateFunction<IssueDocument>;
+
+const issueIntakeReceiptShape = ajv.compile({ $ref: `${workIssueSchema.$id}#/$defs/intakeReceipt` });
+export const validateIssueIntakeReceipt: ValidateFunction<IssueIntakeReceipt> = Object.assign((value: unknown): value is IssueIntakeReceipt => {
+  if (!value || typeof value !== "object" || nodeTypes.isProxy(value) || Array.isArray(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    validateIssueIntakeReceipt.errors = [{ instancePath: "/intake_receipt", schemaPath: "#/$defs/intakeReceipt", keyword: "plainData", params: {}, message: "intake receipt must be own plain JSON data" }];
+    return false;
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
+  if (keys.length !== 3 || keys.some((key) => typeof key !== "string" || !descriptors[key]!.enumerable || !("value" in descriptors[key]!)
+    || !["string", "number"].includes(typeof descriptors[key]!.value))) {
+    validateIssueIntakeReceipt.errors = [{ instancePath: "/intake_receipt", schemaPath: "#/$defs/intakeReceipt", keyword: "plainData", params: {}, message: "intake receipt must contain three own JSON fields" }];
+    return false;
+  }
+  if (!issueIntakeReceiptShape(value)) { validateIssueIntakeReceipt.errors = issueIntakeReceiptShape.errors; return false; }
+  validateIssueIntakeReceipt.errors = null;
+  return true;
+}, { errors: null, schema: issueIntakeReceiptShape.schema, schemaEnv: issueIntakeReceiptShape.schemaEnv });
+
+/** Inert identifiers or deliberately simple HTTP(S) references, never paths/commands. */
+export function isDeliverySourceReference(value: string): boolean {
+  if (value.length > 300 || /[\s\\\u0000-\u001f\u007f]/.test(value)) return false;
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value)) return true;
+  if (!/^https?:\/\/[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]{1,5})?(?:\/[A-Za-z0-9._~/-]*)?$/.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return ["http:", "https:"].includes(parsed.protocol) && !!parsed.hostname && !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
+  } catch { return false; }
+}
+
+const deliveryObservationShape = ajv.compile({ $ref: `${issueEvidenceSchema.$id}#/$defs/deliveryObservation` });
+export const validateDeliveryObservation: ValidateFunction<DeliveryObservation> = Object.assign((value: unknown): value is DeliveryObservation => {
+  // This facet also accepts in-memory writers: validation must not invoke code or
+  // accept inherited fields which JSON serialization would silently discard.
+  if (!value || typeof value !== "object" || nodeTypes.isProxy(value) || Array.isArray(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    validateDeliveryObservation.errors = [{ instancePath: "/delivery_observation", schemaPath: "#/$defs/deliveryObservation", keyword: "plainData", params: {}, message: "delivery observation must be own plain JSON data" }];
+    return false;
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
+  if (keys.length !== 8 || keys.some((key) => typeof key !== "string" || !descriptors[key]!.enumerable || !("value" in descriptors[key]!)
+    || (descriptors[key]!.value !== null && !["string", "number"].includes(typeof descriptors[key]!.value)))) {
+    validateDeliveryObservation.errors = [{ instancePath: "/delivery_observation", schemaPath: "#/$defs/deliveryObservation", keyword: "plainData", params: {}, message: "delivery observation must contain eight own JSON fields" }];
+    return false;
+  }
+  if (!deliveryObservationShape(value)) { validateDeliveryObservation.errors = deliveryObservationShape.errors; return false; }
+  const observation = value as DeliveryObservation;
+  if (!isDeliverySourceReference(observation.source_reference)
+    || [observation.summary, observation.next_action].some((text) => text !== text.trim() || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text))) {
+    validateDeliveryObservation.errors = [{ instancePath: "/delivery_observation", schemaPath: "#/$defs/deliveryObservation", keyword: "deliveryObservation", params: {}, message: "delivery observation contains an invalid reference or text" }];
+    return false;
+  }
+  validateDeliveryObservation.errors = null;
+  return true;
+}, { errors: null, schema: deliveryObservationShape.schema, schemaEnv: deliveryObservationShape.schemaEnv });
 
 export function describeValidation(errors: ErrorObject[] | null | undefined): string {
   return errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ") ?? "invalid data";

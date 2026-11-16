@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { types as nodeTypes } from "node:util";
-import { parse } from "yaml";
+import { parseRegistryYaml } from "../policy/registry-yaml";
 import { evidenceHash, testingEvidenceStatus, type TestingEvidence } from "../context/testing-evidence";
 import type { BudgetDimension } from "../budgets/types";
 import type { ExecutionBudget } from "../context/types";
@@ -46,7 +46,7 @@ export function readWorkflowPolicy(root: string): WorkflowPolicy {
     }
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.size > 256 * 1024) throw new Error("configuration bounds");
-    value = parse(readFileSync(path, "utf8"));
+    value = parseRegistryYaml(readFileSync(path, "utf8"));
   } catch { throw new WorkflowContractError("Workflow policy is missing, unsafe or unreadable"); }
   assertPolicy(value as WorkflowPolicy);
   return value as WorkflowPolicy;

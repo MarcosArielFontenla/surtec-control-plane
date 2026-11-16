@@ -3,6 +3,7 @@ import { Eye, EyeOff, Plus, Save } from "lucide-react";
 import type { ClientCommitment, ClientRecord, ClientSummary } from "../../../../lib/client-portfolio";
 import type { ProjectView } from "../../../../lib/state/types";
 import { getClient, getClients, getCommitments, saveClient, saveCommitment } from "../api";
+import { DeliveryReadinessPanel } from "../components/DeliveryReadinessPanel";
 
 type ClientDraft = Omit<ClientRecord, "id" | "created_at" | "updated_at">;
 type CommitmentDraft = Omit<ClientCommitment, "id" | "created_at" | "updated_at">;
@@ -315,6 +316,7 @@ export function ClientCommitmentsView({ projects }: { projects: ProjectView[] })
                   </select>
                 </label>
               </div>
+              <p className="client-portfolio-note">El estado del compromiso es una decisión local separada: Completado no acredita aceptación técnica, entrega, respuesta ni seguimiento.</p>
               <label>Próxima acción explícita
                 <textarea required rows={2} maxLength={500} value={commitmentDraft.next_action}
                   onChange={(event) => updateCommitment("next_action", event.target.value)} />
@@ -341,6 +343,10 @@ export function ClientCommitmentsView({ projects }: { projects: ProjectView[] })
                 {editingCommitment && <button type="button" className="ibtn" onClick={startNewCommitment}>Cancelar edición</button>}
               </div>
             </form>
+            {editingCommitment && <DeliveryReadinessPanel
+              key={`delivery-${editingCommitment.project_id}-${editingCommitment.id}`}
+              projectId={editingCommitment.project_id} commitmentId={editingCommitment.id} disabled={savingCommitment}
+            />}
           </section>
         </div>
       )}

@@ -9,6 +9,10 @@ import { WORKFLOW_LIMITS, WORKFLOW_ROLES, WORKFLOW_TEMPLATES } from "./types";
 import documentSchema from "../../schemas/workflow-document.schema.json";
 import recordSchema from "../../schemas/workflow-record.schema.json";
 import { WORK_SCALES } from "../organization/issue-lifecycle";
+import type { PlannerRecovery } from "./types";
+import { approvedPlannerRecovery, plannerRecoveryDecisionFingerprint, plannerRecoveryFingerprint, plannerRecoveryHash } from "./planner-recovery";
+import { claimRecoveryFingerprint, claimRecoveryHash } from "./uncharged-claim-recovery";
+import type { UnchargedClaimRecovery } from "./types";
 import {
   assertReviewReceipt, assertRoleHandoff, assertWorkflowAdmissionIntent, assertWorkflowCandidateLineage,
   assertWorkflowDecision, assertWorkflowDocument, assertWorkflowDocumentMutation, assertWorkflowGrant, assertWorkflowPolicy,
@@ -89,6 +93,76 @@ function correctionSealFixture() {
   current.revision++; current.candidate = structuredClone(corrected); after.lineages[lineage.id]!.candidate_ids.push(corrected.candidate_id);
   return { before, after, correctionId: correction.id };
 }
+
+
+function unchargedDocument() {
+  const before = document(), w = before.workflows["workflow-1"]!, p = before.stages["stage-1"]!;
+  p.status = "completed"; p.execution_id = "plan-run-1"; p.output = output(); p.output_fingerprint = claimRecoveryHash(p.output);
+  before.accounting["account-1"] = accounting(); before.admission_intents["intent-1"]!.status = "committed";
+  const approved = { ...decision(), status: "approved" as const, resource_fingerprint: p.output_fingerprint,
+    decided_by: "human" as const, approval_id: "synthetic-human", rationale: "Exact synthetic plan approved", decided_at: at };
+  before.decisions[approved.id] = approved; w.approved_plan = { stage_id: p.id, output_fingerprint: p.output_fingerprint, decision_id: approved.id };
+  const s = { ...stage(), id: "engineer-stage", ordinal: 2, kind: "implementation" as const, role_id: "software-engineer" as const,
+    agent_id: "backend-dev", sandbox: "workspace-write" as const, status: "queued" as const, task_id: "engineer-task", predecessor_stage_id: p.id };
+  before.stages[s.id] = s; w.stage_ids.push(s.id); w.current_stage_id = s.id;
+  before.admission_intents["engineer-intent"] = { ...intent(), id: "engineer-intent", stage_id: s.id, task_id: s.task_id, status: "committed" };
+  w.status = "needs-decision"; w.recovery_state = "awaiting-human"; w.blocked_reason = "Synthetic pre-charge stop";
+  w.counters = { tasks: 2, attempts: 1, runtime_ms: 1000, total_tokens: 200, accounting_complete: false };
+  const r: UnchargedClaimRecovery = { schema_version: 1, id: "recovery-1", workflow_id: w.id, workflow_revision: w.revision,
+    project_id: w.project_id, issue_id: w.issue_id, issue_revision: 1, scope_revision: 1, stage_id: s.id, task_id: s.task_id,
+    original_run_id: "uncharged-run", task_revision: 3, grant_id: s.grant_id, authority_revision: 1, context_fingerprint: hash,
+    approved_plan_fingerprint: claimRecoveryHash(w.approved_plan), intent_fingerprint: claimRecoveryHash(before.admission_intents["engineer-intent"]),
+    grant_fingerprint: claimRecoveryHash(before.grants[s.grant_id]), issue_fingerprint: hash, task_fingerprint: hash,
+    events_fingerprint: hash, source_fingerprint: hash, archive_fingerprint: hash, native_fingerprint: hash,
+    original_failure: { kind: "terminal", message: "Workflow attempt requires retained-fact review", at, run_id: "uncharged-run" },
+    original_started_at: at, original_finished_at: at, original_counters: structuredClone(w.counters),
+    requeued_task_revision: 4, requeued_task_fingerprint: hash, requested_by: "human", approval_id: "synthetic-human", created_at: at,
+    fingerprint: "", phase: "prepared", event_id: null, event_fingerprint: null };
+  r.fingerprint = claimRecoveryFingerprint(r);
+  const after = structuredClone(before); after.workflows[w.id]!.revision++; after.workflows[w.id]!.uncharged_claim_recovery = r;
+  return { before, after, receipt: r, owner: after.workflows[w.id]! };
+}
+describe("uncharged-claim strict workflow contracts", () => {
+  it("inserts only prepared provenance without altering any numerical charge or other history", () => {
+    const f = unchargedDocument(); expect(() => assertWorkflowDocumentMutation(f.before, f.after)).not.toThrow();
+    expect(f.after.accounting).toEqual(f.before.accounting); expect(f.after.grants).toEqual(f.before.grants);
+    expect(f.owner.counters).toEqual(f.before.workflows[f.owner.id]!.counters);
+  });
+  it.each([null, { schema_version: 2 }, { schema_version: 1 }, false, "verified"])("refuses invalid/future facets %#", (facet) => {
+    const f = unchargedDocument(); (f.owner as unknown as Record<string, unknown>).uncharged_claim_recovery = facet;
+    expect(() => assertWorkflowDocument(f.after)).toThrow();
+  });
+  it("does not invoke recovery getters, proxies or inherited facets during record/document validation", () => {
+    for (const aggregate of [false, true]) {
+      const f = unchargedDocument(); let calls = 0;
+      Object.defineProperty(f.owner, "uncharged_claim_recovery", { get() { calls++; return f.receipt; } });
+      expect(() => aggregate ? assertWorkflowDocument(f.after) : assertWorkflowRecord(f.owner)).toThrow();
+      expect(calls).toBe(0);
+    }
+    const f = unchargedDocument(); f.owner.uncharged_claim_recovery = new Proxy(f.receipt, {});
+    expect(() => assertWorkflowRecord(f.owner)).toThrow();
+    expect(() => assertWorkflowRecord(Object.create(f.owner))).toThrow();
+  });
+  it("allows only ordered prepared/task-requeued/ready progression without refund", () => {
+    const f = unchargedDocument(), next = structuredClone(f.after), w = next.workflows[f.owner.id]!;
+    w.revision++; w.uncharged_claim_recovery!.phase = "task-requeued"; w.uncharged_claim_recovery!.event_id = "recovery-event"; w.uncharged_claim_recovery!.event_fingerprint = hash;
+    expect(() => assertWorkflowDocumentMutation(f.after, next)).not.toThrow();
+    const ready = structuredClone(next), owner = ready.workflows[w.id]!; owner.revision++;
+    owner.uncharged_claim_recovery!.phase = "ready"; owner.status = "running"; owner.recovery_state = "none"; owner.blocked_reason = null; owner.counters.accounting_complete = true;
+    expect(() => assertWorkflowDocumentMutation(next, ready)).not.toThrow();
+    expect(ready.accounting).toEqual(f.before.accounting); expect(owner.counters.attempts).toBe(1);
+  });
+  it.each(["remove", "rewrite", "skip", "complete", "identity", "refund"] as const)("refuses %s mutations", (kind) => {
+    const f = unchargedDocument(), next = structuredClone(f.after), w = next.workflows[f.owner.id]!; w.revision++;
+    if (kind === "remove") delete w.uncharged_claim_recovery;
+    if (kind === "rewrite") { w.uncharged_claim_recovery!.approval_id = "substituted"; w.uncharged_claim_recovery!.fingerprint = claimRecoveryFingerprint(w.uncharged_claim_recovery!); }
+    if (kind === "skip") { w.uncharged_claim_recovery!.phase = "ready"; w.uncharged_claim_recovery!.event_id = "event"; w.uncharged_claim_recovery!.event_fingerprint = hash; }
+    if (kind === "complete") w.counters.accounting_complete = true;
+    if (kind === "identity") w.uncharged_claim_recovery!.task_id = "foreign";
+    if (kind === "refund") w.counters.total_tokens--;
+    expect(() => assertWorkflowDocumentMutation(f.after, next)).toThrow();
+  });
+});
 
 describe("T010 exact correction candidate terminal seal", () => {
   it("does not permit bound candidate replacement on an ordinary writer", () => {
@@ -502,5 +576,63 @@ describe("Phase O workflow contracts (T001)", () => {
     expect(() => assertWorkflowStage({ ...stage(), status: "completed", execution_id: "plan-run-1" })).toThrow(/output evidence/);
     expect(() => assertWorkflowStage({ ...stage(), status: "completed", execution_id: "plan-run-1", output: output(), output_fingerprint: hash })).not.toThrow();
     expect(() => assertWorkflowStage({ ...stage(), status: "completed", execution_id: "plan-run-1", output: { ...output(), status: "blocked" }, output_fingerprint: hash })).toThrow(/output evidence/);
+  });
+});
+
+describe("planner-recovery aggregate provenance", () => {
+  function recovered() {
+    const d = document(), w = d.workflows["workflow-1"]!, s = d.stages["stage-1"]!;
+    s.status = "needs-review"; s.execution_id = "plan-run-1";
+    s.output = { ...output(), status: "needs-review", unresolved_questions: ["Approve?"], risks: ["Unmeasured cost"] };
+    s.output_fingerprint = plannerRecoveryHash(s.output);
+    d.admission_intents["intent-1"]!.status = "committed";
+    const charge = accounting(); charge.id = s.execution_id; d.accounting[charge.id] = charge;
+    w.counters = { tasks: 1, attempts: 1, runtime_ms: 1000, total_tokens: 200, accounting_complete: true };
+    const r: PlannerRecovery = {
+      schema_version: 1, id: "recovery-1", workflow_id: w.id, project_id: w.project_id, issue_id: w.issue_id, issue_revision: 1, scope_revision: 1,
+      stage_id: s.id, generation: 1, task_id: s.task_id!, execution_id: s.execution_id, task_revision: 2, context_fingerprint: hash,
+      task_fingerprint: hash, output_fingerprint: s.output_fingerprint, terminal_receipt_fingerprint: hash, accounting_fingerprint: plannerRecoveryHash(charge),
+      grant_id: s.grant_id, authority_revision: 1, grant_fingerprint: plannerRecoveryHash(d.grants[s.grant_id]), original_counters: structuredClone(w.counters),
+      decision_id: "decision-1", requested_by: "human", approval_id: "synthetic-offer", rationale: "Offer for separate approval",
+      questions: [{ index: 0, fingerprint: plannerRecoveryHash("Approve?"), kind: "plan-approval-gate", answer: "Keep exact approval pending" }],
+      risks: [{ index: 0, fingerprint: plannerRecoveryHash("Unmeasured cost") }], created_at: at, fingerprint: hash,
+    };
+    r.fingerprint = plannerRecoveryFingerprint(r); w.planner_recovery = r;
+    d.decisions[r.decision_id] = { ...decision(), resource_fingerprint: plannerRecoveryDecisionFingerprint(r) };
+    w.status = "waiting-human"; w.pending_decision_id = r.decision_id;
+    return { d, w, s, r };
+  }
+  it("retains the incomplete stage and requires independent exact approval", () => {
+    const { d, w, s, r } = recovered(); expect(() => assertWorkflowDocument(d)).not.toThrow();
+    expect(approvedPlannerRecovery(d, s)).toBeNull(); expect(s.output!.status).toBe("needs-review");
+    const dec = d.decisions[r.decision_id]!; Object.assign(dec, { status: "approved", decided_by: "human", approval_id: "exact-plan", rationale: "Approve unchanged plan", decided_at: at });
+    w.approved_plan = { stage_id: s.id, output_fingerprint: s.output_fingerprint!, decision_id: dec.id };
+    w.pending_decision_id = null; w.status = "running";
+    expect(() => assertWorkflowDocument(d)).not.toThrow(); expect(approvedPlannerRecovery(d, s)?.id).toBe(r.id);
+    expect(s.status).toBe("needs-review");
+  });
+  it.each(["null", "future", "unknown-field", "output", "accounting", "grant", "decision", "risk"])("refuses invalid or substituted recovery %s", (change) => {
+    const { d, w, s, r } = recovered();
+    if (change === "null") Object.assign(w, { planner_recovery: null });
+    if (change === "future") Object.assign(r, { schema_version: 2 });
+    if (change === "unknown-field") Object.assign(r, { waive: true });
+    if (change === "output") s.output!.summary = "Substituted";
+    if (change === "accounting") d.accounting[s.execution_id!]!.observed_tokens++;
+    if (change === "grant") d.grants[s.grant_id]!.approval_id = "different";
+    if (change === "decision") d.decisions[r.decision_id]!.resource_fingerprint = hash;
+    if (change === "risk") r.risks = [];
+    expect(() => assertWorkflowDocument(d)).toThrow();
+  });
+  it("allows only one explicit recovery insertion without counter or output changes", () => {
+    const { d: after, w, s } = recovered(), before = structuredClone(after), previous = before.workflows[w.id]!;
+    delete previous.planner_recovery; delete before.decisions["decision-1"];
+    previous.status = "needs-decision"; previous.blocked_reason = "Incomplete role result"; previous.recovery_state = "awaiting-human"; previous.pending_decision_id = null;
+    before.stages[s.id]!.status = "running";
+    w.revision++;
+    expect(() => assertWorkflowDocumentMutation(before, after)).not.toThrow();
+    const forged = structuredClone(after); forged.workflows[w.id]!.planner_recovery!.rationale = "Changed";
+    expect(() => assertWorkflowDocumentMutation(after, forged)).toThrow();
+    expect(after.stages[s.id]!.output).toEqual(before.stages[s.id]!.output);
+    expect(after.accounting).toEqual(before.accounting);
   });
 });

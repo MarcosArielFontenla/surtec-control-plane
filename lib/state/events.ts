@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TaskEvent, TaskEventType } from "./types";
-import { eventsDir } from "./paths";
+import { eventsDir, stateRootForStoreDirectory } from "./paths";
 import { assertSafeIdentifier } from "../security/identifiers";
 import { safeJson } from "../security/redaction";
 import { describeValidation, validateTaskEvent } from "./validation";
 import { withStateLock } from "./store";
+import { assertMaintenanceMutation, withMaintenanceMutation } from "./maintenance";
 
 export interface AppendTaskEventInput {
   task_id: string;
@@ -20,6 +21,11 @@ export interface AppendTaskEventInput {
 
 export function appendTaskEvent(input: AppendTaskEventInput, dir: string = eventsDir()): TaskEvent {
   assertSafeIdentifier(input.task_id, "task id");
+  const root = stateRootForStoreDirectory(dir, "events");
+  return withMaintenanceMutation(root, () => appendTaskEventOwned(input, dir, root));
+}
+
+function appendTaskEventOwned(input: AppendTaskEventInput, dir: string, root: string): TaskEvent {
   const event: TaskEvent = {
     event_id: randomUUID(),
     task_id: input.task_id,
@@ -31,10 +37,13 @@ export function appendTaskEvent(input: AppendTaskEventInput, dir: string = event
     payload: input.payload ?? {},
   };
   if (!validateTaskEvent(event)) throw new Error(`invalid task event: ${describeValidation(validateTaskEvent.errors)}`);
+  assertMaintenanceMutation(root);
   mkdirSync(dir, { recursive: true });
   withStateLock(`event-${input.task_id}`, () => {
-    appendFileSync(join(dir, `${input.task_id}.jsonl`), `${safeJson(event)}\n`, "utf8");
-  }, join(dir, ".locks"));
+    const line = `${safeJson(event)}\n`;
+    assertMaintenanceMutation(root);
+    appendFileSync(join(dir, `${input.task_id}.jsonl`), line, "utf8");
+  }, join(dir, ".locks"), root);
   return event;
 }
 

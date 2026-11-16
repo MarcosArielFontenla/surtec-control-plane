@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export function stateDir(): string {
   return process.env.SURTEC_STATE_DIR ?? join(process.cwd(), "state");
@@ -78,4 +78,27 @@ export function routineStatePath(base: string = stateDir()): string {
 
 export function harnessProfilesPath(base: string = stateDir()): string {
   return join(base, "harness", "profiles.json");
+}
+
+// Control/ownership files are outside the replaceable operating-state catalog.
+export function maintenanceDir(base: string = stateDir()): string { return join(base, "maintenance"); }
+export function maintenanceControlPath(base: string = stateDir()): string { return join(maintenanceDir(base), "control.json"); }
+export function maintenanceGatePath(base: string = stateDir()): string { return join(maintenanceDir(base), "boundary.lock"); }
+export function maintenanceOwnersDir(base: string = stateDir()): string { return join(maintenanceDir(base), "owners"); }
+
+/** Canonical layouts use their parent state root; a legacy flat override owns itself. */
+export function stateRootForStoreDirectory(directory: string, kind: string): string {
+  const absolute = resolve(directory), folder = basename(absolute);
+  const matches = process.platform === "win32" ? folder.toLowerCase() === kind.toLowerCase() : folder === kind;
+  return matches ? dirname(absolute) : absolute;
+}
+export function stateRootForStoreFile(file: string, kind: string): string { return stateRootForStoreDirectory(dirname(resolve(file)), kind); }
+export function stateRootForLockDirectory(directory: string): string {
+  const absolute = resolve(directory), folder = process.platform === "win32" ? basename(absolute).toLowerCase() : basename(absolute);
+  if (folder === "locks") return dirname(absolute);
+  if (folder === ".locks") {
+    const parent = dirname(absolute), name = process.platform === "win32" ? basename(parent).toLowerCase() : basename(parent);
+    return name === "events" ? dirname(parent) : parent;
+  }
+  return absolute;
 }

@@ -19,6 +19,8 @@ import { WORKFLOW_ROLES, WORKFLOW_TEMPLATES, type GovernedWorkflow, type Workflo
 import { createContextService, ContextPreviewError, type AdmittedContext, type ContextServiceDependencies } from "./context-service";
 import { budgetAmounts, createBudgetService, existingBudgetConstraint, unavailableBudgetPreview, type BudgetPreview } from "./budget-service";
 import { pathsOutsideScope } from "./issue-service";
+import { approvedPlannerRecovery, assertRetainedPlannerTask, plannerRecoveryDecisionFingerprint } from "../../../lib/workflows/planner-recovery";
+import { validateTerminalUsageEvidence } from "../../../runner/terminal-usage-evidence";
 
 const CATEGORIES = ["client-identity", "project-outcome", "active-commitments", "service-context", "confidential-notes"] as const;
 const ROLE_KIND: Record<WorkflowRoleId, WorkflowStageKind> = { "portfolio-analyst": "analysis", planner: "planning", "software-engineer": "implementation", reviewer: "review", "qa-evaluator": "qa", "operations-observer": "operations" };
@@ -281,7 +283,11 @@ export function createWorkflowContextService(repoRoot: string, dependencies: Wor
       const predecessor = document.stages[stage!.predecessor_stage_id]!, handoff = stage!.handoff_id ? document.handoffs[stage!.handoff_id] : undefined;
       requireCurrent(workflow!.stage_ids[stage!.ordinal - 2] === predecessor.id, "Stage cannot skip its finite predecessor slot");
       const task = predecessor.task_id ? taskReader(predecessor.task_id) : null, writer = predecessor.kind === "implementation" || predecessor.kind === "correction";
-      requireCurrent(predecessor.status === "completed" && (writer ? !!predecessor.candidate && predecessor.output === null && predecessor.output_fingerprint === hash(predecessor.candidate) : predecessor.output?.status === "completed" && predecessor.output_fingerprint === hash(predecessor.output))
+      const human = approvedPlannerRecovery(document, predecessor);
+      if (human) {
+        requireCurrent(!!handoff && !!task && validateTaskRecord(task), "Recovered Planner handoff is unavailable");
+        assertRetainedPlannerTask(document, predecessor, task, validateTerminalUsageEvidence);
+      } else requireCurrent(predecessor.status === "completed" && (writer ? !!predecessor.candidate && predecessor.output === null && predecessor.output_fingerprint === hash(predecessor.candidate) : predecessor.output?.status === "completed" && predecessor.output_fingerprint === hash(predecessor.output))
         && !!handoff && !!task && validateTaskRecord(task) && task.lifecycle === "finished" && task.outcome === "completed" && !task.orchestration?.lease
         && task.envelope.context_admission?.schema_version === 2 && task.envelope.context_admission.stage_id === predecessor.id
         && task.envelope.context_admission.workflow_id === workflow!.id && task.envelope.context_admission.grant_id === predecessor.grant_id && task.envelope.context_admission.stage_generation === predecessor.generation
@@ -293,12 +299,14 @@ export function createWorkflowContextService(repoRoot: string, dependencies: Wor
         const evidence = current.issues.evidence[id]; return !!evidence && evidence.issue_id === current.issue.id && evidence.task_id === predecessor.task_id && evidence.execution_id === predecessor.execution_id;
       }), "Handoff contains unrelated evidence references");
       append("handoff", handoff); append("predecessor-output", writer ? { candidate: predecessor.candidate, output_fingerprint: predecessor.output_fingerprint } : predecessor.output);
+      if (human) append("planner-recovery", human);
     } else requireCurrent(!stage!.handoff_id && stage!.ordinal === 1, "Noninitial stage requires an owned predecessor handoff");
     if (templateStage!.before_human_gates.includes("plan-approval")) {
       const ref = workflow!.approved_plan, planner = ref ? document.stages[ref.stage_id] : undefined, decision = ref ? document.decisions[ref.decision_id] : undefined;
+      const recovered = planner ? approvedPlannerRecovery(document, planner) : null;
       requireCurrent(!!ref && planner?.kind === "planning" && planner.output?.kind === "plan" && !planner.output.scope_change_required
         && planner.output_fingerprint === hash(planner.output) && ref.output_fingerprint === planner.output_fingerprint && decision?.status === "approved"
-        && decision.resource_fingerprint === ref.output_fingerprint, "Current exact Planner proposal has not been approved");
+        && decision.resource_fingerprint === (recovered ? plannerRecoveryDecisionFingerprint(recovered) : ref.output_fingerprint), "Current exact Planner proposal has not been approved");
       append("approved-plan", { reference: ref, output: planner!.output });
     }
     if (templateStage!.requires_candidate) {
@@ -346,6 +354,20 @@ export function createWorkflowContextService(repoRoot: string, dependencies: Wor
     return { ...assembled, instructions, binding, workflow_budget_preview };
   }
   return {
+    inspectPlannerRecoveryAuthority(id: string) {
+      const { workflows, issues } = snapshots(), owner = workflows.workflows[id], issue = owner && issues.issues[owner.issue_id];
+      const grant = owner && workflows.grants[owner.current_grant_id];
+      requireCurrent(!!owner && !!issue && !!grant, "Recovery authority is unavailable");
+      const result = resolve({ template_id: grant!.template_id, template_version: 1, project_id: grant!.project_id, issue_id: grant!.issue_id, expected_revision: issue!.revision,
+        selected_agents: Object.fromEntries(grant!.role_assignments.map((entry) => [entry.role_id, entry.agent_id])),
+        client_context_categories: Object.fromEntries(grant!.role_assignments.map((entry) => [entry.role_id, entry.client_context_categories])),
+        correction_enabled: grant!.correction.enabled, budget: grant!.budget }, id, workflows.stages[owner!.current_stage_id!]?.task_id ?? undefined);
+      requireCurrent(result.preview.allowed && result.issue.scope_revision === grant!.scope_revision && isDeepStrictEqual(result.issue.authorized_scope, grant!.authorized_scope)
+        && isDeepStrictEqual(result.grantContext.source_fingerprints, grant!.source_fingerprints) && result.grantContext.policy_fingerprint === grant!.policy_fingerprint
+        && result.grantContext.testing_policy_fingerprint === grant!.testing_policy_fingerprint && isDeepStrictEqual(result.preview.role_assignments, grant!.role_assignments)
+        && isDeepStrictEqual(result.preview.review_policy, owner!.review_policy), "Recovery sources, consent, scope or policy changed");
+      return { issue: result.issue, source_fingerprint: hash(result.grantContext) };
+    },
     preview(value: unknown): Omit<ReturnType<typeof resolve>["preview"], "budget_previews"> & { budget_previews?: ReturnType<typeof resolve>["preview"]["budget_previews"] } {
       const result = resolve(value), now = clock();
       for (const [id, expires] of issued) if (expires <= now) issued.delete(id);

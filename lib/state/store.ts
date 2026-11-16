@@ -1,25 +1,59 @@
 import {
   closeSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync, renameSync, existsSync, statSync, unlinkSync,
 } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, basename, isAbsolute, relative, resolve } from "node:path";
+import { types as nodeTypes } from "node:util";
 import type { TaskRecord, ProjectStatusOverride } from "./types";
-import { tasksDir, projectsDir, locksDir } from "./paths";
+import { tasksDir, projectsDir, locksDir, stateRootForStoreDirectory, stateRootForLockDirectory } from "./paths";
 import { assertSafeIdentifier } from "../security/identifiers";
 import { describeValidation, validateProjectOverride, validateTaskRecord } from "./validation";
+import { assertMaintenanceMutation, withMaintenanceMutation, StateLockConflictError, MaintenanceStateError } from "./maintenance";
 
-export function writeJsonAtomic(filePath: string, data: unknown): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
-  renameSync(tmp, filePath);
+function assertMaintenanceContainment(root: string, target: string): void {
+  const location = relative(resolve(root), resolve(target));
+  if (isAbsolute(location) || location === ".." || location.startsWith("../") || location.startsWith("..\\")) {
+    throw new MaintenanceStateError("State mutation target is outside its maintenance boundary; no files were changed.");
+  }
 }
 
-export class StateLockConflictError extends Error {}
+function assertSynchronousStateCallback(action: unknown): void {
+  if (typeof action !== "function" || nodeTypes.isProxy(action) || nodeTypes.isAsyncFunction(action) || nodeTypes.isGeneratorFunction(action)) {
+    throw new MaintenanceStateError("State mutation callback must be synchronous and non-proxied; no files were changed.");
+  }
+}
+
+export function writeJsonAtomic(filePath: string, data: unknown, maintenanceRoot?: string): void {
+  const directory = dirname(filePath);
+  const folder = process.platform === "win32" ? basename(directory).toLowerCase() : basename(directory);
+  const root = maintenanceRoot ?? (["tasks", "projects", "notes", "reconciliation"].includes(folder)
+    ? stateRootForStoreDirectory(directory, folder) : directory);
+  assertMaintenanceContainment(root, filePath);
+  withMaintenanceMutation(root, () => {
+    assertMaintenanceMutation(root);
+    mkdirSync(directory, { recursive: true });
+    const tmp = `${filePath}.tmp`;
+    const serialized = JSON.stringify(data, null, 2);
+    assertMaintenanceMutation(root);
+    writeFileSync(tmp, serialized, "utf8");
+    assertMaintenanceMutation(root);
+    renameSync(tmp, filePath);
+  });
+}
+
+export { StateLockConflictError };
 
 const STALE_LOCK_MS = 30_000;
 
-export function withStateLock<T>(id: string, action: () => T, dir: string = locksDir()): T {
+export function withStateLock<T>(id: string, action: () => T, dir: string = locksDir(), maintenanceRoot?: string): T {
   assertSafeIdentifier(id, "lock id");
+  assertSynchronousStateCallback(action);
+  const root = maintenanceRoot ?? stateRootForLockDirectory(dir);
+  assertMaintenanceContainment(root, dir);
+  return withMaintenanceMutation(root, () => withStateLockOwned(id, action, dir, root));
+}
+
+function withStateLockOwned<T>(id: string, action: () => T, dir: string, root: string): T {
+  assertMaintenanceMutation(root);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${id}.lock`);
   let descriptor: number;
@@ -43,6 +77,7 @@ export function withStateLock<T>(id: string, action: () => T, dir: string = lock
     }
   }
   try {
+    assertMaintenanceMutation(root);
     writeFileSync(descriptor, `${process.pid}\n${new Date().toISOString()}\n`, "utf8");
     return action();
   } finally {
@@ -68,9 +103,12 @@ function readJsonDir<T>(dir: string, label: string, validate: ((value: unknown) 
 }
 
 export function writeTask(record: TaskRecord, dir: string = tasksDir()): void {
-  if (!validateTaskRecord(record)) throw new Error(`invalid task record: ${describeValidation(validateTaskRecord.errors)}`);
-  assertSafeIdentifier(record.envelope.id, "task id");
-  writeJsonAtomic(join(dir, `${record.envelope.id}.json`), record);
+  const root = stateRootForStoreDirectory(dir, "tasks");
+  withMaintenanceMutation(root, () => {
+    if (!validateTaskRecord(record)) throw new Error(`invalid task record: ${describeValidation(validateTaskRecord.errors)}`);
+    assertSafeIdentifier(record.envelope.id, "task id");
+    writeJsonAtomic(join(dir, `${record.envelope.id}.json`), record, root);
+  });
 }
 
 export function readTask(id: string, dir: string = tasksDir()): TaskRecord | null {
@@ -88,15 +126,17 @@ export function readTask(id: string, dir: string = tasksDir()): TaskRecord | nul
 
 export function updateTask(id: string, mutate: (record: TaskRecord) => void | boolean, dir: string = tasksDir()): TaskRecord | null {
   assertSafeIdentifier(id, "task id");
-  return withStateLock(id, () => {
+  assertSynchronousStateCallback(mutate);
+  const root = stateRootForStoreDirectory(dir, "tasks");
+  return withMaintenanceMutation(root, () => withStateLock(id, () => {
     const record = readTask(id, dir);
     if (!record) return null;
     const previousRevision = record.revision ?? 0;
-    if (mutate(record) === false) return record;
+    if (withMaintenanceMutation(root, () => mutate(record)) === false) return record;
     record.revision = previousRevision + 1;
     writeTask(record, dir);
     return record;
-  }, join(dirname(dir), "locks"));
+  }, join(root, "locks"), root));
 }
 
 export function listTasks(dir: string = tasksDir()): TaskRecord[] {
@@ -108,7 +148,10 @@ export function listProjectOverrides(dir: string = projectsDir()): ProjectStatus
 }
 
 export function upsertProjectOverride(o: ProjectStatusOverride, dir: string = projectsDir()): void {
-  if (!validateProjectOverride(o)) throw new Error(`invalid project override: ${describeValidation(validateProjectOverride.errors)}`);
-  assertSafeIdentifier(o.id, "project id");
-  writeJsonAtomic(join(dir, `${o.id}.json`), o);
+  const root = stateRootForStoreDirectory(dir, "projects");
+  withMaintenanceMutation(root, () => {
+    if (!validateProjectOverride(o)) throw new Error(`invalid project override: ${describeValidation(validateProjectOverride.errors)}`);
+    assertSafeIdentifier(o.id, "project id");
+    writeJsonAtomic(join(dir, `${o.id}.json`), o, root);
+  });
 }

@@ -1,0 +1,74 @@
+schema_version: 1
+name: "Factory Local F3 - governed context efficiency"
+entity: GovernedExecutionContext
+domains: [runtime-context, agent-execution, workflow-compatibility]
+purpose: "Reduce avoidable automatically advertised context for first governed executions through a fixed versioned profile, preserving mandatory sources, accounting, limits and exact legacy contracts; leave the real exhausted F3 workflow stopped."
+requirements:
+  - id: req-preserve
+    description: "Preserve the real 115878 observed root tokens, 94366 Engineer tokens, unknown final usage, original Planner output/approval/charge, ready one-use recovery journal, private archives and clean retained worktree. No workflow/state repair, replay, new identity, refund or new quota follows from context efficiency."
+  - id: req-profile
+    description: "Add one pure code-owned governed-local-context-v1 profile with fixed settings/guidance fingerprints and a closed internal identifier. No caller configuration map, path, environment switch or public profile selector; unknown or malformed identifiers refuse before model effects."
+  - id: req-required
+    description: "Suppress only automatic skills-instruction/catalog embedding through skills.include_instructions=false. Preserve every complete admitted source, routed mandatory skill body, project/ancestor instruction and existing byte/line bound; refuse missing mandatory content rather than truncate, summarize or replace it with hashes."
+  - id: req-read
+    description: "Add fixed guidance for filename/symbol search, relevant bounded reads, explicit supported per-call output budgets and complete ordered mandatory reads. Keep tool-output ceilings and all required verification intact; guidance grants no capabilities and does not prove model compliance or actual savings."
+  - id: req-bindings
+    description: "Bind fixed profile/settings/guidance to the full existing execution contract and propagate the selected identifier through trusted stage/runner/executor composition. Recompute exact legacy and new candidates; only a matching retained fingerprint can select/resume its profile. Unknown hashes/types, bare threads and changed bindings refuse without fingerprint reset."
+  - id: req-config
+    description: "For the new profile only, use fixed process/thread overrides and stable config/read before thread/start or thread/resume. Require an own explicit false boolean at the expected setting; missing, true, malformed, refused or unsupported config stops without thread/turn. Never log the full effective config or silently fall back."
+  - id: req-compat
+    description: "Preserve exact old hash serialization, prompt/spawn/RPC behavior and historical receipts with no backfill, stored facet or migration. Existing ungoverned adapters remain legacy; retained valid contracts stay on their original profile. New selection does not reinterpret older state as current authority."
+  - id: req-runtime
+    description: "Retain sole stable stdio App Server, configurable model/effort, current approval routing, sandboxes/network, environment allowlists, agents.enabled=false, output contracts, cancellation and strict terminal/native/EOF evidence. No base-instruction replacement, experimental flags or apps/MCP/plugin policy change."
+  - id: req-accounting
+    description: "Keep cumulative high-water/delta accounting, cached-input inclusion, charge-before-effects ordering and unknown-usage denial unchanged. Synthetic 24150/58091/94366 samples plus duplicates must preserve 94366, trigger the unchanged 78488 task bound and block candidate/verification without refund; all caps/timeouts remain unchanged."
+  - id: req-pins
+    description: "Retain both existing coherent uncharged-claim producer/operator pairs verbatim and append one explicitly reviewed static pair for final new public source/fixture. No mixed-pair acceptance, runtime auto-adoption or registry/Harness pin changes; charged/interrupted/exhausted real attempts remain ineligible."
+  - id: req-acceptance
+    description: "Complete the design's mandatory C01-C06 fake-protocol/runner/stage/recovery checks, four existing catalog commands and focused actual isolated API/Chromium with exactly four fake roles, legacy preservation, human gates, restart/no replay and owned cleanup. Filtered/unknown/native-unmeasured results are not PASS or real F3 completion."
+  - id: req-privacy
+    description: "Persist only bounded numeric/type/hash evidence, never private prompts, tool-output bodies, raw reasoning, credentials or effective configuration. Keep real IDs/paths/state outside Git and synthetic tests; do not copy auth/config, change global user settings or touch sibling source."
+constraints:
+  - "Follow docs/proposals/factory-local-f3-context-efficiency-design.md and .agents/specs/tasks/f3-context-efficiency.tasks.md. The owner explicitly approved the exact 23-path design/spec/tasks and C01-C06 technical acceptance in the conversation; no real model or workflow action is included."
+  - "Review acknowledgement is 2026-11-04T00:23:56Z, not an inferred earlier human timestamp. The owner subsequently authorized necessary scoped adjustments and revalidation to close T001-T005; earlier failed receipts remain retained. Do not progress past an unresolved failure or unknown result, widen the 23-path scope or change limits/model/side-effect boundaries."
+  - "Use only the declared prospective targets. No generated bindings, schemas, source-manifest/admission changes, dependency/lockfile, registry, Harness skill/route/catalog/script/pin or global config edits."
+  - "Do not change 4-task/4-charged-attempt/900000-ms/100000-token root caps, the existing 300000-ms/78488-token Engineer limits, correction OFF or historical consumption."
+  - "No new model/runtime call, paid smoke, real workflow mutation, new budget/grant/identity, worker start, sibling write, commit, push or merge belongs to this increment."
+  - "After implementation approval, acceptance uses foreground owned synthetic state, purpose-specific environments, external TEMP/TMP, both EOFs and 900 seconds per command; no guard, old assertion, test/HTTP/role/output/capture bound or timeout changes."
+  - "Full suite, CI, eval, audit, native runtime/metadata probes, upgrades, installs/downloads and independent process cleanup are excluded. Existing historical failures and global debt remain open."
+  - "The new setting changes automatic context advertisement only; no stronger runtime read isolation, smaller actual token bill or sufficient four-role budget is implied."
+  - "A real native support failure remains subject to unchanged attempt charging and unknown-usage rules. Technical fakes do not authorize an actual attempt merely to qualify a setting."
+  - "The already exhausted real workflow has no spendable balance. Later F3 accounting/execution feasibility and fresh ownership are separate explicit human decisions; context savings cannot retroactively free capacity."
+nonGoals:
+  - "Completing F3/F5, running Engineer/Reviewer/QA, accepting a candidate or applying any new recovery to real state."
+  - "Discounting cached tokens, replacing cumulative usage with last-inference counts, reconciling unknown final billing or resetting history."
+  - "Summarizing/deduplicating issue/plan/handoff payloads, dropping mandatory skills, changing Harness routing or suppressing permission/base instructions."
+  - "Changing model/effort, transport, sandbox/network/approval policy, optional apps/MCP/plugin capabilities or global user configuration."
+  - "A generic tokenizer/optimizer/context store, public profile API, new persisted entity/facet, migration or benchmark campaign."
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-11-04T00:23:56Z"
+  acceptanceChecks:
+    - id: ac-schemas
+      requirementIds: [req-compat, req-pins, req-preserve]
+      description: "Compile unchanged state/API contracts; mandatory C01/C03/C04 separately prove compatibility, exact hashes, preservation and unknown denial."
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-preserve, req-profile, req-required, req-read, req-bindings, req-config, req-compat, req-runtime, req-accounting, req-pins, req-acceptance, req-privacy]
+      description: "Typecheck the private profile/transport/runner boundary; mandatory C01-C04/C06 behavior is not replaced by compilation."
+      command: pnpm typecheck
+      expectedExitCode: 0
+    - id: ac-build
+      requirementIds: [req-runtime, req-compat, req-acceptance]
+      description: "Build against unchanged application interfaces; mandatory existing focused actual API/Chromium must separately prove fake role propagation, retained gates and restart."
+      command: pnpm build
+      expectedExitCode: 0
+    - id: ac-secrets
+      requirementIds: [req-privacy, req-config, req-preserve, req-acceptance]
+      description: "Run the existing deterministic scanner; bounded config/error tests and private-state exclusion remain mandatory and are not general DLP."
+      command: pnpm secrets:check
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications: []

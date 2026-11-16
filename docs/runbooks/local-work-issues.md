@@ -38,3 +38,15 @@ Optional real-project/paid-runtime exploration (not required Phase L acceptance;
 6. Reload the browser and, if useful, restart only the local API. Issue, candidate, event, and evidence references should remain readable from the versioned local document.
 
 For failures, capture the failing `pnpm` command and output, the issue ID/status/revision, linked task ID, and the bounded evidence/candidate IDs shown by the local API. Do not attach credentials, task logs containing secrets, private keys, or unrelated repository files.
+
+## Factory F2 manual request identity and recovery
+
+See [manual request recovery](local-work-issues-recovery.md#factory-f2-manual-request-identity-and-recovery) for durable request IDs, replay and browser recovery.
+
+## Prepare a sealed candidate for human review
+
+See [sealed candidate preparation](local-work-issues-recovery.md#prepare-a-sealed-candidate-for-human-review) for the daily command, seal fields and decision recording.
+
+## Revalidate the historical Gear List acceptance
+
+See [historical acceptance revalidation](local-work-issues-recovery.md#revalidate-the-historical-gear-list-acceptance) for the Gear List F5 profile and receipt.

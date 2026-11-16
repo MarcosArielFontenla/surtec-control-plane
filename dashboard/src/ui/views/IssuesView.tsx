@@ -1,22 +1,165 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import type { Inbox } from "../../../../lib/state/types";
-import type { IssueLineage, WorkIssue } from "../../../../lib/issues/types";
+import type { IssueCreateInput, IssueLineage, WorkIssue } from "../../../../lib/issues/types";
 import type { OrganizationSnapshot } from "../../../../lib/organization";
 import type { ClientContextCategory, ClientContextOptions } from "../../../../lib/client-portfolio";
 import type { GovernedWorkflow } from "../../../../lib/workflows/types";
 import {
   acceptWorkIssueCandidate, approveWorkIssueScope, authorizeWorkIssue, createWorkIssue,
   dispatchWorkIssue, fetchDispatchOptions, getInbox, getOrganization, getWorkIssue, getWorkIssues, rejectWorkIssueScope, resumeWorkIssue,
-  resolveWorkIssueDecision, getContextRoles, getClientContextOptions, getWorkflows, type ContextRole, type DispatchOptions,
+  resolveWorkIssueDecision, getContextRoles, getClientContextOptions, getWorkflows, type ContextRole, type DispatchOptions, type ManualIssueCreateInput,
 } from "../api";
 import { relativeTime } from "../relative-time";
 import { ClientContextConsent, ContextPreview, contextDisplayText, useContextPreview } from "../components/ContextPreview";
 import { WorkflowPanel } from "../components/WorkflowPanel";
 import { BudgetSummary } from "../components/BudgetSummary";
+import { DeliveryReadinessPanel } from "../components/DeliveryReadinessPanel";
 
 function lines(value: string): string[] { return value.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean); }
 function words(value: string): string[] { return value.split(/[,\n]/).map((entry) => entry.trim()).filter(Boolean); }
+
+const PENDING_ISSUE_REQUEST_KEY = "surtec.work-issue.pending-request.v1";
+const REQUEST_UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+interface PendingIssueIntake { requestId: string | null; payload: ManualIssueCreateInput | null }
+interface IntakeReadBinding { requestId: string | null; generation: number }
+
+function savedIntake(): PendingIssueIntake | null {
+  try {
+    const id = sessionStorage.getItem(PENDING_ISSUE_REQUEST_KEY);
+    return id === null ? null : { requestId: REQUEST_UUID.test(id) ? id : null, payload: null };
+  } catch { return { requestId: null, payload: null }; }
+}
+
+function matchesIntake(value: unknown, id: string, payload: ManualIssueCreateInput | null): value is WorkIssue {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const issue = value as WorkIssue, receipt = issue.intake_receipt;
+  return issue.schema_version === 1 && /^I-[a-f0-9-]{36}$/i.test(issue.id) && typeof issue.project_id === "string"
+    && Number.isSafeInteger(issue.revision) && issue.revision >= 1
+    && receipt?.schema_version === 1 && receipt.request_id === id && /^[a-f0-9]{64}$/.test(receipt.request_fingerprint)
+    && (payload === null || issue.project_id === payload.project_id.trim());
+}
+
+/** UI identity only: no approval, dispatch, or durable payload storage. */
+function useIssueIntake(onConfirmed: (issue: WorkIssue) => void) {
+  const [pending, setPending] = useState<PendingIssueIntake | null>(savedIntake);
+  const current = useRef(pending), generation = useRef(0), posting = useRef(false), reading = useRef(false);
+  const [sending, setSending] = useState(false), [checking, setChecking] = useState(false);
+  const [message, setMessage] = useState<string | null>(null), [confirmedId, setConfirmedId] = useState<string | null>(null);
+  const [cancelAcknowledged, setCancelAcknowledged] = useState(false);
+  useEffect(() => () => { generation.current++; }, []);
+
+  function remember(value: PendingIssueIntake) {
+    current.current = value; setPending(value); setCancelAcknowledged(false);
+  }
+  function clearStoredIdentity(id: string | null) {
+    const stored = sessionStorage.getItem(PENDING_ISSUE_REQUEST_KEY);
+    if (stored !== null && (id === null ? REQUEST_UUID.test(stored) : stored !== id)) throw new Error("Pending identity changed");
+    if (stored !== null) sessionStorage.removeItem(PENDING_ISSUE_REQUEST_KEY);
+    if (sessionStorage.getItem(PENDING_ISSUE_REQUEST_KEY) !== null) throw new Error("Pending identity was not cleared");
+  }
+  const complete = useCallback((issue: unknown, id: string): boolean => {
+    const request = current.current;
+    if (request?.requestId !== id || !matchesIntake(issue, id, request.payload)) {
+      setMessage("La respuesta no confirma la identidad del pedido. Comprobá el intento pendiente."); return false;
+    }
+    setConfirmedId(issue.id);
+    try { clearStoredIdentity(id); }
+    catch { setMessage("El pedido está confirmado, pero no se pudo cerrar su identidad guardada. Comprobá el intento antes de crear otro."); return false; }
+    current.current = null; setPending(null); setMessage(null); setCancelAcknowledged(false);
+    onConfirmed(issue); return true;
+  }, [onConfirmed]);
+  const capture = useCallback((): IntakeReadBinding => ({ requestId: current.current?.requestId ?? null, generation: generation.current }), []);
+  const observe = useCallback((collection: { issues: WorkIssue[] }, binding: IntakeReadBinding) => {
+    if (!binding.requestId || binding.generation !== generation.current || posting.current || current.current?.requestId !== binding.requestId) return;
+    try {
+      if (!Array.isArray(collection.issues) || collection.issues.length > 500) throw new Error("Incomplete issue collection");
+      const found = collection.issues.filter((issue) => issue.intake_receipt?.request_id === binding.requestId);
+      if (found.length === 1) { complete(found[0], binding.requestId); return; }
+    } catch { /* A missing or invalid observation is not proof of non-creation. */ }
+    setMessage("No se pudo confirmar el pedido en esta lectura. Su ausencia no demuestra que no se haya creado.");
+  }, [complete]);
+
+  async function send(request: PendingIssueIntake): Promise<boolean> {
+    if (posting.current || reading.current || !request.requestId || !request.payload || current.current !== request) return false;
+    try {
+      const stored = sessionStorage.getItem(PENDING_ISSUE_REQUEST_KEY);
+      if (stored !== null && stored !== request.requestId) throw new Error("Pending identity changed");
+      sessionStorage.setItem(PENDING_ISSUE_REQUEST_KEY, request.requestId);
+      if (sessionStorage.getItem(PENDING_ISSUE_REQUEST_KEY) !== request.requestId) throw new Error("Pending identity was not retained");
+    } catch { setMessage("No se pudo conservar la identidad del pedido. No se envió la solicitud; comprobá el intento pendiente."); return false; }
+    const attempt = ++generation.current;
+    posting.current = true; setSending(true); setMessage(null); setCancelAcknowledged(false);
+    try {
+      const result = await createWorkIssue(structuredClone(request.payload));
+      if (attempt !== generation.current || current.current?.requestId !== request.requestId) return false;
+      return complete(result?.issue, request.requestId);
+    } catch {
+      if (attempt === generation.current && current.current?.requestId === request.requestId) {
+        setMessage("No se pudo confirmar la creación. Conservamos el mismo pedido para comprobarlo o reintentarlo sin duplicarlo.");
+      }
+      return false;
+    } finally { if (attempt === generation.current) { posting.current = false; setSending(false); } }
+  }
+  async function submit(payload: IssueCreateInput): Promise<boolean> {
+    if (current.current || posting.current || reading.current) return false;
+    try {
+      const saved = savedIntake();
+      if (saved) { remember(saved); setMessage("Hay una identidad pendiente que debe resolverse antes de crear otro pedido."); return false; }
+      const id = crypto.randomUUID();
+      if (!REQUEST_UUID.test(id)) throw new Error("Request identity is unavailable");
+      const request = { requestId: id, payload: { ...structuredClone(payload), request_id: id } };
+      remember(request); setConfirmedId(null);
+      return send(request);
+    } catch {
+      remember({ requestId: null, payload: null }); setMessage("No se pudo preparar una identidad segura. No se envió ningún pedido."); return false;
+    }
+  }
+  async function check() {
+    if (posting.current || reading.current || !current.current) return;
+    let id = current.current.requestId;
+    if (!id) {
+      const saved = savedIntake();
+      if (!saved?.requestId) { setMessage("La identidad guardada no está disponible o no es válida. Revisá el aviso antes de cancelar el intento."); return; }
+      remember(saved); id = saved.requestId;
+    }
+    const binding = { requestId: id, generation: ++generation.current };
+    reading.current = true; setChecking(true); setMessage(null);
+    try { const collection = await getWorkIssues(); observe(collection, binding); }
+    catch { if (binding.generation === generation.current) setMessage("No se pudo leer el estado del pedido. El resultado sigue sin confirmar."); }
+    finally { if (binding.generation === generation.current) { reading.current = false; setChecking(false); } }
+  }
+  function cancel() {
+    if (!cancelAcknowledged || posting.current || !current.current) return;
+    try { clearStoredIdentity(current.current.requestId); }
+    catch { setMessage("No se pudo cerrar la identidad guardada o cambió. Recargá para revisarla; no se crea otro pedido."); return; }
+    generation.current++; reading.current = false; setChecking(false);
+    current.current = null; setPending(null); setMessage(null); setCancelAcknowledged(false);
+  }
+  return { pending, sending, checking, message, confirmedId, cancelAcknowledged, setCancelAcknowledged,
+    submit, retry: () => current.current ? send(current.current) : Promise.resolve(false), check, cancel, capture, observe };
+}
+
+const operatingLabels: Partial<Record<WorkIssue["status"], string>> = {
+  working: "Trabajando", checking: "Verificando", "needs-decision": "Necesita decisión",
+  "ready-for-review": "Listo para revisión", done: "Hecho", blocked: "Bloqueado",
+};
+
+function IssueScope({ issue }: { issue: WorkIssue }) {
+  const scope = issue.authorized_scope;
+  return <details className="work-issue-scope">
+    <summary>Scope y clasificación · revisión {issue.scope_revision}</summary>
+    <p><b>Permitido:</b> {scope.allowed_path_patterns.join(", ")} · {scope.allowed_change_categories.join(", ")}</p>
+    <p><b>Paths excluidos:</b> {scope.excluded_path_patterns.join(", ") || "ninguno registrado"}</p>
+    <p><b>Exclusiones explícitas:</b> {scope.explicit_exclusions.join(" · ") || "ninguna registrada"}</p>
+    <p><b>Resultado del scope:</b> {scope.expected_outcome}</p>
+    <p><b>Criterios registrados:</b> {scope.acceptance_criteria.join(" · ")}</p>
+    <p><b>Clasificación:</b> {issue.work_scale} · {issue.classification_rationale.join(" · ") || "sin justificación registrada"}</p>
+    <p><b>Dominios:</b> {issue.classification_inputs.affected_domains.join(", ") || "no registrados"} · Migración: {issue.classification_inputs.requires_migration ? "sí" : "no"} · Seguridad: {issue.classification_inputs.security_impact ? "sí" : "no"}</p>
+    <p><b>Plan:</b> {issue.plan.join(" → ") || "sin plan registrado"}</p>
+    <p className="work-issue-note">Estos son datos del scope registrado, no una autorización nueva ni una prueba de vigencia Git.</p>
+  </details>;
+}
 
 function IssueDispatch({ issue, options, busy, perform }: {
   issue: WorkIssue; options: DispatchOptions | null; busy: boolean;
@@ -107,6 +250,7 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
   const [busy, setBusy] = useState<string | null>(null);
   const [dispatchEpoch, setDispatchEpoch] = useState(0);
   const [budgetEpoch, setBudgetEpoch] = useState(0);
+  const [lineageEpoch, setLineageEpoch] = useState(0);
   const [workflows, setWorkflows] = useState<GovernedWorkflow[] | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [workflowExpanded, setWorkflowExpanded] = useState<Record<string, boolean>>({});
@@ -133,25 +277,51 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
   const [securityImpact, setSecurityImpact] = useState(false);
   const [commitments, setCommitments] = useState("");
 
+  const intakeConfirmed = useCallback((issue: WorkIssue) => {
+    refreshSequence.current++;
+    setIssues((current) => [issue, ...current.filter((entry) => entry.id !== issue.id)]);
+    setTitle(""); setOutcome(""); setCriteria(""); setAllowedPaths(""); setExcludedPaths(""); setCategories(""); setExclusions(""); setDomains(""); setPlan(""); setNextAction(""); setCommitments("");
+  }, []);
+  const intake = useIssueIntake(intakeConfirmed);
+  const captureIntake = intake.capture, observeIntake = intake.observe;
   const refresh = useCallback(async () => {
     const generation = ++refreshSequence.current;
+    const intakeBinding = captureIntake();
+    setLineage({}); setConfirmed({}); setAcknowledgeGap({});
     setBudgetEpoch((value) => value + 1);
     setWorkflows(null); setWorkflowError(null);
     const [localResult, externalResult, optionsResult, organizationResult, workflowResult] = await Promise.allSettled([
       getWorkIssues(), getInbox(), fetchDispatchOptions(), getOrganization(), getWorkflows(),
     ]);
     if (generation !== refreshSequence.current) return;
-    if (localResult.status === "fulfilled") { setIssues(localResult.value.issues); setLocalError(null); }
-    else setLocalError((localResult.reason as Error).message);
+    if (localResult.status === "fulfilled") { setIssues(localResult.value.issues); setLineageEpoch((value) => value + 1); setLocalError(null); observeIntake(localResult.value, intakeBinding); }
+    else setLocalError("La lectura de issues no está disponible; no se pudo confirmar el estado actual.");
     if (externalResult.status === "fulfilled") { setInbox(externalResult.value); setExternalError(null); }
-    else setExternalError((externalResult.reason as Error).message);
+    else setExternalError("La lectura del proveedor no está disponible.");
     if (optionsResult.status === "fulfilled") setDispatchOptions(optionsResult.value);
     if (organizationResult.status === "fulfilled") setOrganization(organizationResult.value);
     if (workflowResult.status === "fulfilled") { setWorkflows(workflowResult.value.workflows); setWorkflowError(null); }
-    else setWorkflowError(contextDisplayText((workflowResult.reason as Error).message));
-  }, []);
+    else setWorkflowError("La lectura de autoridad no está disponible");
+  }, [captureIntake, observeIntake]);
 
   useEffect(() => { void refresh(); return () => { refreshSequence.current++; }; }, [refresh]);
+  useEffect(() => {
+    let active = true;
+    const generation = refreshSequence.current;
+    const open = issues.filter((issue) => expanded[issue.id]);
+    setLineage({});
+    for (const issue of open) {
+      getWorkIssue(issue.id).then((detail) => {
+        if (!active || generation !== refreshSequence.current) return;
+        if (detail.issue.id !== issue.id || detail.issue.project_id !== issue.project_id
+          || detail.issue.revision !== issue.revision || detail.issue.scope_revision !== issue.scope_revision) {
+          setLocalError("El linaje no coincide con la revisión visible; actualizá antes de revisarlo."); return;
+        }
+        setLineage((value) => ({ ...value, [issue.id]: detail }));
+      }).catch(() => { if (active && generation === refreshSequence.current) setLocalError("El linaje no está disponible; actualizá para volver a consultar la evidencia."); });
+    }
+    return () => { active = false; };
+  }, [issues, expanded, lineageEpoch]);
   useEffect(() => {
     if (!workflowFocus || !issues.some((issue) => issue.id === workflowFocus.issueId && issue.project_id === workflowFocus.projectId)) return;
     setWorkflowExpanded((current) => ({ ...current, [workflowFocus.issueId]: true }));
@@ -178,23 +348,16 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
       setConfirmed((value) => ({ ...value, [issueId]: [] }));
       setAcknowledgeGap((value) => ({ ...value, [issueId]: false }));
       await refresh();
-      if (expanded[issueId]) {
-        const detail = await getWorkIssue(issueId);
-        setLineage((value) => ({ ...value, [issueId]: detail }));
-      }
     }
-    catch (error) { setLocalError((error as Error).message); }
+    catch { setLocalError("La operación fue rechazada o no se pudo confirmar. Actualizá y revisá el estado antes de intentarla otra vez."); }
     finally { setBusy(null); }
   }
 
   async function showLineage(issue: WorkIssue) {
     const next = !expanded[issue.id];
     setExpanded((value) => ({ ...value, [issue.id]: next }));
-    if (next) {
-      setLineage((value) => { const fresh = { ...value }; delete fresh[issue.id]; return fresh; });
-      try { const detail = await getWorkIssue(issue.id); setLineage((value) => ({ ...value, [issue.id]: detail })); }
-      catch (error) { setLocalError((error as Error).message); }
-    }
+    setConfirmed((value) => ({ ...value, [issue.id]: [] }));
+    setAcknowledgeGap((value) => ({ ...value, [issue.id]: false }));
   }
 
   async function submitIssue(event: React.FormEvent<HTMLFormElement>) {
@@ -203,10 +366,8 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
     const acceptanceCriteria = lines(criteria);
     const allowed = lines(allowedPaths);
     const changeCategories = words(categories);
-    setBusy("create");
     setLocalError(null);
-    try {
-      await createWorkIssue({
+    const confirmed = await intake.submit({
         project_id: selectedProject.project, objective_id: objectiveId || null, title, expected_outcome: outcome,
         acceptance_criteria: acceptanceCriteria,
         authorized_scope: {
@@ -218,10 +379,7 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
         plan: lines(plan), criticality, assigned_role_id: agent || null, next_action: nextAction || null,
         related_commitment_ids: words(commitments),
       });
-      setTitle(""); setOutcome(""); setCriteria(""); setAllowedPaths(""); setExcludedPaths(""); setCategories(""); setExclusions(""); setDomains(""); setPlan(""); setNextAction(""); setCommitments("");
-      await refresh();
-    } catch (error) { setLocalError((error as Error).message); }
-    finally { setBusy(null); }
+    if (confirmed) await refresh();
   }
 
   return (
@@ -233,12 +391,24 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
       {workflowFocus && issues.length > 0 && !issues.some((issue) => issue.id === workflowFocus.issueId && issue.project_id === workflowFocus.projectId) && <p role="alert">El issue del workflow no está disponible en este proyecto; no se abre otra autoridad.</p>}
 
       <section className="panel work-issues-panel">
-        <div className="work-issues-heading"><div><span className="organization-kicker">FUENTE LOCAL DE VERDAD</span><h3>Trabajo aprobado</h3><p>El alcance, la autorización y la evidencia permanecen en este Control Plane.</p></div><button type="button" className="ghost-btn" disabled={busy !== null} onClick={() => { setDispatchEpoch((value) => value + 1); void refresh(); }}>Actualizar</button></div>
+        <div className="work-issues-heading"><div><span className="organization-kicker">FUENTE LOCAL DE VERDAD</span><h3>Trabajo aprobado</h3><p>El alcance, la autorización y la evidencia permanecen en este Control Plane.</p></div><button type="button" className="ghost-btn" disabled={busy !== null || intake.sending} onClick={() => { setDispatchEpoch((value) => value + 1); void refresh(); }}>Actualizar</button></div>
+
+        {intake.confirmedId && <p className="work-issue-note" role="status">Pedido confirmado: {intake.confirmedId}.</p>}
+        {intake.pending && <section className="banner banner--warn view-note" aria-label="Pedido local pendiente">
+          <p role="status">{intake.message ?? (intake.sending ? "Confirmando el mismo pedido…" : "Hay un pedido pendiente de confirmación. No se crea otro automáticamente.")}</p>
+          <p className="work-issue-note">Solo se guarda su UUID en esta pestaña. El contenido permanece en memoria; al recargar se consulta el estado sin reenviarlo.</p>
+          <div className="actions">
+            {intake.pending.payload && <button type="button" className="ibtn" disabled={intake.sending || intake.checking} onClick={() => { void intake.retry().then((confirmed) => { if (confirmed) return refresh(); }); }}>Reintentar mismo pedido</button>}
+            <button type="button" className="ibtn" disabled={intake.sending || intake.checking} onClick={() => void intake.check()}>Comprobar pedido pendiente</button>
+          </div>
+          <label><input type="checkbox" checked={intake.cancelAcknowledged} disabled={intake.sending} onChange={(event) => intake.setCancelAcknowledged(event.target.checked)} />Entiendo que el pedido podría existir; cancelar este intento no lo elimina.</label>
+          <button type="button" className="ibtn" disabled={intake.sending || !intake.cancelAcknowledged} onClick={intake.cancel}>Cancelar intento pendiente</button>
+        </section>}
 
         <details className="work-issue-create">
           <summary>Crear issue local</summary>
           <form onSubmit={(event) => void submitIssue(event)}>
-            <div className="organization-form-grid">
+            <fieldset className="organization-form-grid" aria-label="Datos del pedido local" disabled={intake.pending !== null || intake.sending} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
               <label>Repositorio
                 <select aria-label="Repositorio local" value={selectedProject?.project ?? ""} onChange={(event) => { setProjectId(event.target.value); setAgent(""); setObjectiveId(""); }} required>
                   <option value="" disabled>Seleccionar checkout local</option>
@@ -293,9 +463,9 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
               <label className="organization-form-wide">Compromisos relacionados (IDs, opcional)
                 <input value={commitments} onChange={(event) => setCommitments(event.target.value)} placeholder="COM-…" />
               </label>
-            </div>
+            </fieldset>
             <p className="work-issue-note">La escala se clasifica de forma determinística. Crear no autoriza ejecución: primero revisás y autorizás exactamente este scope.</p>
-            <div className="organization-form-actions"><button className="ibtn primary" type="submit" disabled={busy === "create"}>{busy === "create" ? "Creando…" : "Crear propuesta local"}</button></div>
+            <div className="organization-form-actions"><button className="ibtn primary" type="submit" disabled={intake.pending !== null || intake.sending}>{intake.sending ? "Creando…" : "Crear propuesta local"}</button></div>
           </form>
         </details>
 
@@ -304,17 +474,35 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
             {issues.map((issue) => {
               const owner = workflows?.find((workflow) => workflow.issue_id === issue.id && !["completed", "cancelled"].includes(workflow.status));
               const manualAllowed = workflows !== null && !workflowError && !owner;
-              const detail = lineage[issue.id];
+              const recordedDetail = lineage[issue.id];
+              const detail = recordedDetail?.issue.revision === issue.revision && recordedDetail.issue.scope_revision === issue.scope_revision
+                ? recordedDetail : undefined;
               const currentCandidate = detail?.candidates.find((candidate) => candidate.invalidated_at === null && candidate.scope_revision === issue.scope_revision);
               const checks = confirmed[issue.id] ?? [];
               const candidateGaps = detail?.evidence_gaps ?? [];
               const canAccept = Boolean(currentCandidate && issue.acceptance_criteria.every((criterion) => checks.includes(criterion))
                 && (candidateGaps.every((gap) => !gap.startsWith("Passing verification")) || acknowledgeGap[issue.id]));
+              const blockers = issue.blocked_by_issue_ids.map((id) => ({ id, issue: issues.find((entry) => entry.id === id) }));
               return <article className="work-issue-card" key={issue.id} id={`work-issue-${issue.id}`}>
-                <div className="work-issue-card__top"><span className={`work-issue-status work-issue-status--${issue.status.replace(/[^a-z-]/g, "")}`}>{issue.status}</span><span className="badge-mini">{issue.work_scale}</span><span className="badge-mini">scope r{issue.scope_revision}</span><span className="work-issue-project">{issue.project_id}</span></div>
+                <div className="work-issue-card__top"><span className={`work-issue-status work-issue-status--${issue.status.replace(/[^a-z-]/g, "")}`}>{operatingLabels[issue.status] ?? issue.status}</span>{operatingLabels[issue.status] && <span className="badge-mini">{issue.status}</span>}<span className="badge-mini">{issue.work_scale}</span><span className="badge-mini">scope r{issue.scope_revision}</span><span className="work-issue-project">{issue.project_id}</span></div>
                 <h3>{issue.title}</h3><p>{issue.expected_outcome}</p>
                 <div className="work-issue-meta"><span>{issue.acceptance_criteria.length} criterios</span><span>{issue.task_ids.length} tareas</span><span>{issue.classification_rationale.join(" · ")}</span></div>
-                <div className="work-issue-scope"><b>Permitido:</b> {issue.authorized_scope.allowed_path_patterns.join(", ")} <span>· {issue.authorized_scope.allowed_change_categories.join(", ")}</span></div>
+                <section aria-label={`Resultado y linaje de ${issue.title}`}>
+                  <p><b>Referencias canónicas:</b> {issue.id} · Proyecto: {issue.project_id} · Objetivo: {issue.objective_id ?? "sin objetivo asociado"} · Issue padre: {issue.parent_issue_id ?? "sin padre registrado"}</p>
+                  <p><b>Asignación registrada:</b> {issue.assigned_role_id ?? "sin asignación"} · Compromisos: {issue.related_commitment_ids.join(", ") || "ninguno registrado"}</p>
+                  <p className="work-issue-note">Observación del issue: <time dateTime={issue.updated_at}>{issue.updated_at}</time> · revisión {issue.revision}. Actualizar la pantalla no renueva esta evidencia.</p>
+                  <p className="work-issue-note">La finalización de una tarea o workflow no acepta el issue ni prueba entrega al cliente. «Hecho» representa únicamente el estado aceptado del issue.</p>
+                </section>
+                <IssueScope issue={issue} />
+                {(issue.status === "needs-decision" || issue.status === "blocked") && <section className="work-issue-proposal" aria-label={`Decisión actual de ${issue.title}`}>
+                  <h4>Motivo y próxima acción</h4>
+                  {issue.scope_change_proposal ? <p><b>Disparador registrado: cambio de scope.</b> Propuesta {issue.scope_change_proposal.id} · detectada {issue.scope_change_proposal.discovered_at} · tarea {issue.scope_change_proposal.evidence_task_id ?? "no registrada"}.</p>
+                    : owner?.blocked_reason ? <p><b>Motivo registrado por el workflow:</b> {contextDisplayText(owner.blocked_reason)}</p>
+                      : <p><b>Brecha de motivo:</b> la fuente no registra un disparador clasificable. No se infiere de la próxima acción, del resultado de una tarea ni de un presupuesto configurado.</p>}
+                  {blockers.length > 0 && <p><b>Dependencias registradas:</b> {blockers.map((entry) => `${entry.id}: ${entry.issue ? entry.issue.status : "estado no disponible"}`).join(" · ")}. No sustituyen el motivo de la decisión.</p>}
+                  <p><b>Próxima acción registrada:</b> {issue.next_action ?? owner?.next_action ?? "Revisar la evidencia y la autoridad vigente antes de actuar."}</p>
+                  {owner && <p className="work-issue-note">Abrí el workflow {owner.id} para consultar su decisión exacta; esta explicación no aprueba, reintenta ni ejecuta.</p>}
+                </section>}
                 {owner && <p className="work-issue-note">Workflow activo {owner.id}. Usá su decisión o stop; despacho, reintento y aceptación manual no reemplazan su autoridad.</p>}
                 {manualAllowed && issue.status === "needs-decision" && issue.scope_change_proposal && <div className="banner banner--warn work-issue-proposal"><b>Scope ampliado requiere tu decisión.</b><div>{issue.scope_change_proposal.discovered_paths.join(", ")}</div><div className="actions"><button className="ibtn primary" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => approveWorkIssueScope(issue))}>Autorizar nueva revisión de scope</button><button className="ibtn" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => rejectWorkIssueScope(issue))}>Rechazar y cancelar issue</button></div></div>}
                 {manualAllowed && issue.status === "needs-decision" && !issue.scope_change_proposal && <div className="banner banner--warn work-issue-proposal"><b>La evidencia no habilita revisión todavía.</b><div>{issue.next_action ?? "Revisá la brecha antes de autorizar otro intento."}</div><button className="ibtn primary" disabled={busy === issue.id} onClick={() => void perform(issue.id, () => resolveWorkIssueDecision(issue))}>Autorizar reintento con scope sin cambios</button></div>}
@@ -331,13 +519,27 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
                 {expanded[issue.id] && <div className="work-issue-lineage">
                   <BudgetSummary title="Presupuesto del proyecto" projectId={issue.project_id} refreshKey={`${issue.id}:${issue.revision}:${budgetEpoch}`} />
                   <p className="work-issue-note">Esta consulta muestra el presupuesto del proyecto, no el presupuesto exacto del issue, su objetivo, rol o ejecución. No sustituye el preview ni la autorización vigente.</p>
-                  {!detail ? <p className="empty-mini">Cargando ejecución y evidencia…</p> : <>
-                    <div><b>Intentos:</b> {detail.tasks.flatMap((entry) => entry.executions).map((execution) => `#${execution.attempt} ${execution.run_id.slice(0, 8)}`).join(" · ") || "sin ejecución"}</div>
-                    <div><b>Sesiones:</b> {detail.sessions.map((session) => session.objective).join(", ") || "sin sesión vinculada"}</div>
+                  {!detail ? <p className="empty-mini">{localError ? "Ejecución y evidencia no confirmadas para esta revisión." : "Cargando ejecución y evidencia…"}</p> : <>
+                    <section aria-label={`Intentos y sesiones de ${issue.title}`}>
+                      <h4>Workflow, intentos y sesiones</h4>
+                      <p>Workflow propietario: {owner?.id ?? "ninguno activo en la lectura disponible"}. Los handoffs y gates se consultan en «Ver workflow».</p>
+                      {detail.tasks.length === 0 ? <p>Sin tareas vinculadas en esta lectura.</p> : detail.tasks.map((entry) => <div key={entry.task.envelope.id}>
+                        <b>Tarea {entry.task.envelope.id}</b> · {entry.task.lifecycle} · resultado {entry.task.outcome ?? "sin resultado registrado"}
+                        {onOpenTask && <button type="button" className="ibtn" onClick={() => onOpenTask(entry.task.envelope.id)}>Ver tarea {entry.task.envelope.id}</button>}
+                        <p>Intentos: {entry.executions.map((execution) => `#${execution.attempt} · run ${execution.run_id}`).join(" · ") || "sin ejecución registrada"}</p>
+                      </div>)}
+                      <p><b>Sesiones:</b> {detail.sessions.map((session) => session.id).join(", ") || "sin sesión vinculada"}. Las notas privadas de sesión no se copian a este resumen.</p>
+                      <p className="work-issue-note">El detalle actual expone referencias de ejecución y evidencia, no un log completo de auditoría del issue. No se fabrica auditoría a partir de resultados o tiempos de carga.</p>
+                    </section>
+                    <section aria-label={`Candidatos y testing de ${issue.title}`}>
+                    <h4>Candidato, testing y revisión</h4>
+                    <p className="work-issue-note">Los requisitos efectivos de testing/review están en el grant del workflow o la admisión de la tarea. Tests declarados por un agente, verificación de infraestructura y aceptación humana son hechos distintos.</p>
                     <div><b>Brechas de evidencia:</b> {detail.evidence_gaps.length ? detail.evidence_gaps.join(" ") : "sin brechas conocidas"}</div>
                     {detail.candidates.map((candidate) => <div className="work-issue-candidate" key={candidate.id}>
-                      <b>{candidate.invalidated_at ? "Candidato invalidado" : "Candidato actual"} · {candidate.candidate_revision.slice(0, 12)}</b>
-                      <span>fingerprint {candidate.diff_fingerprint.slice(0, 16)}… · scope r{candidate.scope_revision} · {candidate.changed_paths.join(", ")}</span>
+                      <b>{candidate.invalidated_at ? "Candidato invalidado" : candidate.scope_revision !== issue.scope_revision ? "Candidato de otro scope" : candidate.id !== currentCandidate?.id ? "Candidato no seleccionado en esta lectura" : "Candidato registrado para el scope actual"} · {candidate.candidate_revision.slice(0, 12)}</b>
+                      <span>{candidate.id} · tarea {candidate.task_id} · run {candidate.execution_id} · scope r{candidate.scope_revision} · observado {candidate.created_at}</span>
+                      <span>Base {candidate.base_revision} · candidato {candidate.candidate_revision} · fingerprint {candidate.diff_fingerprint} · {candidate.changed_paths.join(", ")}</span>
+                      <small>Vigencia Git no comprobada por esta lectura; el endpoint protegido revalida antes de aceptar.</small>
                     </div>)}
                     {manualAllowed && issue.status === "ready-for-review" && currentCandidate && <div className="work-issue-review">
                       <b>Confirmá cada criterio sobre este commit</b>
@@ -345,7 +547,13 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
                       {candidateGaps.some((gap) => gap.startsWith("Passing verification")) && <label className="work-issue-toggle"><input type="checkbox" checked={acknowledgeGap[issue.id] ?? false} onChange={(event) => setAcknowledgeGap((value) => ({ ...value, [issue.id]: event.target.checked }))} />Entiendo y acepto explícitamente la brecha de verificación automatizada</label>}
                       <button className="ibtn primary" disabled={!canAccept || busy === issue.id} onClick={() => void perform(issue.id, () => acceptWorkIssueCandidate(issue, currentCandidate, checks, acknowledgeGap[issue.id] ?? false))}>Aceptar este candidato local</button>
                     </div>}
-                    <div className="work-issue-evidence">{detail.evidence.map((entry) => <div key={entry.id}><span className={`evidence-status evidence-status--${entry.status}`}>{entry.status}</span><b>{entry.label}</b><small>{entry.reference}</small></div>)}</div>
+                    <div className="work-issue-evidence">{detail.evidence.length === 0 && <p>Sin referencias de evidencia registradas; no equivale a verificación aprobada.</p>}{detail.evidence.map((entry) => <div key={entry.id}><span className={`evidence-status evidence-status--${entry.status}`}>{entry.status}</span><b>{entry.label}</b><small>{entry.kind} · {entry.id} · {entry.created_at}</small><small>{entry.reference}</small><small>Scope r{entry.scope_revision} · tarea {entry.task_id ?? "no vinculada"} · run {entry.execution_id ?? "no vinculado"} · candidato {entry.candidate_id ?? "no vinculado"} · commit {entry.candidate_revision ?? "no vinculado"} · fingerprint {entry.diff_fingerprint ?? "no vinculado"}</small></div>)}</div>
+                    </section>
+                    <DeliveryReadinessPanel key={`delivery:${issue.id}:${issue.revision}:${issue.scope_revision}`} projectId={issue.project_id}
+                      lineage={detail} disabled={busy !== null || !manualAllowed} onChanged={async () => {
+                        setDispatchEpoch((value) => value + 1);
+                        await refresh();
+                      }} />
                   </>}
                 </div>}
               </article>;

@@ -11,7 +11,8 @@ import { routineRevisionKey, routineSlotKey } from "../routines/schedule";
 import { ROUTINE_LIMITS, type RoutineDocument, type RoutineOccurrence, type RoutineReceipt, type RoutineRecord } from "../routines/types";
 import { assertRoutineDocument, assertRoutineOccurrence, routineProposalKey } from "../routines/validation";
 import { systemProcessEnvironment } from "../security/environment";
-import { routineStatePath, routinesDir } from "./paths";
+import { routineStatePath, routinesDir, maintenanceControlPath, maintenanceGatePath } from "./paths";
+import { acquireMaintenanceExclusive, MaintenanceStateError, releaseMaintenanceExclusive, setMaintenanceHold } from "./maintenance";
 import { assertRoutineOwnership, claimRoutineOccurrence, finishRoutineOccurrence, mutateRoutineDocument,
   readRoutineDocument, readRoutineTransaction, revokeRoutineOwnership, RoutineStateError,
   UnsupportedRoutineVersionError, updateRoutineTransaction, type RoutineOwnership, type RoutineTransaction } from "./routines";
@@ -115,6 +116,21 @@ function finish(path: string, proof: RoutineOwnership, status: "completed" | "pa
   mutateRoutineDocument((tx) => finishRoutineOccurrence(tx, proof, value.revision, data ?? receipt(value), status), path, data?.captured_at ?? finished);
 }
 function raw(path: string, bytes: string | Buffer): void { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); }
+function openedPath(fd: number): string | undefined {
+  const mock = vi.mocked(openSync).mock;
+  for (let index = mock.results.length - 1; index >= 0; index--) {
+    const result = mock.results[index]!;
+    if (result.type === "return" && result.value === fd) {
+      const file = mock.calls[index]?.[0]; return typeof file === "string" ? file : undefined;
+    }
+  }
+  return undefined;
+}
+function hold(state: string): void {
+  const ownership = acquireMaintenanceExclusive(state);
+  try { setMaintenanceHold(ownership, { operation_id: "synthetic-restore", kind: "restore" }); }
+  finally { releaseMaintenanceExclusive(ownership); }
+}
 function child(source: string, path: string) {
   const proc = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source, path],
     { cwd: process.cwd(), env: systemProcessEnvironment(), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
@@ -180,10 +196,13 @@ describe("T009 private routine store", () => {
     const f = fixture(); setup(f.path); const before = readFileSync(f.path), hook = vi.fn();
     expect(() => mutateRoutineDocument(async () => undefined, f.path, claimed)).toThrow(/synchronous/);
     expect(() => mutateRoutineDocument(new Proxy(() => undefined, { apply: hook }), f.path, claimed)).toThrow();
-    const thenable = Object.defineProperty({}, "then", { get: hook });
-    for (const result of [thenable, { then: hook }, new Proxy({}, { ownKeys: hook as never }), Promise.resolve()])
-      expect(() => mutateRoutineDocument(() => result, f.path, claimed)).toThrow(RoutineStateError);
     expect(() => mutateRoutineDocument((tx) => updateRoutineTransaction(tx, async (draft, time) => configure(draft, time)), f.path, claimed)).toThrow(/synchronous/);
+    const thenable = Object.defineProperty({}, "then", { get: hook });
+    for (const result of [thenable, { then: hook }, new Proxy({}, { ownKeys: hook as never }), Promise.resolve()]) {
+      const owned = fixture(); setup(owned.path); const bytes = readFileSync(owned.path);
+      expect(() => mutateRoutineDocument(() => result, owned.path, claimed)).toThrow(RoutineStateError);
+      expect(readFileSync(owned.path)).toEqual(bytes); expect(existsSync(maintenanceGatePath(owned.state))).toBe(true);
+    }
     expect(hook).not.toHaveBeenCalled(); expect(readFileSync(f.path)).toEqual(before);
   });
   it("rolls back thrown/invalid/accessor drafts and invalidates retained transactions", () => {
@@ -245,19 +264,25 @@ describe("T009 private routine store", () => {
   it.each(["write", "flush", "rename"])("preserves the old snapshot and unowned stage on %s failure", async (kind) => {
     const f = fixture(); setup(f.path); raw(`${f.path}.unknown.tmp`, "unowned"); const before = readFileSync(f.path);
     const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
-    if (kind === "write") vi.mocked(writeFileSync).mockImplementationOnce(actual.writeFileSync).mockImplementationOnce(() => { throw new Error("SYNTHETIC-PRIVATE"); });
-    if (kind === "flush") vi.mocked(fsyncSync).mockImplementationOnce(actual.fsyncSync).mockImplementationOnce(() => { throw new Error("SYNTHETIC-PRIVATE"); });
-    if (kind === "rename") vi.mocked(renameSync).mockImplementationOnce(() => { throw new Error("SYNTHETIC-PRIVATE"); });
+    const stage = (file: string | undefined) => file?.startsWith(`${f.path}.`) && file.endsWith(".tmp") && !file.endsWith(".unknown.tmp");
+    if (kind === "write") vi.mocked(writeFileSync).mockImplementation((file, data, options) => {
+      if (typeof file === "number" && stage(openedPath(file))) throw new Error("SYNTHETIC-PRIVATE");
+      actual.writeFileSync(file, data, options);
+    });
+    if (kind === "flush") vi.mocked(fsyncSync).mockImplementation((fd) => { if (stage(openedPath(fd))) throw new Error("SYNTHETIC-PRIVATE"); actual.fsyncSync(fd); });
+    if (kind === "rename") vi.mocked(renameSync).mockImplementation((from, to) => { if (to === f.path) throw new Error("SYNTHETIC-PRIVATE"); actual.renameSync(from, to); });
     expect(() => mutate(f.path, (draft, time) => configure(draft, time))).toThrow(/replacement failed/);
     expect(readFileSync(f.path)).toEqual(before); expect(readdirSync(dirname(f.path)).sort()).toEqual(["routines.json", "routines.json.unknown.tmp"]);
     expect(existsSync(f.lock)).toBe(false);
   });
-  it("cleans only its own uninitialized lock when token writing fails", () => {
-    const f = fixture(); vi.mocked(writeFileSync).mockImplementationOnce(() => { throw new Error("SYNTHETIC-PRIVATE"); });
+  it("cleans only its own uninitialized lock when token writing fails", async () => {
+    const f = fixture(), actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(writeFileSync).mockImplementation((file, data, options) => { if (typeof file === "number" && openedPath(file) === f.lock) throw new Error("SYNTHETIC-PRIVATE"); actual.writeFileSync(file, data, options); });
     expect(() => setup(f.path)).toThrow(/initialization failed/); expect(existsSync(f.lock)).toBe(false); expect(existsSync(f.path)).toBe(false);
   });
-  it("reports unlock failure honestly without refunding an already committed revision", () => {
-    const f = fixture(); setup(f.path); vi.mocked(unlinkSync).mockImplementationOnce(() => { throw new Error("SYNTHETIC-PRIVATE"); });
+  it("reports unlock failure honestly without refunding an already committed revision", async () => {
+    const f = fixture(); setup(f.path); const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(unlinkSync).mockImplementation((file) => { if (file === f.lock) throw new Error("SYNTHETIC-PRIVATE"); actual.unlinkSync(file); });
     expect(() => mutate(f.path, (draft, time) => configure(draft, time))).toThrow(/lock release failed/);
     expect(readRoutineDocument(f.path)!.revision).toBe(2); expect(existsSync(f.lock)).toBe(true);
     expect(() => mutateRoutineDocument(() => undefined, f.path, claimed)).toThrow(StateLockConflictError);
@@ -538,6 +563,9 @@ describe("T009 private routine store", () => {
     const holder = child(`import {mutateRoutineDocument,updateRoutineTransaction} from ${JSON.stringify(moduleUrl)};import{readSync}from'node:fs';mutateRoutineDocument(tx=>{process.stdout.write('LOCKED\\n');readSync(0,Buffer.alloc(1),0,1,null);updateRoutineTransaction(tx,(d,time)=>{const v=d.occurrences['occurrence-1'];v.cancel_requested_at=time;v.revision++;v.updated_at=time;});},process.argv[1],${JSON.stringify(claimed)});`, f.path);
     await new Promise<void>((ready, reject) => { let output = ""; holder.proc.stdout!.on("data", (data) => { output += String(data); if (output.includes("LOCKED")) ready(); });
       holder.proc.on("error", reject); holder.proc.on("close", (code) => reject(new Error(`holder exited before locking: ${code}`))); });
+    const gateBytes = readFileSync(maintenanceGatePath(f.state));
+    expect(() => acquireMaintenanceExclusive(f.state)).toThrow(StateLockConflictError);
+    expect(readFileSync(maintenanceGatePath(f.state))).toEqual(gateBytes);
     const contender = child(`import{mutateRoutineDocument}from ${JSON.stringify(moduleUrl)};try{mutateRoutineDocument(()=>{throw new Error('must not run')},process.argv[1],${JSON.stringify(claimed)});process.exitCode=2;}catch(e){if(e.constructor.name!=='StateLockConflictError')throw e;process.stdout.write('CONFLICT');}`, f.path);
     expect(await contender.done).toEqual({ code: 0, out: "CONFLICT", err: "" }); holder.proc.stdin!.end("x"); expect(await holder.done).toEqual({ code: 0, out: "LOCKED\n", err: "" });
     expect(existsSync(f.lock)).toBe(false); const before = readFileSync(f.path);
@@ -560,4 +588,102 @@ describe("T009 private routine store", () => {
     const restarted = child(`import{readRoutineDocument,mutateRoutineDocument}from ${JSON.stringify(moduleUrl)};const path=process.argv[1];if(readRoutineDocument(path).occurrences['occurrence-1'].revision!==1)throw new Error('uncommitted history');try{mutateRoutineDocument(()=>{throw new Error('must not run')},path,${JSON.stringify(finished)});process.exitCode=2;}catch(e){if(e.constructor.name!=='StateLockConflictError')throw e;process.stdout.write('RECOVERY-REQUIRED');}`, f.path);
     expect(await restarted.done).toEqual({ code: 0, out: "RECOVERY-REQUIRED", err: "" }); expect(readFileSync(f.path)).toEqual(before); expect(readFileSync(f.lock)).toEqual(lock);
   }, 10000);
+});
+
+describe("T015 routine cooperative maintenance fencing", () => {
+  it.each(["promise", "thenable", "getter", "inherited-then", "proxy"].flatMap((kind) => ["outer", "update"].map((phase) => [kind, phase])))
+    ("retains uncertain routine ownership for a normal %s result from %s and invokes no hooks", (kind, phase) => {
+      const f = fixture(); setup(f.path); const before = readFileSync(f.path), hook = vi.fn(); let escaped: RoutineTransaction | undefined;
+      const result = kind === "promise" ? Promise.resolve() : kind === "thenable" ? { then: hook }
+        : kind === "getter" ? Object.defineProperty({}, "then", { get: hook })
+          : kind === "inherited-then" ? Object.create(Object.defineProperty({}, "then", { get: hook }))
+            : new Proxy({}, { get: hook, ownKeys: hook as never, getPrototypeOf: hook as never });
+      expect(() => mutateRoutineDocument((tx) => {
+        escaped = tx;
+        if (phase === "update") return updateRoutineTransaction(tx, (draft, time) => { configure(draft, time, { enabled: false }); return result; });
+        updateRoutineTransaction(tx, (draft, time) => configure(draft, time, { enabled: false })); return result;
+      }, f.path, claimed)).toThrow(RoutineStateError);
+      expect(hook).not.toHaveBeenCalled(); expect(readFileSync(f.path)).toEqual(before); expect(existsSync(f.lock)).toBe(false);
+      const marker = readFileSync(maintenanceGatePath(f.state)), callback = vi.fn();
+      expect(() => mutateRoutineDocument(callback, f.path, claimed)).toThrow(StateLockConflictError);
+      expect(() => acquireMaintenanceExclusive(f.state)).toThrow(StateLockConflictError);
+      expect(() => updateRoutineTransaction(escaped, callback)).toThrow(RoutineStateError); expect(callback).not.toHaveBeenCalled();
+      expect(readFileSync(f.path)).toEqual(before); expect(readFileSync(maintenanceGatePath(f.state))).toEqual(marker);
+    });
+  it("refuses a durable hold before missing-store mkdir, routine locking or callbacks", () => {
+    const f = fixture(); hold(f.state); const control = readFileSync(maintenanceControlPath(f.state));
+    const callback = vi.fn((tx: RoutineTransaction) => updateRoutineTransaction(tx, seed));
+    expect(() => mutateRoutineDocument(callback, f.path, at)).toThrow(MaintenanceStateError);
+    expect(callback).not.toHaveBeenCalled(); expect(existsSync(dirname(f.path))).toBe(false);
+    expect(existsSync(dirname(f.lock))).toBe(false); expect(readRoutineDocument(f.path)).toBeNull();
+    expect(readFileSync(maintenanceControlPath(f.state))).toEqual(control);
+  });
+  it("preserves immutable definitions, receipt history, proposal keys and cursor high-water under hold", () => {
+    const f = fixture(); setup(f.path); mutate(f.path, (draft, time) => configure(draft, time, { action: "propose-issues" }), at);
+    mutate(f.path, (draft, time) => { draft.occurrences["occurrence-1"] = occurrence(draft.routines["routine-1"]!, "occurrence-1", time); }, at);
+    const proof = claim(f.path), entry = readRoutineDocument(f.path)!.occurrences["occurrence-1"]!, data = receipt(entry);
+    data.counts.proposals_created = 1; data.proposals = [{ key: routineProposalKey(entry.occurrence_key, digest), fingerprint: digest, issue_id: "issue-1" }];
+    data.next_action = "review-proposals"; finish(f.path, proof, "completed", data);
+    mutate(f.path, (draft, time) => configure(draft, time, { schedule: "every:15m", concurrency: "coalesce" }), later);
+    const slot = "2026-10-06T12:15:03Z", key = routineRevisionKey("routine-1", 4);
+    mutate(f.path, (draft, time) => { draft.cursors[key] = { schema_version: 1, routine_id: "routine-1", routine_revision: 4, evaluated_at: time, last_slot: slot, pending_slot: slot }; }, slot);
+    const before = readFileSync(f.path), stamp = lstatSync(f.path).mtimeMs; hold(f.state); const callback = vi.fn();
+    expect(() => mutateRoutineDocument(callback, f.path, slot)).toThrow(MaintenanceStateError);
+    expect(callback).not.toHaveBeenCalled(); expect(readFileSync(f.path)).toEqual(before); expect(lstatSync(f.path).mtimeMs).toBe(stamp);
+    const snapshot = readRoutineDocument(f.path)!; expect(snapshot.occurrences[entry.id]!.receipt).toEqual(data);
+    expect(snapshot.cursors[key]!.pending_slot).toBe(slot); expect(Object.keys(snapshot.definitions)).toHaveLength(4);
+  });
+  it("denies a held live routine proof and late completion without clearing or reconstructing ownership", () => {
+    const f = fixture(); setup(f.path, true); const proof = claim(f.path), before = readFileSync(f.path); hold(f.state);
+    expect(() => assertRoutineOwnership(proof, f.path)).toThrow(MaintenanceStateError);
+    expect(() => finish(f.path, proof)).toThrow(MaintenanceStateError);
+    expect(readFileSync(f.path)).toEqual(before); expect(readRoutineDocument(f.path)!.occurrences["occurrence-1"]!.status).toBe("running");
+    expect(() => revokeRoutineOwnership(proof)).not.toThrow(); expect(() => revokeRoutineOwnership(proof)).not.toThrow();
+    expect(() => assertRoutineOwnership(proof, f.path)).toThrow(RoutineStateError); expect(readFileSync(f.path)).toEqual(before);
+  });
+  it("never activates an issued routine proof when maintenance release fails after the durable claim", async () => {
+    const f = fixture(); setup(f.path, true); const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    let proof: RoutineOwnership | undefined;
+    vi.mocked(unlinkSync).mockImplementation((file) => {
+      if (file === maintenanceGatePath(f.state)) throw new Error("synthetic maintenance release failure");
+      actual.unlinkSync(file);
+    });
+    expect(() => mutateRoutineDocument((tx) => { proof = claimRoutineOccurrence(tx, "occurrence-1", 1, "worker-1"); }, f.path, claimed)).toThrow();
+    expect(readRoutineDocument(f.path)!.occurrences["occurrence-1"]!.status).toBe("running");
+    expect(existsSync(f.lock)).toBe(false); expect(existsSync(maintenanceGatePath(f.state))).toBe(true);
+    expect(() => assertRoutineOwnership(proof, f.path)).toThrow(RoutineStateError);
+  });
+  it("blocks a held exclusive owner before callback and allows a fresh configuration only after proven release", () => {
+    const f = fixture(); setup(f.path); const before = readFileSync(f.path), ownership = acquireMaintenanceExclusive(f.state), callback = vi.fn();
+    try {
+      expect(() => mutateRoutineDocument(callback, f.path, claimed)).toThrow(StateLockConflictError);
+      expect(callback).not.toHaveBeenCalled(); expect(readFileSync(f.path)).toEqual(before); expect(readRoutineDocument(f.path)!.revision).toBe(1);
+    } finally { releaseMaintenanceExclusive(ownership); }
+    mutate(f.path, (draft, time) => configure(draft, time, { enabled: false })); expect(readRoutineDocument(f.path)!.revision).toBe(2);
+  });
+  it.each(["{", "null", '{"schema_version":2}', '{"schema_version":1}'])
+    ("preserves malformed or future maintenance control without executing callbacks %s", (bytes) => {
+      const f = fixture(); raw(maintenanceControlPath(f.state), bytes); const callback = vi.fn();
+      expect(() => mutateRoutineDocument(callback, f.path, at)).toThrow(MaintenanceStateError);
+      expect(callback).not.toHaveBeenCalled(); expect(readFileSync(maintenanceControlPath(f.state), "utf8")).toBe(bytes);
+      expect(existsSync(f.path)).toBe(false); expect(existsSync(dirname(f.lock))).toBe(false);
+    });
+  it("rejects late transaction use after root-gate replacement without publishing a configured revision", () => {
+    const f = fixture(); setup(f.path); const before = readFileSync(f.path), callback = vi.fn(configure); let escaped: RoutineTransaction | undefined;
+    expect(() => mutateRoutineDocument((tx) => {
+      escaped = tx; updateRoutineTransaction(tx, (draft, time) => configure(draft, time, { enabled: false }));
+      raw(maintenanceGatePath(f.state), "unknown replacement");
+      expect(() => updateRoutineTransaction(tx, callback)).toThrow(); expect(callback).not.toHaveBeenCalled();
+    }, f.path, claimed)).toThrow();
+    expect(readFileSync(f.path)).toEqual(before); expect(readFileSync(maintenanceGatePath(f.state), "utf8")).toBe("unknown replacement");
+    expect(() => updateRoutineTransaction(escaped, callback)).toThrow(RoutineStateError); expect(callback).not.toHaveBeenCalled();
+    expect(readdirSync(dirname(f.path))).toEqual(["routines.json"]);
+  });
+  it("fences a custom routine file at its dedicated parent without using an OS-temp shared root", () => {
+    const f = fixture(), path = join(f.root, "custom-routines.json"), callback = vi.fn(); setup(path);
+    expect(readRoutineDocument(path)!.revision).toBe(1); expect(existsSync(join(f.root, "locks", "routines.lock"))).toBe(false);
+    hold(f.root); const before = readFileSync(path);
+    expect(() => mutateRoutineDocument(callback, path, claimed)).toThrow(MaintenanceStateError);
+    expect(callback).not.toHaveBeenCalled(); expect(readFileSync(path)).toEqual(before);
+  });
 });

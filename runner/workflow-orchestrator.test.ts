@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { CodexExecutor } from "./codex-executor";
+import { validateTerminalUsageEvidence } from "./terminal-usage-evidence";
+import { createHash } from "node:crypto";
 import { parse } from "yaml";
-import type { AgentRoleRegistry } from "../lib/context/types";
 import type { WorkflowBudget, WorkflowRoleOutput } from "../lib/workflows/types";
 import type { AgentExecutor } from "./agent-executor";
 import { listTasks, readTask, updateTask, writeTask } from "../lib/state/store";
@@ -21,46 +23,191 @@ import { createContextService } from "../dashboard/src/server/context-service";
 import { createTestingEvidence, sealTestingEvidence } from "../lib/context/testing-evidence";
 import { managedGitArgs } from "../lib/security/managed-git.mjs";
 import { localGitEnvironment } from "../lib/security/environment";
+import { createCorrectionProgressEmitter, type CorrectionProgressStage, type CorrectionProgressLane, type CorrectionProgressOperation, type CorrectionProgressEdge } from "../scripts/diagnostics/correction-progress";
+import type { Tracer } from "../lib/observability/tracing";
 import { createWorktree, commitAndDiff } from "./worktree";
 import { captureVerification } from "./verify";
 import { mutateBudgetLedger, readBudgetLedger } from "../lib/state/budgets";
 import { commitTaskBudget, reserveTaskBudget } from "../lib/budgets/reservations";
 import { BUDGET_DIMENSIONS, type BudgetLimits } from "../lib/budgets/types";
 import { readBudgetPolicy, type BudgetPolicySource } from "../lib/budgets/policy";
+import { createPlannerFailureCapture, createPlannerFsObserver, createPlannerPhaseRecorder, createPlannerSpanCapture, createPlannerWaitCapture, createPlannerContinuityCapture, type PlannerSpanObserver, type PlannerWaitObserver, type PlannerContinuityObserver } from "../scripts/profile-maintenance";
+import { assertQueuedStageSelection, assertReadOnlyCompletionCheckpoint, createAuthorizedWorkflowIssue,
+  createWorkflowFixtureRoot, materializeWorkflowFixtureInputs, output, roles as workflowFixtureRoles, selectQueuedStage, workflowFixtureProjectRules,
+  type FirstReadOnlyBinding, type WorkflowFixtureTemplate } from "./testing/workflow-orchestrator-fixture";
+import { createGitFixtureBaselines } from "./testing/git-fixture";
 
-let root: string, state: string, issueId: string, worker: TaskOrchestrator | undefined;
-const roles = { "portfolio-analyst": "product-manager", planner: "tech-lead", "software-engineer": "backend-engineer", reviewer: "reality-checker", "qa-evaluator": "qa-reviewer", "operations-observer": "devops-engineer" };
-beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "surtec-workflow-worker-")); state = join(root, "state");
-  mkdirSync(join(root, "projects/alpha/.git"), { recursive: true }); mkdirSync(join(root, "registry"));
-  for (const name of ["agents.yml", "agent-roles.yml", "context-policy.yml", "workflow-policy.yml"]) cpSync(`registry/${name}`, join(root, "registry", name));
-  const registry = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
-  for (const path of new Set(registry.roles.flatMap((role) => role.required_evaluation_ids))) { mkdirSync(join(root, ...path.split("/").slice(0, -1)), { recursive: true }); cpSync(path, join(root, path)); }
-  writeFileSync(join(root, "registry/projects.yml"), `projects:\n  alpha:\n    allowed_agents: [${Object.values(roles).join(", ")}]\n    sandbox: { default: workspace-write }\n    verify: ['node verify.mjs']\n`);
-  writeFileSync(join(root, "projects/alpha/AGENTS.md"), "Synthetic bounded project rules; no authority.");
-  vi.stubEnv("SURTEC_STATE_DIR", state); vi.stubEnv("SURTEC_PROJECTS_ROOT", join(root, "projects"));
-  const issues = createIssueService(root, { projectIds: () => ["alpha"] });
-  const proposed = issues.create({ project_id: "alpha", title: "Synthetic workflow", expected_outcome: "Observable synthetic result", acceptance_criteria: ["Observable acceptance"], assigned_role_id: "backend-engineer", plan: ["Existing plan"],
-    authorized_scope: { expected_outcome: "Observable synthetic result", acceptance_criteria: ["Observable acceptance"], allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["implementation"], explicit_exclusions: [] } });
-  issueId = proposed.id; issues.authorize(issueId, proposed.revision, "synthetic-scope-human");
-});
-afterEach(async () => { await worker?.stop(); worker = undefined; vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false); });
-function output(kind: "analysis" | "plan" | "operations" = "analysis"): WorkflowRoleOutput {
-  const base = { schema_version: 1 as const, status: "completed" as const, summary: "Bounded synthetic output", evidence_ids: [], unresolved_questions: [], risks: [], recommended_next_action: "Human inspection", requested_decision: null };
-  return kind === "plan" ? { ...base, kind, plan: ["Only authorized paths"], scope_change_required: false } : kind === "operations" ? { ...base, kind, proposed_issue: null } : { ...base, kind, recommendations: ["Inspect evidence"] };
+let root: string, state: string, issueId: string, baseIssueId: string | undefined, worker: TaskOrchestrator | undefined;
+type PlannerTrace = ReturnType<typeof createPlannerPhaseRecorder>;
+let plannerTrace: PlannerTrace | undefined;
+type PlannerFsTrace = ReturnType<typeof createPlannerFsObserver>;
+let plannerFsTrace: PlannerFsTrace | undefined;
+type CorrectionProgress = ReturnType<typeof createCorrectionProgressEmitter>;
+let correctionProgress: CorrectionProgress | undefined;
+let correctionCaseId = "";
+const plannerFailureCapture = createPlannerFailureCapture();
+const plannerSpanCapture = createPlannerSpanCapture();
+const plannerWaitCapture = createPlannerWaitCapture();
+const plannerContinuityCapture = createPlannerContinuityCapture({ timers: vi });
+const plannerOriginalVi = vi;
+type PlannerWaitApi = Pick<typeof vi, "waitFor">;
+function plannerPollVi(continuity?: PlannerContinuityObserver): PlannerWaitApi {
+  if (!continuity) return plannerOriginalVi;
+  // Only this local facade wraps the original synchronous callback. The public
+  // wait API, its receiver/options and the historical callback remain unchanged.
+  return { waitFor: ((...args: Parameters<PlannerWaitApi["waitFor"]>) => Reflect.apply(plannerOriginalVi.waitFor, plannerOriginalVi,
+    [() => continuity.observePoll(args[0]), ...args.slice(1)])) as PlannerWaitApi["waitFor"] };
 }
-function fixture(template: "analysis" | "implementation" | "trivial-change" | "operations-investigation" = "analysis", value: unknown = output(), usage = true, budget?: WorkflowBudget) {
-  const controller = new WorkflowOrchestrator(root), executor: AgentExecutor = { run: vi.fn(async () => ({ finalText: "Never copy this raw fallback", structuredOutput: value, threadId: "synthetic-thread", turnId: "synthetic-turn",
-    usage: usage ? { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 3 } : null })) };
-  worker = new TaskOrchestrator({ repoRoot: root, workflows: controller, executor, maxConcurrent: 1 });
+const roles = workflowFixtureRoles;
+const correctionGitBaselines = createGitFixtureBaselines();
+
+afterAll(() => correctionGitBaselines.dispose());
+
+beforeEach((context) => {
+  correctionCaseId = "";
+  try {
+    const taskId = context.task.id;
+    if (typeof taskId === "string" && taskId.length > 0) correctionCaseId = createHash("sha256").update(taskId).digest("hex");
+  } catch { /* Missing diagnostic identity never replaces original fixture setup. */ }
+  try { plannerSpanCapture.prepare(context); }
+  catch { /* Diagnostic preparation never replaces the original fixture setup. */ }
+  try { plannerWaitCapture.prepare(context); }
+  catch { /* The additional observer remains inert outside its exact flag binding. */ }
+  try { plannerContinuityCapture.prepare(context); }
+  catch { /* The private P12 handle cannot replace original fixture setup. */ }
+  issueId = ""; baseIssueId = undefined; plannerTrace = undefined; plannerFsTrace = undefined;
+  ({ root, state } = createWorkflowFixtureRoot());
+});
+afterEach(async (context) => {
+  const correction = correctionProgress; correctionProgress = undefined;
+  correctionCaseId = "";
+  correction?.seal();
+  try { plannerSpanCapture.capture(context); }
+  catch { /* The historical observation cannot replace test or cleanup errors. */ }
+  try { plannerFailureCapture.capture(context); }
+  catch { /* Early diagnostic evidence never replaces original test or cleanup errors. */ }
+  try { plannerWaitCapture.capture(context); }
+  catch { /* The immutable pre-stop observation never replaces cleanup errors. */ }
+  try { plannerContinuityCapture.capture(context); }
+  catch { /* P12 seals after historical captures, before the original stop. */ }
+  const fsTrace = plannerFsTrace;
+  fsTrace?.finish();
+  const trace = plannerTrace, stopCleanup = trace?.begin("cleanup");
+  try { await worker?.stop(); worker = undefined; vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false); }
+  finally {
+    stopCleanup?.();
+    if (trace) {
+      try { process.stdout.write(`PLANNER_PHASE_PROFILE ${JSON.stringify(trace.receipt())}\n`); }
+      catch { /* Diagnostic output cannot replace an original test or cleanup error. */ }
+    }
+    if (fsTrace) {
+      try { process.stdout.write(`PLANNER_FS_PROFILE ${JSON.stringify(fsTrace.receipt())}\n`); }
+      catch { /* Diagnostic output cannot replace an original test or cleanup error. */ }
+    }
+  }
+});
+describe("workflow fixture input isolation", () => {
+  function inventory(directory: string, prefix = ""): string[] {
+    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      return entry.isDirectory() ? inventory(join(directory, entry.name), path) : [path];
+    }).sort();
+  }
+  it("materializes public inputs with byte-equivalent files and exact path inventory", () => {
+    const copyRoot = join(root, "input-isolation-copy"), paths = materializeWorkflowFixtureInputs(copyRoot);
+    expect(inventory(copyRoot)).toEqual([...paths].sort());
+    expect(paths.filter((path) => path.startsWith("registry/")).sort()).toEqual(["registry/agent-roles.yml", "registry/agents.yml", "registry/context-policy.yml", "registry/workflow-policy.yml"]);
+    for (const path of paths) {
+      const target = join(copyRoot, path), info = lstatSync(target), original = readFileSync(path);
+      expect(info.isFile()).toBe(true); expect(info.isSymbolicLink()).toBe(false);
+      expect(readFileSync(target).equals(original)).toBe(true);
+      expect(readFileSync(join(root, path)).equals(original)).toBe(true);
+    }
+    expect(worker).toBeUndefined(); expect(existsSync(state)).toBe(false);
+  });
+  it("keeps case copies and the cached inputs independent after a local mutation", () => {
+    const siblingRoot = join(root, "input-isolation-sibling"), paths = materializeWorkflowFixtureInputs(siblingRoot);
+    const changedPath = "registry/agent-roles.yml", original = readFileSync(changedPath);
+    writeFileSync(join(root, changedPath), "Synthetic case-local mutation; no authority.\n");
+    const laterRoot = join(root, "input-isolation-later"), laterPaths = materializeWorkflowFixtureInputs(laterRoot);
+    expect(readFileSync(join(root, changedPath)).equals(original)).toBe(false);
+    expect(laterPaths).toEqual(paths);
+    for (const path of paths) {
+      const bytes = readFileSync(path);
+      expect(readFileSync(join(siblingRoot, path)).equals(bytes)).toBe(true);
+      expect(readFileSync(join(laterRoot, path)).equals(bytes)).toBe(true);
+    }
+    expect(readFileSync(changedPath).equals(original)).toBe(true);
+    expect(worker).toBeUndefined(); expect(existsSync(state)).toBe(false);
+  });
+});
+function ensureBaseIssue(trace?: PlannerTrace, span?: PlannerSpanObserver) {
+  baseIssueId ??= createAuthorizedWorkflowIssue(root, trace, span);
+  issueId = baseIssueId;
+}
+function fixture(template: WorkflowFixtureTemplate = "analysis", value: unknown = output(), usage = true, budget?: WorkflowBudget, trace?: PlannerTrace, fsTrace?: PlannerFsTrace, span?: PlannerSpanObserver, wait?: PlannerWaitObserver, continuity?: PlannerContinuityObserver) {
+  ensureBaseIssue(trace, span);
+  const controller = new WorkflowOrchestrator(root), executor: AgentExecutor = { run: vi.fn(async () => {
+    wait?.checkpoint("executor-enter");
+    try {
+      const result = { finalText: "Never copy this raw fallback", structuredOutput: value, threadId: "synthetic-thread", turnId: "synthetic-turn",
+        usage: usage ? { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 3 } : null };
+      wait?.checkpoint("executor-body-return"); return result;
+    } catch (error) { wait?.checkpoint("executor-body-throw"); throw error; }
+  }) };
+  const attemptRoot = root;
+  const historicalWait = wait;
+  if (historicalWait && continuity) wait = {
+    checkpoint: (name) => historicalWait.checkpoint(name), bindFixture: (binding) => historicalWait.bindFixture(binding), beginRead: () => historicalWait.beginRead(),
+    observeAttempt: (binding, invoke) => continuity.observeAttempt({ ...binding, controller }, () => historicalWait.observeAttempt(binding, invoke)),
+  };
+  let boundWorker: TaskOrchestrator;
+  boundWorker = new TaskOrchestrator({ repoRoot: root, workflows: controller, executor, maxConcurrent: 1,
+    ...(wait ? { runAttempt: (taskId: string, runOptions: Parameters<typeof runTask>[3]) => wait.observeAttempt({ taskId, root: attemptRoot, executor, worker: boundWorker, options: runOptions! }, () => runTask(taskId, attemptRoot, executor, { ...runOptions, tracer: undefined })) } : {}) });
+  worker = boundWorker;
   const selected = template === "analysis" ? ["portfolio-analyst"] : template === "operations-investigation" ? ["operations-observer"] : template === "implementation" ? ["planner", "software-engineer", "reviewer"] : ["software-engineer", "reviewer"];
   const request = { template_id: template, template_version: 1, project_id: "alpha", issue_id: issueId, expected_revision: readIssueDocument().issues[issueId]!.revision,
     selected_agents: Object.fromEntries(selected.map((role) => [role, roles[role as keyof typeof roles]])), ...(budget ? { budget } : {}) };
-  const preview = controller.service.preview(request); expect(preview.allowed).toBe(true);
-  const started = controller.service.start({ request, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-root-human" });
+  let preview: ReturnType<typeof controller.service.preview>, started: ReturnType<typeof controller.service.start>;
+  const stopPreview = trace?.begin("preview");
+  const stopSpanPreview = span?.begin("preview");
+  try { preview = controller.service.preview(request); expect(preview.allowed).toBe(true); }
+  finally { stopSpanPreview?.(); stopPreview?.(); }
+  const stopAdmission = trace?.begin("admission");
+  const stopFsAdmission = fsTrace?.begin("admission");
+  const stopSpanAdmission = span?.begin("admission");
+  try { started = controller.service.start({ request, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-root-human" }); }
+  finally { stopSpanAdmission?.(); stopFsAdmission?.(); stopAdmission?.(); }
+  wait?.bindFixture({ taskId: started.stages[0]!.task_id!, root: attemptRoot, executor, worker: boundWorker });
+  continuity?.bindFixture({ taskId: started.stages[0]!.task_id!, root: attemptRoot, executor, worker: boundWorker, controller });
   return { controller, executor, taskId: started.stages[0]!.task_id!, id: started.workflow.id, stageId: started.stages[0]!.id, request };
 }
-async function complete(taskId: string) { expect(await worker!.runOnce()).toBe(1); await vi.waitFor(() => expect(readTask(taskId)?.lifecycle).toBe("finished"), { timeout: 5000 }); }
+async function complete(taskId: string, trace?: PlannerTrace, fsTrace?: PlannerFsTrace, span?: PlannerSpanObserver, wait?: PlannerWaitObserver, continuity?: PlannerContinuityObserver) {
+  const vi = plannerPollVi(continuity);
+  const stopDispatch = trace?.begin("dispatch");
+  const stopFsDispatch = fsTrace?.begin("dispatch");
+  const stopSpanDispatch = span?.begin("dispatch");
+  try { expect(await worker!.runOnce()).toBe(1); }
+  finally { stopSpanDispatch?.(); stopFsDispatch?.(); stopDispatch?.(); }
+  const stopTerminal = trace?.begin("terminal-observation");
+  const stopSpanTerminal = span?.begin("terminal-observation");
+  wait?.checkpoint("wait-enter");
+  continuity?.checkpoint("wait-enter");
+  try {
+    await vi.waitFor(wait ? () => {
+      const read = wait.beginRead(); let lifecycle: NonNullable<ReturnType<typeof readTask>>["lifecycle"] | undefined;
+      try { lifecycle = readTask(taskId)?.lifecycle; } catch (error) { read.threw(); throw error; }
+      read.returned(lifecycle); expect(lifecycle).toBe("finished");
+    } : () => expect(readTask(taskId)?.lifecycle).toBe("finished"), { timeout: 5000 });
+    wait?.checkpoint("wait-return");
+    continuity?.checkpoint("wait-return");
+  } catch (error) { wait?.checkpoint("wait-reject"); continuity?.checkpoint("wait-reject"); throw error; }
+  finally { stopSpanTerminal?.(); stopTerminal?.(); }
+}
+async function completeFirstReadOnlyStage(binding: FirstReadOnlyBinding) {
+  expect(await worker!.runOnce()).toBe(1);
+  await vi.waitFor(() => assertReadOnlyCompletionCheckpoint(binding, readTask(binding.taskId), readWorkflowDocument()), { timeout: 5000 });
+}
 function claim(f: ReturnType<typeof fixture>) {
   const runId = "synthetic-owned-run", at = new Date().toISOString();
   updateTask(f.taskId, (task) => {
@@ -89,7 +236,7 @@ describe("T006 independent workflow budget scaffold", () => {
     const f = fixture(), bound = bind(f), taskBytes = readFileSync(join(state, `tasks/${f.taskId}.json`)), workflowBytes = readFileSync(join(state, "workflows/workflows.json")), ledgerBytes = readFileSync(bound.path);
     expect(() => f.controller.canClaim(readTask(f.taskId)!)).toThrow(/independent private/);
     f.controller.reconcile(); expect(await worker!.runOnce()).toBe(0); expect(f.executor.run).not.toHaveBeenCalled();
-    expect(readFileSync(join(state, `tasks/${f.taskId}.json`))).toEqual(taskBytes); expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes); expect(readFileSync(bound.path)).toEqual(ledgerBytes);
+    expect(readFileSync(join(state, `tasks/${f.taskId}.json`)).equals(taskBytes)).toBe(true); expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true); expect(readFileSync(bound.path).equals(ledgerBytes)).toBe(true);
   });
   it("an exact task lease cannot replace the independent budget proof", () => {
     const f = fixture(), bound = bind(f), at = new Date().toISOString();
@@ -97,7 +244,7 @@ describe("T006 independent workflow budget scaffold", () => {
       acquired_at: at, heartbeat_at: at, expires_at: new Date(Date.now() + 60000).toISOString() }; });
     const before = readFileSync(join(state, "workflows/workflows.json")), ledgerBytes = readFileSync(bound.path);
     expect(() => f.controller.claimRun(f.taskId, "without-budget-proof", {})).toThrow(/independent private/);
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(before); expect(readFileSync(bound.path)).toEqual(ledgerBytes); expect(f.executor.run).not.toHaveBeenCalled();
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(before)).toBe(true); expect(readFileSync(bound.path).equals(ledgerBytes)).toBe(true); expect(f.executor.run).not.toHaveBeenCalled();
   });
   it("requires both private identities, accounts once, and never creates a P successor from a fixture completion", async () => {
     const f = fixture(), bound = bind(f); await worker!.stop();
@@ -122,23 +269,112 @@ describe("T006 independent workflow budget scaffold", () => {
       acquired_at: at, heartbeat_at: at, expires_at: at }; });
     const taskBytes = readFileSync(join(state, `tasks/${f.taskId}.json`)), before = readFileSync(join(state, "workflows/workflows.json")), ledgerBytes = readFileSync(bound.path);
     expect(f.controller.recoverExpired(readTask(f.taskId)!)).toBe(false); expect(worker!.recoverExpiredLeases()).toBe(0); new WorkflowOrchestrator(root).reconcile();
-    expect(readFileSync(join(state, `tasks/${f.taskId}.json`))).toEqual(taskBytes); expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(before); expect(readFileSync(bound.path)).toEqual(ledgerBytes); expect(f.executor.run).not.toHaveBeenCalled();
+    expect(readFileSync(join(state, `tasks/${f.taskId}.json`)).equals(taskBytes)).toBe(true); expect(readFileSync(join(state, "workflows/workflows.json")).equals(before)).toBe(true); expect(readFileSync(bound.path).equals(ledgerBytes)).toBe(true); expect(f.executor.run).not.toHaveBeenCalled();
+  });
+});
+describe("read-only completion checkpoint", () => {
+  function facts() {
+    const binding = fixture(), task = readTask(binding.taskId)!, document = readWorkflowDocument();
+    task.lifecycle = "finished"; document.stages[binding.stageId]!.status = "completed"; document.workflows[binding.id]!.status = "waiting-human";
+    return { binding, task, document };
+  }
+  it("accepts only the exact finished task, completed stage and reconciled human gate", () => {
+    const f = facts(), dispatch = vi.spyOn(worker!, "runOnce");
+    expect(() => assertReadOnlyCompletionCheckpoint(f.binding, f.task, f.document)).not.toThrow();
+    expect(dispatch).not.toHaveBeenCalled(); expect(f.binding.executor.run).not.toHaveBeenCalled();
+  });
+  it("rejects a finished task while its workflow remains running", () => {
+    const f = facts(), dispatch = vi.spyOn(worker!, "runOnce"); f.document.workflows[f.binding.id]!.status = "running";
+    expect(() => assertReadOnlyCompletionCheckpoint(f.binding, f.task, f.document)).toThrow(/reconciled human gate/);
+    expect(dispatch).not.toHaveBeenCalled(); expect(f.binding.executor.run).not.toHaveBeenCalled();
+  });
+  it.each(["task", "workflow", "current-stage", "stage-owner", "stage-task", "stage-status"] as const)("rejects a mismatched %s checkpoint without dispatch", (mismatch) => {
+    const f = facts(), dispatch = vi.spyOn(worker!, "runOnce"), stage = f.document.stages[f.binding.stageId]!;
+    if (mismatch === "task") f.task.envelope.id = "synthetic-other-task";
+    else if (mismatch === "workflow") delete f.document.workflows[f.binding.id];
+    else if (mismatch === "current-stage") f.document.workflows[f.binding.id]!.current_stage_id = "synthetic-other-stage";
+    else if (mismatch === "stage-owner") stage.workflow_id = "synthetic-other-workflow";
+    else if (mismatch === "stage-task") stage.task_id = "synthetic-other-task";
+    else stage.status = "running";
+    expect(() => assertReadOnlyCompletionCheckpoint(f.binding, f.task, f.document)).toThrow(/read-only checkpoint/);
+    expect(dispatch).not.toHaveBeenCalled(); expect(f.binding.executor.run).not.toHaveBeenCalled();
+  });
+  it("uses one real dispatch and one unchanged wait without completion effects", () => {
+    const source = readFileSync(new URL(import.meta.url), "utf8"), start = source.indexOf("async function completeFirstReadOnlyStage("), helper = source.slice(start, source.indexOf("\n}", start) + 2);
+    expect(helper.match(/await /g)).toHaveLength(2); expect(helper.match(/worker!\.runOnce\(\)/g)).toHaveLength(1);
+    expect(helper).toContain('expect(await worker!.runOnce()).toBe(1);');
+    expect(helper).toContain('await vi.waitFor(() => assertReadOnlyCompletionCheckpoint(binding, readTask(binding.taskId), readWorkflowDocument()), { timeout: 5000 });');
+    expect(helper).not.toMatch(/reconcile|setTimeout|setInterval|Promise\.race|\.start\(|\.stop\(|interval:/);
+  });
+});
+describe("queued-stage selection", () => {
+  it("reads the validated current stage without constructing a public detail projection or dispatching", () => {
+    const f = fixture(), document = readWorkflowDocument(), stage = document.stages[f.stageId]!, detail = vi.spyOn(f.controller.service, "detail"), dispatch = vi.spyOn(worker!, "runOnce");
+    expect(selectQueuedStage(f.id, stage.kind)).toEqual(stage);
+    expect(detail).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled(); expect(f.executor.run).not.toHaveBeenCalled();
+  });
+  it.each(["workflow", "current-stage", "stage-owner", "last-stage", "kind", "status", "task"] as const)("rejects a mismatched %s before dispatch", (mismatch) => {
+    const f = fixture(), document = readWorkflowDocument(), stage = document.stages[f.stageId]!, kind = stage.kind, dispatch = vi.spyOn(worker!, "runOnce");
+    if (mismatch === "workflow") delete document.workflows[f.id];
+    else if (mismatch === "current-stage") document.workflows[f.id]!.current_stage_id = "synthetic-missing-stage";
+    else if (mismatch === "stage-owner") stage.workflow_id = "synthetic-other-workflow";
+    else if (mismatch === "last-stage") document.stages["synthetic-later-stage"] = { ...stage, id: "synthetic-later-stage" };
+    else if (mismatch === "kind") stage.kind = "correction";
+    else if (mismatch === "status") stage.status = "running";
+    else stage.task_id = null;
+    expect(() => assertQueuedStageSelection(document, f.id, kind)).toThrow(/queued-stage selection/);
+    expect(dispatch).not.toHaveBeenCalled(); expect(f.executor.run).not.toHaveBeenCalled();
   });
 });
 describe("finite workflow controller integration", () => {
-  it.each([["analysis", "analysis"], ["implementation", "plan"], ["operations-investigation", "operations"]] as const)("runs only the exact first read-only %s stage and retains a human gate", async (template, kind) => {
-    const f = fixture(template, output(kind)), issueBefore = readIssueDocument(); await complete(f.taskId);
-    expect(readTask(f.taskId)?.outcome).toBe("completed");
-    const detail = f.controller.service.detail(f.id); expect(detail.workflow.status).toBe("waiting-human"); expect(detail.stages[0]!.status).toBe("completed");
-    expect(detail.workflow.counters).toMatchObject({ tasks: 1, attempts: 1, total_tokens: 3, accounting_complete: true }); expect(detail.accounting[0]!.usage_complete).toBe(true);
-    expect(detail.decisions[0]!.kind).toBe(kind === "plan" ? "plan-approval" : "proposal-acknowledgement");
-    expect(f.executor.run).toHaveBeenCalledOnce(); const [run] = vi.mocked(f.executor.run).mock.calls[0]!;
-    expect(run.mode).toBe("read-only"); expect(run.verifyCommands).toEqual([]); expect(run.threadId).toBeUndefined(); expect(JSON.stringify(run.outputSchema)).toContain(`"${kind}"`);
-    expect(readIssueDocument()).toEqual(issueBefore); expect(detail.handoffs).toEqual([]); expect(detail.review_receipts).toEqual([]);
-    expect(existsSync(join(root, "projects/surtec-worktrees"))).toBe(false);
-    const bytes = readFileSync(join(state, "workflows/workflows.json"));
-    f.controller.reconcile(); await worker!.runOnce(); new WorkflowOrchestrator(root).reconcile();
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(bytes); expect(listTasks()).toHaveLength(1);
+  describe.each([["analysis", "analysis"], ["implementation", "plan"], ["operations-investigation", "operations"]] as const)("first-stage fixture %s", (template, kind) => {
+    const prepare = () => {
+      const span = template === "implementation" ? plannerSpanCapture.beginCallback() : undefined;
+      const wait = template === "implementation" ? plannerWaitCapture.beginCallback() : undefined;
+      const continuity = template === "implementation" ? plannerContinuityCapture.beginCallback() : undefined;
+      const wantsTrace = template === "implementation" && process.env.SURTEC_TEST_PLANNER_PROFILE === "1";
+      const wantsFsTrace = template === "implementation" && process.env.SURTEC_TEST_PLANNER_FS_PROFILE === "1";
+      const trace = wantsTrace && !wantsFsTrace ? createPlannerPhaseRecorder() : undefined;
+      const fsTrace = wantsFsTrace && !wantsTrace ? createPlannerFsObserver() : undefined;
+      plannerTrace = trace; plannerFsTrace = fsTrace;
+      const f = fixture(template, output(kind), true, undefined, trace, fsTrace, span, wait, continuity), issueBefore = readIssueDocument();
+      return { f, issueBefore, trace, fsTrace, span, wait, continuity };
+    };
+    let prepared: ReturnType<typeof prepare>;
+    beforeEach(() => { prepared = prepare(); }, 5000);
+
+    it(`runs only the exact first read-only ${template} stage and retains a human gate`, async () => {
+      const { f, issueBefore, trace, fsTrace, span, wait, continuity } = prepared;
+      if (trace || fsTrace || span || wait || continuity) await complete(f.taskId, trace, fsTrace, span, wait, continuity);
+      else await completeFirstReadOnlyStage(f);
+      let bytes: Buffer;
+      const stopAssertions = trace?.begin("assertions");
+      const stopSpanAssertions = span?.begin("assertions");
+      try {
+        expect(readTask(f.taskId)?.outcome).toBe("completed");
+        const detail = f.controller.service.detail(f.id); expect(detail.workflow.status).toBe("waiting-human"); expect(detail.stages[0]!.status).toBe("completed");
+        expect(detail.workflow.counters).toMatchObject({ tasks: 1, attempts: 1, total_tokens: 3, accounting_complete: true }); expect(detail.accounting[0]!.usage_complete).toBe(true);
+        expect(detail.decisions[0]!.kind).toBe(kind === "plan" ? "plan-approval" : "proposal-acknowledgement");
+        expect(f.executor.run).toHaveBeenCalledOnce(); const [run] = vi.mocked(f.executor.run).mock.calls[0]!;
+        expect(run.mode).toBe("read-only"); expect(run.verifyCommands).toEqual([]); expect(run.threadId).toBeUndefined(); expect(JSON.stringify(run.outputSchema)).toContain(`"${kind}"`);
+        expect(readIssueDocument()).toEqual(issueBefore); expect(detail.handoffs).toEqual([]); expect(detail.review_receipts).toEqual([]);
+        expect(existsSync(join(root, "projects/surtec-worktrees"))).toBe(false);
+        bytes = readFileSync(join(state, "workflows/workflows.json"));
+      } finally { stopSpanAssertions?.(); stopAssertions?.(); }
+      const stopReconcile = trace?.begin("probe-reconcile");
+      const stopSpanReconcile = span?.begin("probe-reconcile");
+      try { f.controller.reconcile(); } finally { stopSpanReconcile?.(); stopReconcile?.(); }
+      const stopTick = trace?.begin("probe-worker-tick");
+      const stopSpanTick = span?.begin("probe-worker-tick");
+      try { await worker!.runOnce(); } finally { stopSpanTick?.(); stopTick?.(); }
+      const stopRestart = trace?.begin("probe-restart-reconcile");
+      const stopSpanRestart = span?.begin("probe-restart-reconcile");
+      try { new WorkflowOrchestrator(root).reconcile(); } finally { stopSpanRestart?.(); stopRestart?.(); }
+      const stopProbeAssertions = trace?.begin("probe-assertions");
+      const stopSpanProbeAssertions = span?.begin("probe-assertions");
+      try { expect(readFileSync(join(state, "workflows/workflows.json")).equals(bytes)).toBe(true); expect(listTasks()).toHaveLength(1); }
+      finally { stopSpanProbeAssertions?.(); stopProbeAssertions?.(); }
+    });
   });
   it("admits only the exact consented Engineer stage while leaving correction disabled", () => {
     const f = fixture("trivial-change"), document = readWorkflowDocument(), task = readTask(f.taskId)!;
@@ -156,6 +392,46 @@ describe("finite workflow controller integration", () => {
     expect(admitted.workflow.status).toBe("running"); expect(admitted.stages.at(-1)).toMatchObject({ kind: "implementation", status: "queued", predecessor_stage_id: f.stageId });
     expect(admitted.handoffs).toHaveLength(1); expect(admitted.handoffs[0]!.from_role_id).toBe("planner");
     expect(listTasks()).toHaveLength(2); expect(readTask(admitted.stages.at(-1)!.task_id!)?.orchestration?.attempts).toBe(0); expect(f.executor.run).toHaveBeenCalledOnce();
+  }, 15_000);
+  it.each(["success", "late-usage"])("native synthetic Planner keeps exact human gate and restart accounting for %s", async (scenario) => {
+    const f = fixture("implementation", output("plan"));
+    await worker!.stop();
+    const controller = new WorkflowOrchestrator(root);
+    const closed: Promise<void>[] = [];
+    const spawned = vi.fn(() => {
+      const child = spawn(process.execPath, [fileURLToPath(new URL("../fixtures/codex-app-server-terminal.mjs", import.meta.url)), scenario, "planner"],
+        { stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true, env: {} });
+      closed.push(new Promise<void>((resolve) => child.once("close", () => resolve())));
+      return child;
+    });
+    worker = new TaskOrchestrator({ repoRoot: root, workflows: controller, executor: new CodexExecutor(spawned), maxConcurrent: 1 });
+    try {
+      await complete(f.taskId);
+      const detail = controller.service.detail(f.id), task = readTask(f.taskId)!;
+      expect(spawned).toHaveBeenCalledOnce();
+      expect(detail.workflow.counters).toMatchObject({ tasks: 1, attempts: 1, total_tokens: scenario === "success" ? 15 : 25,
+        accounting_complete: scenario === "success" });
+      expect(detail.accounting[0]!.usage_complete).toBe(scenario === "success");
+      const metadata = task.envelope.metadata.run as Record<string, unknown>;
+      if (scenario === "success") {
+        expect(task.outcome).toBe("completed"); expect(detail.workflow.status).toBe("waiting-human");
+        expect(detail.decisions).toHaveLength(1); expect(detail.decisions[0]!.kind).toBe("plan-approval");
+        expect(validateTerminalUsageEvidence(metadata.terminal_usage_evidence, { taskId: f.taskId, executionId: detail.accounting[0]!.execution_id,
+          contextFingerprint: metadata.context_fingerprint as string, threadId: "thread-1", turnId: "turn-1", usage: metadata.usage as import("./agent-executor").AgentUsage })).not.toBeNull();
+      } else {
+        expect(task.outcome).toBe("needs-review"); expect(detail.workflow.status).toBe("needs-decision");
+        expect(detail.decisions).toEqual([]); expect(metadata).not.toHaveProperty("terminal_usage_evidence");
+        expect(() => worker!.retry(f.taskId)).toThrow(/controller/);
+      }
+      const taskBytes = readFileSync(join(state, "tasks", `${f.taskId}.json`));
+      const workflowBytes = readFileSync(join(state, "workflows/workflows.json"));
+      controller.reconcile(); expect(await worker!.runOnce()).toBe(0);
+      new WorkflowOrchestrator(root).reconcile();
+      expect(readFileSync(join(state, "tasks", `${f.taskId}.json`)).equals(taskBytes)).toBe(true);
+      expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true);
+      expect(listTasks()).toHaveLength(1); expect(spawned).toHaveBeenCalledOnce();
+      expect(detail.handoffs).toEqual([]); expect(existsSync(join(root, "projects/surtec-worktrees"))).toBe(false);
+    } finally { await worker!.stop(); await Promise.all(closed); }
   }, 15_000);
   it.each([null, { schema_version: 99 }, { ...output(), evidence_ids: ["unowned"] }, { ...output(), kind: "operations", proposed_issue: null }])("rejects malformed/unowned output without promoting raw fallback %#", async (value) => {
     const f = fixture("analysis", value); await complete(f.taskId); expect(readTask(f.taskId)?.outcome).toBe("needs-review");
@@ -224,7 +500,7 @@ describe("finite workflow controller integration", () => {
     expect(readTask(f.taskId)).toMatchObject({ outcome: "cancelled", result: { status: "cancelled" }, orchestration: { lease: null } });
     expect(stopped.events.some((entry) => entry.type === "budget-stopped")).toBe(false);
     expect(stopped.workflow.counters).toMatchObject({ tasks: 1, attempts: 1, accounting_complete: false }); expect(stopped.accounting[0]!.usage_complete).toBe(false);
-    expect(await worker!.runOnce()).toBe(0); expect(f.executor.run).toHaveBeenCalledOnce(); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes);
+    expect(await worker!.runOnce()).toBe(0); expect(f.executor.run).toHaveBeenCalledOnce(); expect(readFileSync(join(state, "issues/issues.json")).equals(issueBytes)).toBe(true);
   });
   it("deduplicates per-run observations, keeps maxima and never rewrites final usage", () => {
     const f = fixture(), { proof, runId } = claim(f);
@@ -232,7 +508,7 @@ describe("finite workflow controller integration", () => {
     expect(f.controller.service.detail(f.id).workflow.counters).toMatchObject({ tasks: 1, attempts: 1, total_tokens: 3, runtime_ms: 100 });
     f.controller.settle(proof, 3, 150, true);
     const bytes = readFileSync(join(state, "workflows/workflows.json")); f.controller.observe(proof, 10, 500, true);
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(bytes); expect(readWorkflowDocument().accounting[runId]!.usage_complete).toBe(true);
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(bytes)).toBe(true); expect(readWorkflowDocument().accounting[runId]!.usage_complete).toBe(true);
     expect(() => f.controller.claimRun(f.taskId, runId)).toThrow(/already charged/);
     expect(Object.keys(readWorkflowDocument().accounting)).toEqual([runId]);
   });
@@ -264,7 +540,7 @@ describe("finite workflow controller integration", () => {
     const restarted = new WorkflowOrchestrator(root); restarted.reconcile();
     const bytes = readFileSync(join(state, "workflows/workflows.json")); restarted.reconcile();
     expect(restarted.service.detail(f.id).workflow.status).toBe("waiting-human"); expect(restarted.service.detail(f.id).decisions).toHaveLength(1);
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(bytes); expect(listTasks()).toHaveLength(1); expect(f.executor.run).toHaveBeenCalledOnce();
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(bytes)).toBe(true); expect(listTasks()).toHaveLength(1); expect(f.executor.run).toHaveBeenCalledOnce();
   });
   it("two workers share existing scheduler capacity and cannot charge or execute one stage twice", async () => {
     const f = fixture(), other = new TaskOrchestrator({ repoRoot: root, workflows: new WorkflowOrchestrator(root), executor: f.executor, maxConcurrent: 1 });
@@ -292,8 +568,9 @@ describe("finite workflow controller integration", () => {
       return controller.service.start({ request, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-concurrent-root-human" });
     };
     const runAttempt = vi.fn(async (taskId: string, options: Parameters<typeof runTask>[3]) => {
-      expect(options?.runId).toBe(readTask(taskId)!.orchestration!.lease!.run_id);
-      if (readTask(taskId)!.envelope.context_admission!.schema_version === 2) expect(workflowExecutionOwner(options?.workflowExecution, taskId, options!.runId!)).not.toBeNull();
+      const task = readTask(taskId)!;
+      expect(options?.runId).toBe(task.orchestration!.lease!.run_id);
+      if (task.envelope.context_admission!.schema_version === 2) expect(workflowExecutionOwner(options?.workflowExecution, taskId, options!.runId!)).not.toBeNull();
       else expect(options?.workflowExecution).toBeUndefined();
       return new Promise<null>((resolve) => {
         if (options!.signal!.aborted) resolve(null);
@@ -306,7 +583,7 @@ describe("finite workflow controller integration", () => {
     const other = new TaskOrchestrator({ repoRoot: root, workflows: new WorkflowOrchestrator(root), executor: first.executor, maxConcurrent: 3, runAttempt });
     try {
       expect(await worker.runOnce()).toBe(2); await vi.waitFor(() => expect(runAttempt).toHaveBeenCalledTimes(2));
-      const running = listTasks().filter((task) => task.lifecycle === "running"), waiting = listTasks().filter((task) => task.lifecycle === "queued");
+      const tasks = listTasks(), running = tasks.filter((task) => task.lifecycle === "running"), waiting = tasks.filter((task) => task.lifecycle === "queued");
       expect(running.filter((task) => task.envelope.sandbox === "workspace-write")).toHaveLength(1);
       expect(running.filter((task) => task.envelope.sandbox === "read-only").map((task) => task.envelope.id)).toEqual([advisory.id]);
       expect(waiting).toHaveLength(1); expect([first.taskId, second.stages[0]!.task_id]).toContain(waiting[0]!.envelope.id);
@@ -324,9 +601,10 @@ describe("finite workflow controller integration", () => {
     updateTask(f.taskId, (task) => { task.orchestration!.lease!.run_id = "synthetic-replacement"; });
     const bytes = readFileSync(join(state, "workflows/workflows.json"));
     expect(() => f.controller.observe(proof, 3, 100)).toThrow(/lease/); expect(() => f.controller.captureOutput(proof, prepared, output(), "reports/synthetic")).toThrow(/lease/);
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(bytes); expect(f.executor.run).not.toHaveBeenCalled();
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(bytes)).toBe(true); expect(f.executor.run).not.toHaveBeenCalled();
   });
   it("explicit recovery commits only an existing unstarted task/link gap without redispatch or refund", () => {
+    ensureBaseIssue();
     const notify = vi.fn(), makeTask = vi.fn((...args: Parameters<typeof createWorkflowTask>) => { createWorkflowTask(...args); throw new Error("synthetic crash after task persistence"); });
     const service = createWorkflowService(root, { createTask: makeTask, execution: { available: () => true, notify, cancelTask: vi.fn() } });
     const request = { template_id: "analysis", template_version: 1, project_id: "alpha", issue_id: issueId, expected_revision: readIssueDocument().issues[issueId]!.revision, selected_agents: { "portfolio-analyst": "product-manager" } };
@@ -336,27 +614,30 @@ describe("finite workflow controller integration", () => {
     expect(recovered.admission_intents[0]!.status).toBe("committed"); expect(recovered.stages[0]!.task_id).toBe(task.envelope.id); expect(recovered.workflow.counters).toEqual(owner.counters);
     expect(readTask(task.envelope.id)).toEqual(task); expect(readIssueDocument()).toEqual(issueBefore); expect(makeTask).toHaveBeenCalledOnce(); expect(notify).toHaveBeenCalledExactlyOnceWith(task.envelope.id);
     const bytes = readFileSync(join(state, "workflows/workflows.json")); expect(() => service.recover(owner.id, { expected_revision: recovered.workflow.revision, expected_issue_revision: issueBefore.issues[issueId]!.revision })).toThrow(/provable/);
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(bytes);
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(bytes)).toBe(true);
   });
   it("missing reserved task and source drift stay unrecoverable with retained bytes", () => {
+    ensureBaseIssue();
     const service = createWorkflowService(root, { createTask: () => { throw new Error("synthetic crash before task persistence"); }, execution: { available: () => true, notify: vi.fn(), cancelTask: vi.fn() } });
     const request = { template_id: "analysis", template_version: 1, project_id: "alpha", issue_id: issueId, expected_revision: readIssueDocument().issues[issueId]!.revision, selected_agents: { "portfolio-analyst": "product-manager" } };
     const preview = service.preview(request); expect(() => service.start({ request, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-root-human" })).toThrow(/incomplete/);
     const owner = Object.values(readWorkflowDocument().workflows)[0]!, path = join(state, "workflows/workflows.json"), bytes = readFileSync(path);
     writeFileSync(join(root, "projects/alpha/AGENTS.md"), "Changed synthetic source");
     expect(() => service.recover(owner.id, { expected_revision: owner.revision, expected_issue_revision: readIssueDocument().issues[issueId]!.revision })).toThrow(/missing/);
-    expect(readFileSync(path)).toEqual(bytes); expect(listTasks()).toEqual([]);
+    expect(readFileSync(path).equals(bytes)).toBe(true); expect(listTasks()).toEqual([]);
   });
   it("changed sources prevent recovery even when the reserved task and link survived", () => {
+    ensureBaseIssue();
     const notify = vi.fn(), service = createWorkflowService(root, { createTask: (...args) => { createWorkflowTask(...args); throw new Error("synthetic task-persistence gap"); }, execution: { available: () => true, notify, cancelTask: vi.fn() } });
     const request = { template_id: "analysis", template_version: 1, project_id: "alpha", issue_id: issueId, expected_revision: readIssueDocument().issues[issueId]!.revision, selected_agents: { "portfolio-analyst": "product-manager" } };
     const preview = service.preview(request); expect(() => service.start({ request, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-root-human" })).toThrow(/incomplete/);
     writeFileSync(join(root, "projects/alpha/AGENTS.md"), "Changed after the persisted reservation");
     const owner = Object.values(readWorkflowDocument().workflows)[0]!, bytes = readFileSync(join(state, "workflows/workflows.json")), task = listTasks()[0]!;
     expect(() => service.recover(owner.id, { expected_revision: owner.revision, expected_issue_revision: readIssueDocument().issues[issueId]!.revision })).toThrow();
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(bytes); expect(readTask(task.envelope.id)).toEqual(task); expect(notify).not.toHaveBeenCalled();
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(bytes)).toBe(true); expect(readTask(task.envelope.id)).toEqual(task); expect(notify).not.toHaveBeenCalled();
   });
   it.each([false, true])("runs Reviewer on an exact real candidate, blocking seals/QA or tree drift mutate=%s", async (mutate) => {
+    ensureBaseIssue();
     const repo = join(root, "projects/alpha"), git = (...args: string[]) => execFileSync("git", managedGitArgs(["-C", repo, ...args], root), { env: localGitEnvironment(), windowsHide: true, stdio: "pipe" }).toString();
     git("init", "-b", "main"); git("config", "user.email", "fixture@example.invalid"); git("config", "user.name", "Synthetic fixture");
     mkdirSync(join(repo, "src")); writeFileSync(join(repo, "src/value.txt"), "base\n"); writeFileSync(join(repo, "verify.mjs"), "process.exit(0)\n"); git("add", "-A"); git("commit", "-m", "synthetic base");
@@ -411,7 +692,7 @@ describe("finite workflow controller integration", () => {
     updateTask(f.taskId, (task) => { task.orchestration!.lease!.expires_at = new Date(Date.now() - 1000).toISOString(); }); const expired = readTask(f.taskId)!;
     updateTask(f.taskId, (task) => { task.orchestration!.lease!.expires_at = new Date(Date.now() + 60000).toISOString(); });
     const taskBytes = readFileSync(join(state, `tasks/${f.taskId}.json`)), workflowBytes = readFileSync(join(state, "workflows/workflows.json"));
-    expect(f.controller.recoverExpired(expired)).toBe(false); expect(readFileSync(join(state, `tasks/${f.taskId}.json`))).toEqual(taskBytes); expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes);
+    expect(f.controller.recoverExpired(expired)).toBe(false); expect(readFileSync(join(state, `tasks/${f.taskId}.json`)).equals(taskBytes)).toBe(true); expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true);
   });
   it("corrupt workflow bytes fail closed without repair or effects", async () => {
     const f = fixture(), path = join(state, "workflows/workflows.json"), corrupt = '{"schema_version":99}'; writeFileSync(path, corrupt);
@@ -433,7 +714,7 @@ describe("T007 exact budget exhaustion integration", () => {
     expect(evidence).toMatchObject({ kind: "task", status: "gap", task_id: f.taskId, execution_id: runId });
     const issueBytes = readFileSync(join(state, "issues/issues.json")), workflowBytes = readFileSync(join(state, "workflows/workflows.json"));
     f.controller.reconcile(); new WorkflowOrchestrator(root).reconcile();
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes); expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(issueBytes)).toBe(true); expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true);
     expect(f.controller.canClaim(readTask(f.taskId)!)).toBe(false); expect(listTasks()).toHaveLength(1); expect(f.executor.run).not.toHaveBeenCalled();
   });
 
@@ -442,11 +723,11 @@ describe("T007 exact budget exhaustion integration", () => {
     mutateWorkflowDocument((document) => { const owner = document.workflows[f.id]!; owner.counters.attempts = owner.budget.max_attempts; owner.revision++; });
     const taskBytes = readFileSync(join(state, `tasks/${f.taskId}.json`)), beforeIssues = readFileSync(join(state, "issues/issues.json")), beforeWorkflow = readFileSync(join(state, "workflows/workflows.json"));
     expect(readIssueDocument().issues[issueId]!.status).toBe(from); expect(f.controller.canClaim(readTask(f.taskId)!)).toBe(false);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssues); expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(beforeWorkflow);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(beforeIssues)).toBe(true); expect(readFileSync(join(state, "workflows/workflows.json")).equals(beforeWorkflow)).toBe(true);
     f.controller.reconcile(); const issues = readIssueDocument(), stopped = f.controller.service.detail(f.id);
     expect(issues.issues[issueId]!.status).toBe("needs-decision"); expect(issues.events.at(-1)!.type).toBe(eventType);
     expect(issues.events.at(-1)!.payload).toMatchObject({ workflow_id: f.id, stage_id: f.stageId, task_id: f.taskId, execution_id: null, budget_exhaustion: { operation: "claim" } });
-    expect(stopped.workflow.status).toBe("needs-decision"); expect(stopped.accounting).toEqual([]); expect(readFileSync(join(state, `tasks/${f.taskId}.json`))).toEqual(taskBytes);
+    expect(stopped.workflow.status).toBe("needs-decision"); expect(stopped.accounting).toEqual([]); expect(readFileSync(join(state, `tasks/${f.taskId}.json`)).equals(taskBytes)).toBe(true);
     expect(listTasks()).toHaveLength(1); expect(f.executor.run).not.toHaveBeenCalled(); expect(existsSync(join(root, "projects/surtec-worktrees"))).toBe(false);
   });
 
@@ -464,13 +745,13 @@ describe("T007 exact budget exhaustion integration", () => {
     const issueBytes = readFileSync(join(state, "issues/issues.json"));
     const fault = vi.spyOn(issueState, "mutateIssueDocument").mockImplementationOnce(() => { throw new Error("Synthetic issue persistence interruption"); });
     expect(() => f.controller.observe(proof, 10, 100)).toThrow(/Synthetic issue/); fault.mockRestore();
-    expect(f.controller.service.detail(f.id).workflow.status).toBe("needs-decision"); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes);
+    expect(f.controller.service.detail(f.id).workflow.status).toBe("needs-decision"); expect(readFileSync(join(state, "issues/issues.json")).equals(issueBytes)).toBe(true);
     new WorkflowOrchestrator(root).reconcile(); const issues = readIssueDocument();
     expect(issues.issues[issueId]!.status).toBe("needs-decision"); expect(issues.events.filter((event) => event.payload.execution_id === runId && event.type === "authorization-stale")).toHaveLength(1);
     const after = readFileSync(join(state, "issues/issues.json"));
     expect(f.controller.observe(proof, 11, 150, true)).toBe(true);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(after); expect(f.controller.service.detail(f.id).workflow.counters.total_tokens).toBe(11);
-    f.controller.reconcile(); new WorkflowOrchestrator(root).reconcile(); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(after);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(after)).toBe(true); expect(f.controller.service.detail(f.id).workflow.counters.total_tokens).toBe(11);
+    f.controller.reconcile(); new WorkflowOrchestrator(root).reconcile(); expect(readFileSync(join(state, "issues/issues.json")).equals(after)).toBe(true);
     expect(f.executor.run).not.toHaveBeenCalled(); expect(listTasks()).toHaveLength(1);
   });
 
@@ -480,7 +761,7 @@ describe("T007 exact budget exhaustion integration", () => {
     issues.resolveDecision(issueId, stopped.revision, "synthetic-human-reconsideration", "Inspect the retained exact scope without reviving the stopped workflow");
     const bytes = readFileSync(join(state, "issues/issues.json"));
     new WorkflowOrchestrator(root).reconcile(); f.controller.reconcile();
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(bytes); expect(readIssueDocument().issues[issueId]!.status).toBe("authorized");
+    expect(readFileSync(join(state, "issues/issues.json")).equals(bytes)).toBe(true); expect(readIssueDocument().issues[issueId]!.status).toBe("authorized");
     expect(f.controller.service.detail(f.id).workflow.status).toBe("needs-decision"); expect(f.executor.run).not.toHaveBeenCalled();
   });
 
@@ -491,13 +772,13 @@ describe("T007 exact budget exhaustion integration", () => {
     issueState.mutateIssueDocument((document) => { document.issues[issueId]!.authorized_scope.allowed_path_patterns.push("other/**"); });
     const issueBytes = readFileSync(join(state, "issues/issues.json")), workflowBytes = readFileSync(join(state, "workflows/workflows.json"));
     f.controller.reconcile(); new WorkflowOrchestrator(root).reconcile();
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes); expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(issueBytes)).toBe(true); expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true);
     expect(f.executor.run).not.toHaveBeenCalled(); expect(listTasks()).toHaveLength(1);
   });
 
   it("stops a real candidate's Reviewer at its root token limit with the exact checking decision and no QA admission", async () => {
-    const f = await correctionFixture({ rootTokenCap: 9, stopBeforeReview: true }); await f.advance("review");
-    const detail = f.detail(), stage = detail.stages.at(-1)!, issues = readIssueDocument(), event = issues.events.at(-1)!;
+    const f = await correctionFixture({ rootTokenCap: 9, stopBeforeReview: true }), detail = await f.advance("review");
+    const stage = detail.stages.at(-1)!, issues = readIssueDocument(), event = issues.events.at(-1)!;
     expect(stage.kind).toBe("review"); expect(detail.workflow.status).toBe("needs-decision"); expect(issues.issues[issueId]!.status).toBe("needs-decision");
     expect(event.type).toBe("verification-needs-decision"); expect(event.payload).toMatchObject({ workflow_id: f.workflowId, stage_id: stage.id, task_id: stage.task_id,
       execution_id: stage.execution_id, candidate_id: f.original.candidate_id });
@@ -509,7 +790,7 @@ describe("T007 exact budget exhaustion integration", () => {
 
   it.each(["review", "qa"] as const)("stops %s at its independent P review token cap below O root without another role or correction", async (kind) => {
     const f = await correctionFixture({ stopBeforeReview: kind === "review" }); await worker!.stop();
-    const stage = f.detail().stages.at(-1)!; expect(stage.kind).toBe(kind);
+    const stage = f.checkpoint().stages.at(-1)!; expect(stage.kind).toBe(kind);
     cpSync("registry/budget-policy.yml", join(root, "registry/budget-policy.yml"));
     const configured = parse(readFileSync(join(root, "registry/budget-policy.yml"), "utf8"));
     configured.rules[0].limits.review_total_tokens = { status: "configured", hard_cap: 3 };
@@ -535,27 +816,87 @@ describe("T007 exact budget exhaustion integration", () => {
     expect(detail.budget_consumption!.review.counters.total_tokens).toBe(kind === "review" ? 3 : 6); expect(detail.lineage!.corrections_consumed).toBe(0);
     const issueBytes = readFileSync(join(state, "issues/issues.json")), workflowBytes = readFileSync(join(state, "workflows/workflows.json"));
     new WorkflowOrchestrator(root).reconcile(); controller.reconcile();
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes); expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(issueBytes)).toBe(true); expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true);
     expect(await worker.runOnce()).toBe(0); expect(f.executor.run).toHaveBeenCalledTimes(kind === "review" ? 3 : 4); expect(listTasks()).toHaveLength(kind === "review" ? 3 : 4);
   }, 90000);
 });
 
-async function correctionFixture(options: { enabled?: boolean; findingPath?: string; repeatFinding?: boolean; protectedEdit?: boolean; failedVerification?: boolean; correctionTokenCap?: number; qaFinding?: boolean; rootTokenCap?: number; stopBeforeReview?: boolean } = {}) {
-  const repo = join(root, "projects/alpha"), git = (...args: string[]) => execFileSync("git", managedGitArgs(["-C", repo, ...args], root), { env: localGitEnvironment(), windowsHide: true, stdio: "pipe" }).toString().trim();
-  git("init", "-b", "main"); git("config", "user.email", "fixture@example.invalid"); git("config", "user.name", "Synthetic fixture");
-  mkdirSync(join(repo, "src")); writeFileSync(join(repo, "src/value.txt"), "base\n");
-  writeFileSync(join(repo, "verify.mjs"), "import {readFileSync} from 'node:fs'; process.exit(readFileSync('src/value.txt','utf8').includes('broken') ? 1 : 0)\n");
-  git("add", "-A"); git("commit", "-m", "synthetic correction base");
+type CorrectionCheckpoint = Pick<ReturnType<ReturnType<typeof createWorkflowService>["detail"]>, "workflow" | "stages" | "decisions" | "review_receipts" | "lineage">;
+type CorrectionPosition = { ordinal: number; stage: CorrectionProgressStage };
+function observeCorrection<T>(progress: CorrectionProgress | undefined, position: CorrectionPosition, operation: CorrectionProgressOperation, action: () => T, lane: CorrectionProgressLane = "fixture"): T {
+  if (!progress) return action();
+  progress.record(lane, position.ordinal, position.stage, operation, "begin");
+  try { const result = action(); progress.record(lane, position.ordinal, position.stage, operation, "return"); return result; }
+  catch (error) { progress.record(lane, position.ordinal, position.stage, operation, "throw"); throw error; }
+}
+function observeCorrectionAsync<T>(progress: CorrectionProgress | undefined, position: CorrectionPosition, operation: CorrectionProgressOperation, action: () => Promise<T>): Promise<T> {
+  if (!progress) return action();
+  progress.record("fixture", position.ordinal, position.stage, operation, "begin");
+  let pending: Promise<T>;
+  try { pending = action(); } catch (error) { progress.record("fixture", position.ordinal, position.stage, operation, "throw"); throw error; }
+  return pending.then((result) => { progress.record("fixture", position.ordinal, position.stage, operation, "return"); return result; },
+    (error) => { progress.record("fixture", position.ordinal, position.stage, operation, "throw"); throw error; });
+}
+function readCorrectionCheckpoint(workflowId: string, read: () => ReturnType<typeof readWorkflowDocument> = readWorkflowDocument): CorrectionCheckpoint {
+  const document = read(), workflow = document.workflows[workflowId];
+  if (!workflow || workflow.id !== workflowId) throw new Error("Synthetic correction checkpoint workflow is unavailable");
+  return { workflow, stages: Object.values(document.stages).filter((entry) => entry.workflow_id === workflowId),
+    decisions: Object.values(document.decisions).filter((entry) => entry.workflow_id === workflowId),
+    review_receipts: Object.values(document.review_receipts).filter((entry) => entry.workflow_id === workflowId),
+    lineage: workflow.lineage_id ? document.lineages[workflow.lineage_id] : null };
+}
+const correctionBaseFiles = Object.freeze({
+  "AGENTS.md": workflowFixtureProjectRules,
+  "src/value.txt": "base\n",
+  "verify.mjs": "import {readFileSync} from 'node:fs'; process.exit(readFileSync('src/value.txt','utf8').includes('broken') ? 1 : 0)\n",
+});
+
+async function correctionFixture(options: { enabled?: boolean; findingPath?: string; repeatFinding?: boolean; protectedEdit?: boolean; failedVerification?: boolean; correctionTokenCap?: number; qaFinding?: boolean; rootTokenCap?: number; stopBeforeReview?: boolean; checkpointSetup?: boolean } = {}, progress?: CorrectionProgress) {
+  let position: CorrectionPosition = { ordinal: 0, stage: "setup" }, advances = 0;
+  const observe = <T,>(operation: CorrectionProgressOperation, action: () => T) => observeCorrection(progress, position, operation, action);
+  const observeAsync = <T,>(operation: CorrectionProgressOperation, action: () => Promise<T>) => observeCorrectionAsync(progress, position, operation, action);
+  const mark = (operation: CorrectionProgressOperation, edge: CorrectionProgressEdge) => progress?.record("fixture", position.ordinal, position.stage, operation, edge);
+  const taskPositions = new Map<string, CorrectionPosition>();
+  const tracer: Tracer = { startSpan: (name, attributes) => {
+    const taskId = attributes?.task_id, bound = typeof taskId === "string" ? taskPositions.get(taskId) : undefined;
+    if (!progress || name !== "task.attempt" || !bound) return { context: null, addEvent: () => {}, end: () => {} };
+    progress.record("attempt", bound.ordinal, bound.stage, "task-attempt", "begin");
+    let ended = false;
+    return { context: null, addEvent: (event) => {
+      if (ended) return;
+      if (event === "task.started" || event === "policy.evaluated" || event === "worktree.created" || event === "git.diff" || event === "verification.finished" || event === "task.finished")
+        progress.record("attempt", bound.ordinal, bound.stage, event, "milestone");
+    }, end: () => { if (!ended) { ended = true; progress.record("attempt", bound.ordinal, bound.stage, "task-attempt", "return"); } } };
+  } };
+  const repo = join(root, "projects/alpha");
+  const runGit = (repository: string, controlRoot: string, args: string[]) =>
+    execFileSync("git", managedGitArgs(["-C", repository, ...args], controlRoot), { env: localGitEnvironment(), windowsHide: true, stdio: "pipe" });
+  const git = (...args: string[]) => observe("drift-git", () => runGit(repo, root, args).toString().trim());
+  mkdirSync(join(repo, "src"));
+  writeFileSync(join(repo, "src/value.txt"), correctionBaseFiles["src/value.txt"], { flag: "wx", mode: 0o644 });
+  writeFileSync(join(repo, "verify.mjs"), correctionBaseFiles["verify.mjs"], { flag: "wx", mode: 0o644 });
+  observe("setup-git", () => correctionGitBaselines.attach({
+    caseRoot: root, repository: repo, key: "workflow-correction-main", files: correctionBaseFiles,
+    initialize: ({ repository, root: seedRoot }) => {
+      runGit(repository, seedRoot, ["init", "-b", "main"]);
+      runGit(repository, seedRoot, ["config", "user.email", "fixture@example.invalid"]);
+      runGit(repository, seedRoot, ["config", "user.name", "Synthetic fixture"]);
+      runGit(repository, seedRoot, ["add", "-A"]);
+      runGit(repository, seedRoot, ["commit", "-m", "synthetic correction base"]);
+    },
+  }));
   if (options.correctionTokenCap) {
     const path = join(root, "registry/workflow-policy.yml"), policy = parse(readFileSync(path, "utf8"));
     policy.correction_budget.max_total_tokens = options.correctionTokenCap; writeFileSync(path, JSON.stringify(policy));
   }
-  const issues = createIssueService(root), proposed = issues.create({ project_id: "alpha", title: "Synthetic correction workflow", expected_outcome: "Observable synthetic result",
+  const issues = createIssueService(root), proposed = observe("issue-create", () => issues.create({ project_id: "alpha", title: "Synthetic correction workflow", expected_outcome: "Observable synthetic result",
     acceptance_criteria: ["Observable acceptance", "Retain the exact authorized scope"], assigned_role_id: "backend-engineer", plan: ["Change only authorized paths"], next_action: "Review the exact candidate", criticality: "high", classification_inputs: { requires_migration: true },
-    authorized_scope: { expected_outcome: "Observable synthetic result", acceptance_criteria: ["Observable acceptance", "Retain the exact authorized scope"], allowed_path_patterns: ["**"], excluded_path_patterns: ["outside/**"], allowed_change_categories: ["implementation", "migration"], explicit_exclusions: [] } });
-  issueId = proposed.id; issues.authorize(issueId, proposed.revision, "synthetic-correction-scope-human");
+    authorized_scope: { expected_outcome: "Observable synthetic result", acceptance_criteria: ["Observable acceptance", "Retain the exact authorized scope"], allowed_path_patterns: ["**"], excluded_path_patterns: ["outside/**"], allowed_change_categories: ["implementation", "migration"], explicit_exclusions: [] } }));
+  issueId = proposed.id; observe("issue-authorize", () => issues.authorize(issueId, proposed.revision, "synthetic-correction-scope-human"));
   let workflowId = "";
   const controller = new WorkflowOrchestrator(root), executor: AgentExecutor = { run: vi.fn(async (input) => {
+    const bound = [...taskPositions.values()].at(-1) ?? position;
+    return observeCorrection(progress, bound, "executor", () => {
     const document = readWorkflowDocument(), owner = document.workflows[workflowId]!, stage = document.stages[owner.current_stage_id!]!;
     const base = { schema_version: 1 as const, status: "completed" as const, summary: `Synthetic ${stage.kind}`, evidence_ids: [] as string[], unresolved_questions: [], risks: [], recommended_next_action: "Inspect the exact next gate", requested_decision: null };
     let structuredOutput: unknown;
@@ -569,7 +910,7 @@ async function correctionFixture(options: { enabled?: boolean; findingPath?: str
         const issueBytes = readFileSync(join(state, "issues/issues.json"));
         expect(() => issues.recordCandidate({ issueId, taskId: stage.task_id!, executionId: stage.execution_id!, repositoryId: "alpha", scopeRevision: 1,
           baseRevision: "f".repeat(40), candidateRevision: "e".repeat(40), changedPaths: ["src/value.txt"] })).toThrow(/exact prior candidate/);
-        expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes);
+        expect(readFileSync(join(state, "issues/issues.json")).equals(issueBytes)).toBe(true);
       }
       writeFileSync(join(input.cwd, "src/value.txt"), stage.kind === "implementation" ? "candidate\n" : options.failedVerification ? "broken\n" : "corrected\n");
       if (stage.kind === "correction" && options.protectedEdit) { mkdirSync(join(input.cwd, "schemas")); writeFileSync(join(input.cwd, "schemas/changed.json"), "{}\n"); }
@@ -585,70 +926,117 @@ async function correctionFixture(options: { enabled?: boolean; findingPath?: str
     }
     return { finalText: "Never promote raw fallback", structuredOutput, threadId: `synthetic-${stage.id}`, turnId: `synthetic-${stage.id}-turn`,
       usage: { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 3 } };
+    }, "attempt");
   }) };
-  worker = new TaskOrchestrator({ repoRoot: root, workflows: controller, executor, maxConcurrent: 1 });
+  worker = new TaskOrchestrator({ repoRoot: root, workflows: controller, executor, maxConcurrent: 1, ...(progress ? { tracer } : {}) });
   const request = { template_id: "implementation", template_version: 1, project_id: "alpha", issue_id: issueId, expected_revision: readIssueDocument().issues[issueId]!.revision,
     selected_agents: { planner: "tech-lead", "software-engineer": "backend-engineer", reviewer: "reality-checker", "qa-evaluator": "qa-reviewer" }, correction_enabled: options.enabled ?? true,
     ...(options.rootTokenCap ? { budget: { ...parse(readFileSync(join(root, "registry/workflow-policy.yml"), "utf8")).default_budget, max_total_tokens: options.rootTokenCap } } : {}) };
-  const preview = controller.service.preview(request); expect(preview.allowed, preview.blocked_reasons.join("; ")).toBe(true);
-  const started = controller.service.start({ request, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-correction-human" }); workflowId = started.workflow.id;
-  const detail = () => controller.service.detail(workflowId);
-  const advance = async (kind: string) => {
-    const stage = detail().stages.at(-1)!; expect(stage.kind).toBe(kind); expect(stage.status).toBe("queued");
-    expect(await worker!.runOnce()).toBe(1);
-    await vi.waitFor(() => expect(readTask(stage.task_id!)?.lifecycle).toBe("finished"), { timeout: 15000 }); controller.reconcile(); return detail();
+  const preview = observe("preview", () => controller.service.preview(request)); expect(preview.allowed, preview.blocked_reasons.join("; ")).toBe(true);
+  const started = observe("start", () => controller.service.start({ request, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-correction-human" })); workflowId = started.workflow.id;
+  const profileDetails = process.env.SURTEC_TEST_DETAIL_PROFILE === "1";
+  let detailCalls = 0;
+  const detail = () => { if (profileDetails) detailCalls++; return controller.service.detail(workflowId); };
+  const checkpoint = () => observe("checkpoint", () => readCorrectionCheckpoint(workflowId));
+  let initialCheckpoint: CorrectionCheckpoint | undefined, initialCheckpointBytes: string | undefined;
+  if (options.checkpointSetup) {
+    mark("checkpoint-contract", "begin");
+    const read = vi.fn(() => readWorkflowDocument()), projected = readCorrectionCheckpoint(workflowId, read);
+    expect(read).toHaveBeenCalledOnce();
+    expect(Object.keys(projected)).toEqual(["workflow", "stages", "decisions", "review_receipts", "lineage"]);
+    expect(projected).toEqual({ workflow: started.workflow, stages: started.stages, decisions: started.decisions, review_receipts: started.review_receipts, lineage: started.lineage });
+    expect(() => readCorrectionCheckpoint("synthetic-checkpoint-missing", () => read.mock.results[0]!.value)).toThrow("Synthetic correction checkpoint workflow is unavailable");
+    initialCheckpoint = projected; initialCheckpointBytes = JSON.stringify(projected);
+    const discarded = checkpoint(); expect(discarded).toEqual(projected); expect(discarded.workflow).not.toBe(projected.workflow);
+    discarded.workflow.next_action = "Synthetic discarded observation mutation";
+    expect(checkpoint()).toEqual(projected); expect(JSON.stringify(projected)).toBe(initialCheckpointBytes);
+    mark("checkpoint-contract", "return");
+  }
+  const advanceWithCheckpoint = async <T,>(kind: Exclude<CorrectionProgressStage, "setup">, readCheckpoint: () => T): Promise<T> => {
+    position = { ordinal: ++advances, stage: kind };
+    const stage = observe("select-stage", () => { const selected = selectQueuedStage(workflowId, kind); expect(selected.kind).toBe(kind); expect(selected.status).toBe("queued"); return selected; });
+    position = { ordinal: stage.ordinal, stage: kind }; if (progress) taskPositions.set(stage.task_id!, position);
+    expect(await observeAsync("run-once", () => worker!.runOnce())).toBe(1);
+    await observeAsync("wait-terminal", () => vi.waitFor(() => {
+      // The attempt finalizer releases ownership and reconciles synchronously before the next observation.
+      if (worker!.activeCount !== 0) throw new Error("Synthetic workflow attempt is still active");
+      expect(readTask(stage.task_id!)?.lifecycle).toBe("finished");
+    }, { timeout: 15000 }));
+    return readCheckpoint();
   };
-  await advance("planning");
-  const plan = detail().decisions[0]!;
-  controller.service.decide(workflowId, { expected_revision: detail().workflow.revision, expected_issue_revision: plan.expected_issue_revision, decision_id: plan.id,
-    resource_fingerprint: plan.resource_fingerprint, decision: "approve", approval_id: "synthetic-plan-human", rationale: "Exact unchanged bounded plan", confirm: true }); controller.reconcile();
-  await advance("implementation"); expect(detail().workflow.status, detail().workflow.blocked_reason ?? "").toBe("running");
-  const original = detail().workflow.candidate!;
-  if (!options.stopBeforeReview) { await advance("review"); expect(detail().stages.at(-1)!.kind).toBe("qa"); expect(detail().lineage!.corrections_consumed).toBe(0); }
-  return { controller, executor, workflowId, original, detail, advance, git, repo };
+  type StageKind = Exclude<CorrectionProgressStage, "setup">;
+  const advance = (kind: StageKind) => advanceWithCheckpoint(kind, detail);
+  const advanceCheckpoint = (kind: StageKind) => advanceWithCheckpoint(kind, checkpoint);
+  const advanceStage = (kind: StageKind) => advanceWithCheckpoint(kind, () => {});
+  const planned = await advanceCheckpoint("planning"), plan = planned.decisions[0]!;
+  if (options.checkpointSetup) {
+    expect(JSON.stringify(initialCheckpoint)).toBe(initialCheckpointBytes);
+    const current = checkpoint(); expect(current).toEqual(planned);
+    expect(current.workflow.revision).toBeGreaterThan(initialCheckpoint!.workflow.revision); expect(current.workflow).not.toBe(initialCheckpoint!.workflow);
+  }
+  observe("plan-decision", () => controller.service.decide(workflowId, { expected_revision: planned.workflow.revision, expected_issue_revision: plan.expected_issue_revision, decision_id: plan.id,
+    resource_fingerprint: plan.resource_fingerprint, decision: "approve", approval_id: "synthetic-plan-human", rationale: "Exact unchanged bounded plan", confirm: true })); observe("reconcile", () => controller.reconcile());
+  const implemented = await advanceCheckpoint("implementation"); expect(implemented.workflow.status, implemented.workflow.blocked_reason ?? "").toBe("running");
+  const original = implemented.workflow.candidate!;
+  if (!options.stopBeforeReview) { const reviewed = await advanceCheckpoint("review"); expect(reviewed.stages.at(-1)!.kind).toBe("qa"); expect(reviewed.lineage!.corrections_consumed).toBe(0); }
+  return { controller, executor, workflowId, original, advance, checkpoint, advanceCheckpoint, advanceStage, observe, observeAsync, mark, git, repo, get detailCalls() { return detailCalls; } };
 }
 
 describe("T010 one bounded correction under existing authority", () => {
   it.each([false, true])("consumes once before queueing, uses the prior candidate and requires fresh verification and both reviews QA-request=%s", async (qaFinding) => {
-    const f = await correctionFixture({ qaFinding }); await f.advance("qa");
-    const reserved = f.detail(), stage = reserved.stages.at(-1)!;
+    const progress = createCorrectionProgressEmitter(qaFinding ? "qa-true" : "qa-false", (line) => { console.log(line); }, correctionCaseId);
+    correctionProgress = progress; progress.record("fixture", 0, "setup", "case", "begin");
+    const f = await correctionFixture({ qaFinding, checkpointSetup: true }, progress), reserved = await f.advanceCheckpoint("qa"), stage = reserved.stages.at(-1)!;
+    f.mark("assertions", "begin");
     expect(reserved.workflow.status, reserved.workflow.blocked_reason ?? "").toBe("running"); expect(stage.kind).toBe("correction");
     expect(reserved.lineage).toMatchObject({ corrections_consumed: 1, consumed_stage_id: stage.id });
-    expect(readIssueDocument().issues[issueId]!.status).toBe("working"); expect(readIssueDocument().candidates[f.original.candidate_id]!.invalidated_at).toBeNull();
-    const bytes = readFileSync(join(state, "workflows/workflows.json")); f.controller.reconcile(); new WorkflowOrchestrator(root).reconcile();
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(bytes); expect(listTasks()).toHaveLength(5);
+    const issueCheckpoint = readIssueDocument();
+    expect(issueCheckpoint.issues[issueId]!.status).toBe("working"); expect(issueCheckpoint.candidates[f.original.candidate_id]!.invalidated_at).toBeNull();
+    const bytes = readFileSync(join(state, "workflows/workflows.json")); f.observe("idempotence", () => { f.controller.reconcile(); new WorkflowOrchestrator(root).reconcile(); });
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(bytes)).toBe(true); expect(listTasks()).toHaveLength(5);
     writeFileSync(join(f.repo, "source-only.txt"), "unrelated HEAD\n"); f.git("add", "-A"); f.git("commit", "-m", "synthetic source HEAD drift");
-    await f.advance("correction"); expect(f.detail().workflow.status, f.detail().workflow.blocked_reason ?? "").toBe("running"); const corrected = f.detail().workflow.candidate!;
+    f.mark("assertions", "return");
+    const correctedFacts = await f.advanceCheckpoint("correction"); expect(correctedFacts.workflow.status, correctedFacts.workflow.blocked_reason ?? "").toBe("running"); const corrected = correctedFacts.workflow.candidate!;
+    f.mark("assertions", "begin");
     expect(corrected.base_revision).toBe(f.original.candidate_revision); expect(corrected.task_id).not.toBe(f.original.task_id);
     expect(corrected.candidate_id).not.toBe(f.original.candidate_id); expect(corrected.testing_evidence_fingerprint).not.toBe(f.original.testing_evidence_fingerprint);
     expect(readIssueDocument().candidates[f.original.candidate_id]!.invalidated_at).not.toBeNull();
-    expect(f.detail().lineage!.candidate_ids).toEqual([f.original.candidate_id, corrected.candidate_id]);
-    expect(f.detail().review_receipts.every((receipt) => receipt.candidate.candidate_id === f.original.candidate_id)).toBe(true);
-    await f.advance("review"); await f.advance("qa");
-    const reviewed = f.detail(); expect(reviewed.workflow.status, reviewed.workflow.blocked_reason ?? "").toBe("waiting-human");
+    expect(correctedFacts.lineage!.candidate_ids).toEqual([f.original.candidate_id, corrected.candidate_id]);
+    expect(correctedFacts.review_receipts.every((receipt) => receipt.candidate.candidate_id === f.original.candidate_id)).toBe(true);
+    f.mark("assertions", "return");
+    await f.advanceStage("review"); const reviewed = await f.advanceCheckpoint("qa");
+    f.mark("assertions", "begin");
+    expect(reviewed.workflow.status, reviewed.workflow.blocked_reason ?? "").toBe("waiting-human");
     expect(reviewed.review_receipts.filter((receipt) => receipt.candidate.candidate_id === corrected.candidate_id).map((receipt) => receipt.role_id)).toEqual(["reviewer", "qa-evaluator"]);
     expect(readIssueDocument().issues[issueId]!.status).toBe("ready-for-review"); expect(reviewed.decisions.at(-1)!.kind).toBe("candidate-acceptance");
     expect(reviewed.workflow.counters).toMatchObject({ tasks: 7, attempts: 7, total_tokens: 21, accounting_complete: true });
     expect(f.executor.run).toHaveBeenCalledTimes(7); expect(listTasks()).toHaveLength(7);
-    const finalBytes = readFileSync(join(state, "workflows/workflows.json")); new WorkflowOrchestrator(root).reconcile();
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(finalBytes); expect(await worker!.runOnce()).toBe(0);
-    const decision = reviewed.decisions.at(-1)!;
-    f.controller.service.decide(f.workflowId, { expected_revision: reviewed.workflow.revision, expected_issue_revision: decision.expected_issue_revision, decision_id: decision.id,
-      resource_fingerprint: decision.resource_fingerprint, decision: "approve", approval_id: "synthetic-final-human", rationale: "All exact current criteria reviewed", confirmed_criteria: ["Observable acceptance", "Retain the exact authorized scope"], confirm: true });
-    expect(f.detail().workflow.status).toBe("completed"); expect(f.detail().lineage!.corrections_consumed).toBe(1);
+    const finalBytes = readFileSync(join(state, "workflows/workflows.json")); f.observe("idempotence", () => new WorkflowOrchestrator(root).reconcile());
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(finalBytes)).toBe(true); expect(await f.observeAsync("run-once", () => worker!.runOnce())).toBe(0);
+    f.mark("assertions", "return");
+    const current = f.checkpoint(), decision = current.decisions.at(-1)!;
+    f.observe("final-decision", () => f.controller.service.decide(f.workflowId, { expected_revision: current.workflow.revision, expected_issue_revision: decision.expected_issue_revision, decision_id: decision.id,
+      resource_fingerprint: decision.resource_fingerprint, decision: "approve", approval_id: "synthetic-final-human", rationale: "All exact current criteria reviewed", confirmed_criteria: ["Observable acceptance", "Retain the exact authorized scope"], confirm: true }));
+    const accepted = f.checkpoint(); expect(accepted.workflow.status).toBe("completed"); expect(accepted.lineage!.corrections_consumed).toBe(1);
+    if (process.env.SURTEC_TEST_DETAIL_PROFILE === "1") console.info(`WORKFLOW_DETAIL_PROFILE ${JSON.stringify({
+      variant: qaFinding ? "qa-true" : "qa-false", phase: "after-final-assertions", test_owned_detail_calls: f.detailCalls,
+    })}`);
+    progress.record("fixture", 0, "setup", "case", "return");
   }, 90000);
 
   it.each([{ enabled: false }, { findingPath: "schemas/authority.json" }, { findingPath: "outside/value.txt" }])("denies unavailable correction authority without a new task %#", async (options) => {
-    const f = await correctionFixture(options); await f.advance("qa");
-    expect(f.detail().workflow.status).toBe("needs-decision"); expect(f.detail().lineage!.corrections_consumed).toBe(0);
-    expect(f.detail().workflow.candidate).toEqual(f.original); expect(readIssueDocument().issues[issueId]!.status).toBe("checking");
+    const f = await correctionFixture({ ...options, checkpointSetup: true }), detail = await f.advanceCheckpoint("qa");
+    expect(detail.workflow.status).toBe("needs-decision"); expect(detail.lineage!.corrections_consumed).toBe(0);
+    expect(detail.workflow.candidate).toEqual(f.original); expect(readIssueDocument().issues[issueId]!.status).toBe("checking");
     expect(await worker!.runOnce()).toBe(0); expect(f.executor.run).toHaveBeenCalledTimes(4); expect(listTasks()).toHaveLength(4);
   }, 90000);
 
   it.each([{ protectedEdit: true }, { failedVerification: true }, { repeatFinding: true }, { correctionTokenCap: 3 }])("retains consumption and stops after unsuccessful correction %#", async (options) => {
-    const f = await correctionFixture(options); await f.advance("qa"); await f.advance("correction");
-    if (options.repeatFinding) await f.advance("review");
-    const detail = f.detail(); expect(detail.workflow.status).toBe("needs-decision"); expect(detail.lineage!.corrections_consumed).toBe(1);
+    const f = await correctionFixture({ ...options, checkpointSetup: true });
+    await f.advanceStage("qa");
+    if (options.repeatFinding) await f.advanceStage("correction");
+    const detail = await f.advanceCheckpoint(options.repeatFinding ? "review" : "correction");
+    expect(detail.workflow.status).toBe("needs-decision"); expect(detail.lineage!.corrections_consumed).toBe(1);
     if (options.correctionTokenCap) {
       expect(detail.workflow.counters.total_tokens).toBeLessThan(detail.workflow.budget.max_total_tokens);
       expect(detail.workflow.blocked_reason).toContain("budget");
@@ -658,8 +1046,8 @@ describe("T010 one bounded correction under existing authority", () => {
     expect(() => worker!.retry(detail.stages.at(-1)!.task_id!)).toThrow(/controller/);
     const bytes = readFileSync(join(state, "workflows/workflows.json"));
     expect(() => mutateWorkflowDocument((document) => { document.lineages[detail.workflow.lineage_id!]!.corrections_consumed = 0; })).toThrow();
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(bytes); new WorkflowOrchestrator(root).reconcile();
-    expect(f.detail().lineage!.corrections_consumed).toBe(1);
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(bytes)).toBe(true); new WorkflowOrchestrator(root).reconcile();
+    expect(f.checkpoint().lineage!.corrections_consumed).toBe(1);
   }, 90000);
 
   it("retains consumption through partial admission, durable cancellation and reconstruction", async () => {
@@ -667,21 +1055,20 @@ describe("T010 one bounded correction under existing authority", () => {
     const notify = vi.fn(), makeTask = vi.fn(() => { throw new Error("synthetic failure before task persistence"); });
     const service = createWorkflowService(root, { createTask: makeTask, execution: { available: () => true, notify, cancelTask: vi.fn() } });
     vi.spyOn(f.controller.service, "admitCorrection").mockImplementation(service.admitCorrection);
-    await f.advance("qa");
-    const detail = f.detail(); expect(detail.workflow.status).toBe("needs-decision"); expect(detail.lineage!.corrections_consumed).toBe(1);
+    const detail = await f.advanceCheckpoint("qa"); expect(detail.workflow.status).toBe("needs-decision"); expect(detail.lineage!.corrections_consumed).toBe(1);
     expect(detail.stages.at(-1)!.status).toBe("reserved"); expect(listTasks()).toHaveLength(4); expect(makeTask).toHaveBeenCalledOnce(); expect(notify).not.toHaveBeenCalled();
     service.cancel(f.workflowId, { expected_revision: detail.workflow.revision, expected_issue_revision: readIssueDocument().issues[issueId]!.revision });
-    new WorkflowOrchestrator(root).reconcile(); expect(f.detail().workflow.status).toBe("cancelled"); expect(f.detail().lineage!.corrections_consumed).toBe(1);
+    new WorkflowOrchestrator(root).reconcile(); const cancelled = f.checkpoint(); expect(cancelled.workflow.status).toBe("cancelled"); expect(cancelled.lineage!.corrections_consumed).toBe(1);
     expect(await worker!.runOnce()).toBe(0); expect(f.executor.run).toHaveBeenCalledTimes(4);
   }, 90000);
 });
 
 describe("T013 correction completion and exhausted-authority recovery", () => {
   it("seals a completed correction after a lost callback and reserves its exact review successor only once across restart", async () => {
-    const f = await correctionFixture(); await f.advance("qa");
-    const reserved = f.detail(), correction = reserved.stages.at(-1)!, callback = vi.spyOn(f.controller, "reconcile").mockImplementation(() => {});
-    await f.advance("correction"); callback.mockRestore();
-    expect(f.detail().stages.at(-1)!.status).toBe("running"); expect(f.detail().workflow.candidate).toEqual(f.original);
+    const f = await correctionFixture(), reserved = await f.advanceCheckpoint("qa");
+    const correction = reserved.stages.at(-1)!, callback = vi.spyOn(f.controller, "reconcile").mockImplementation(() => {});
+    await f.advanceStage("correction"); callback.mockRestore();
+    const unreconciled = f.checkpoint(); expect(unreconciled.stages.at(-1)!.status).toBe("running"); expect(unreconciled.workflow.candidate).toEqual(f.original);
     const terminal = readTask(correction.task_id!)!; expect(terminal).toMatchObject({ lifecycle: "finished", outcome: "completed" });
     expect(terminal.orchestration!.lease).toBeNull(); expect(terminal.testing_evidence!.candidate!.base_revision).toBe(f.original.candidate_revision);
     const restarted = new WorkflowOrchestrator(root); restarted.reconcile();
@@ -694,19 +1081,20 @@ describe("T013 correction completion and exhausted-authority recovery", () => {
     expect(reconciled.accounting).toHaveLength(5); expect(reconciled.accounting.every((charge) => charge.usage_complete)).toBe(true);
     const workflowBytes = readFileSync(join(state, "workflows/workflows.json")), issueBytes = readFileSync(join(state, "issues/issues.json")), identities = listTasks().map((task) => task.envelope.id).sort();
     for (const duplicate of [f.controller, restarted, new WorkflowOrchestrator(root)]) duplicate.reconcile();
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes);
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true); expect(readFileSync(join(state, "issues/issues.json")).equals(issueBytes)).toBe(true);
     expect(listTasks().map((task) => task.envelope.id).sort()).toEqual(identities); expect(f.executor.run).toHaveBeenCalledTimes(5);
     expect(() => restarted.service.admitCorrection(f.workflowId)).toThrow(/current/);
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes);
-    await f.advance("review"); await f.advance("qa");
-    expect(f.detail().workflow.status).toBe("waiting-human"); expect(f.detail().decisions.at(-1)!.kind).toBe("candidate-acceptance");
-    expect(f.detail().workflow.counters).toMatchObject({ tasks: 7, attempts: 7, total_tokens: 21, accounting_complete: true });
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true);
+    await f.advanceStage("review"); const reviewed = await f.advanceCheckpoint("qa");
+    expect(reviewed.workflow.status).toBe("waiting-human"); expect(reviewed.decisions.at(-1)!.kind).toBe("candidate-acceptance");
+    expect(reviewed.workflow.counters).toMatchObject({ tasks: 7, attempts: 7, total_tokens: 21, accounting_complete: true });
     expect(f.executor.run).toHaveBeenCalledTimes(7);
   }, 90000);
 
   it("does not replay an exhausted second correction request through duplicate ticks, a fresh worker or explicit recovery", async () => {
-    const f = await correctionFixture({ repeatFinding: true }); await f.advance("qa"); await f.advance("correction"); await f.advance("review");
-    const exhausted = f.detail(), current = exhausted.stages.at(-1)!;
+    const f = await correctionFixture({ repeatFinding: true });
+    await f.advanceStage("qa"); await f.advanceStage("correction"); const exhausted = await f.advance("review");
+    const current = exhausted.stages.at(-1)!;
     expect(exhausted.workflow.status).toBe("needs-decision"); expect(exhausted.workflow.blocked_reason).toContain("single correction");
     expect(exhausted.lineage!.corrections_consumed).toBe(1); expect(exhausted.workflow.counters).toMatchObject({ tasks: 6, attempts: 6, total_tokens: 18, accounting_complete: true });
     const workflowBytes = readFileSync(join(state, "workflows/workflows.json")), issueBytes = readFileSync(join(state, "issues/issues.json")), identities = listTasks().map((task) => task.envelope.id).sort();
@@ -715,10 +1103,12 @@ describe("T013 correction completion and exhausted-authority recovery", () => {
     for (const duplicate of [f.controller, restarted, new WorkflowOrchestrator(root)]) duplicate.reconcile();
     expect(await worker.runOnce()).toBe(0); expect(() => worker!.retry(current.task_id!)).toThrow(/controller/);
     expect(() => restarted.service.admitCorrection(f.workflowId)).toThrow(/current/);
-    expect(() => restarted.service.recover(f.workflowId, { expected_revision: exhausted.workflow.revision, expected_issue_revision: readIssueDocument().issues[issueId]!.revision })).toThrow(/provable/);
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes);
+    const recoveryFacts = restarted.service.detail(f.workflowId);
+    expect(() => restarted.service.recover(f.workflowId, { expected_revision: recoveryFacts.workflow.revision, expected_issue_revision: readIssueDocument().issues[issueId]!.revision })).toThrow(/provable/);
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true); expect(readFileSync(join(state, "issues/issues.json")).equals(issueBytes)).toBe(true);
     expect(listTasks().map((task) => task.envelope.id).sort()).toEqual(identities); expect(f.executor.run).toHaveBeenCalledTimes(6);
-    expect(restarted.service.detail(f.workflowId).workflow.candidate).toEqual(exhausted.workflow.candidate);
-    expect(restarted.service.detail(f.workflowId).review_receipts).toEqual(exhausted.review_receipts); expect(restarted.service.detail(f.workflowId).accounting).toEqual(exhausted.accounting);
+    const retained = restarted.service.detail(f.workflowId);
+    expect(retained.workflow.candidate).toEqual(exhausted.workflow.candidate);
+    expect(retained.review_receipts).toEqual(exhausted.review_receipts); expect(retained.accounting).toEqual(exhausted.accounting);
   }, 90000);
 });

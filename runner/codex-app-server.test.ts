@@ -3,6 +3,8 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { isCompleteAgentUsage, type AgentEvent, type AgentRunInput, type AgentUsage } from "./agent-executor";
 import { CodexAppServerClient, CodexProtocolError, type AppServerProcess } from "./codex-app-server";
+import { validateTerminalUsageEvidence } from "./terminal-usage-evidence";
+import { GOVERNED_RUNTIME_CONTEXT_PROFILE, type RuntimeContextProfileId } from "./runtime-context-profile";
 
 type WireMessage = Record<string, unknown>;
 
@@ -50,6 +52,112 @@ class FakeAppServer extends EventEmitter implements AppServerProcess {
   }
 }
 
+function terminalFixture(options: { phase?: string | null; beforeUsage?: WireMessage[]; afterUsage?: WireMessage[];
+  beforeTerminal?: WireMessage[]; shutdown?: (server: FakeAppServer, abort: AbortController) => void; resume?: boolean;
+  omitFinal?: boolean; omitPhase?: boolean; sink?: (event: AgentEvent) => void | Promise<void> } = {}) {
+  const abort = new AbortController(), events: AgentEvent[] = [];
+  const server = new FakeAppServer((message, current) => {
+    if (message.method === "initialize") current.send({ id: message.id, result: {} });
+    if (message.method === "thread/start" || message.method === "thread/resume") current.send({ id: message.id, result: { thread: { id: "thread-1" } } });
+    if (message.method === "turn/start") {
+      current.send({ id: message.id, result: { turn: { id: "turn-1" } } });
+      queueMicrotask(() => {
+        for (const value of options.beforeUsage ?? []) current.send(value);
+        if (!options.omitFinal) current.send({ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { id: "item-1", type: "agentMessage", text: JSON.stringify(report), ...(options.omitPhase ? {} : { phase: options.phase === undefined ? "final_answer" : options.phase }) } } });
+        current.send(usageNotification(usagePayload()));
+        for (const value of [...(options.afterUsage ?? []), ...(options.beforeTerminal ?? [])]) current.send(value);
+        current.send(completedTurn());
+      });
+    }
+  });
+  server.stdin.on("end", () => {
+    if (options.shutdown) options.shutdown(server, abort);
+    else { server.emit("exit", 0, null); server.stderr.end(); server.stdout.end(); }
+  });
+  const supplied = input({ contextFingerprint: "a".repeat(64), executionIdentity: { taskId: "T-fixture", executionId: "run-fixture" }, ...(options.resume ? { threadId: "thread-1", resumeContextFingerprint: "a".repeat(64) } : {}) });
+  return { server, abort, events, supplied, result: new CodexAppServerClient(server).run(supplied, (event) => { events.push(event); return options.sink?.(event); }, abort.signal) };
+}
+
+describe("fresh operational terminal proof", () => {
+  it("requires both EOFs after native exit and emits a frozen exact receipt", async () => {
+    const fixture = terminalFixture(); const result = await fixture.result;
+    expect(result.usageComplete).toBe(true); expect(fixture.server.killed).toBe(false);
+    expect(validateTerminalUsageEvidence(result.terminalUsageEvidence, { ...fixture.supplied.executionIdentity!, contextFingerprint: fixture.supplied.contextFingerprint!, ...result })).toEqual(result.terminalUsageEvidence);
+    expect(fixture.events.some((event) => event.type === "usage-unknown")).toBe(false);
+    expect(JSON.stringify(fixture.server.received)).not.toContain("executionIdentity");
+  });
+  it.each([null, "commentary", "final"])("keeps unsupported final phase %s unknown", async (phase) => {
+    const fixture = terminalFixture({ phase }); expect((await fixture.result).usageComplete).toBe(false);
+    expect(fixture.server.killed).toBe(true);
+  });
+  it("keeps resumed usage a lower bound even with a correct final phase", async () => {
+    expect((await terminalFixture({ resume: true }).result).usageComplete).toBe(false);
+  });
+  it.each([{ omitFinal: true }, { omitPhase: true }])("rejects absent final evidence %#", async (options) => {
+    expect((await terminalFixture(options).result).usageComplete).toBe(false);
+  });
+  it("keeps a pending approval handler unknown and settles that owned handler", async () => {
+    let release!: () => void; const held = new Promise<void>((resolve) => { release = resolve; });
+    const fixture = terminalFixture({ beforeUsage: [{ id: 99, method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", turnId: "turn-1", command: "unapproved" } }],
+      sink(event) { if (event.type === "approval") return held; } });
+    try { expect((await fixture.result).usageComplete).toBe(false); }
+    finally { release(); await new Promise<void>((resolve) => setImmediate(resolve)); }
+  });
+  it("rejects a failing event sink without attestation", async () => {
+    const fixture = terminalFixture({ sink(event) { if (event.type === "usage") throw new Error("synthetic sink failure"); } });
+    await expect(fixture.result).rejects.toThrow("synthetic sink failure");
+  });
+  const pending = { method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { id: "open-tool", type: "commandExecution" } } };
+  it.each([
+    [pending],
+    [usageNotification(usagePayload(null))],
+    [usageNotification(usagePayload({ ...observedUsage, totalTokens: observedUsage.totalTokens + 1 }))],
+    [{ method: "item/completed", params: { threadId: "thread-1", turnId: "turn-1", item: { id: "later-tool", type: "commandExecution" } } }],
+  ].map((afterUsage, index) => ({ afterUsage, index })))("rejects incomplete or contradictory pre-terminal activity $index", async ({ afterUsage }) => {
+    const fixture = terminalFixture({ afterUsage }); const result = await fixture.result;
+    expect(result.usageComplete).toBe(false); expect(result.usageHighWater).toEqual(internalUsage);
+  });
+  it("does not erase an earlier invalid sample with a later valid one", async () => {
+    expect((await terminalFixture({ beforeUsage: [usageNotification(usagePayload(null))] }).result).usageComplete).toBe(false);
+  });
+  it("deduplicates an identical terminal but refuses contradictory late terminal", async () => {
+    for (const status of ["completed", "failed"]) {
+      const fixture = terminalFixture({ shutdown(server) { server.send(completedTurn(status)); server.stdout.end(); server.stderr.end(); server.emit("exit", 0, null); } });
+      expect((await fixture.result).usageComplete).toBe(status === "completed");
+    }
+  });
+  it("charges late usage while rejecting completeness, including final frame without newline", async () => {
+    const late = { ...observedUsage, inputTokens: 30, totalTokens: 37 };
+    const fixture = terminalFixture({ shutdown(server) { server.stdout.end(JSON.stringify(usageNotification(usagePayload(late, late)))); server.stderr.end(); server.emit("exit", 0, null); } });
+    const result = await fixture.result;
+    expect(result.usageHighWater?.totalTokens).toBe(37); expect(result.usageComplete).toBe(false);
+    expect(fixture.events).toContainEqual(expect.objectContaining({ type: "usage-unknown" }));
+  });
+  it.each(["thread", "turn"])("rejects an unexpected late %s identity before EOF", async (identity) => {
+    const fixture = terminalFixture({ shutdown(server) {
+      const late = completedTurn(), params = late.params as { threadId: string; turn: { id: string } };
+      if (identity === "thread") params.threadId = "foreign-thread"; else params.turn.id = "foreign-turn";
+      server.send(late); server.stdout.end(); server.stderr.end(); server.emit("exit", 0, null);
+    } });
+    expect((await fixture.result).usageComplete).toBe(false);
+  });
+  it.each(["stdout", "stderr"] as const)("cannot accept a missing %s EOF before parent abort", async (missing) => {
+    const fixture = terminalFixture({ shutdown(server, abort) {
+      server.emit("exit", 0, null); if (missing === "stdout") server.stderr.end(); else server.stdout.end(); queueMicrotask(() => abort.abort());
+    } });
+    await expect(fixture.result).rejects.toMatchObject({ name: "AbortError" });
+  });
+  it.each(["nonzero", "signal", "stream", "close-without-end"])("rejects %s during drainage", async (fault) => {
+    const fixture = terminalFixture({ shutdown(server) {
+      if (fault === "nonzero") server.emit("exit", 7, null);
+      if (fault === "signal") server.emit("exit", null, "SIGTERM");
+      if (fault === "stream") server.stderr.emit("error", new Error("synthetic"));
+      if (fault === "close-without-end") server.stdout.destroy();
+    } });
+    await expect(fixture.result).rejects.toThrow();
+  });
+});
+
 const report = {
   status: "completed",
   summary: "inspected",
@@ -74,7 +182,20 @@ function usagePayload(last: unknown = observedUsage, total: unknown = observedUs
   return { last, total, modelContextWindow: 1000 };
 }
 
-async function runUsageNotifications(notifications: Array<WireMessage | string>, completion: WireMessage = completedTurn()) {
+function counters(inputTokens: number, outputTokens: number, cachedInputTokens = 0, reasoningOutputTokens = 0) {
+  return { inputTokens, cachedInputTokens, cacheWriteInputTokens: 0, outputTokens, reasoningOutputTokens, totalTokens: inputTokens + outputTokens };
+}
+
+// Multi-response regression data only; no project, prompt or runtime identity.
+const multiResponseUsage = [
+  { last: counters(21615, 199), total: counters(21615, 199) },
+  { last: counters(23065, 75, 21504), total: counters(44680, 274, 21504) },
+  { last: counters(23267, 313, 22912, 24), total: counters(67947, 587, 44416, 24) },
+  { last: counters(33299, 497, 23040, 136), total: counters(101246, 1084, 67456, 160) },
+  { last: counters(40379, 1029, 33152, 71), total: counters(141625, 2113, 100608, 231) },
+];
+
+async function runUsageNotifications(notifications: Array<WireMessage | string>, completion: WireMessage = completedTurn(), overrides: Partial<AgentRunInput> = {}) {
   const events: AgentEvent[] = [];
   const server = new FakeAppServer((message, current) => {
     if (message.method === "initialize") current.send({ id: message.id, result: {} });
@@ -91,7 +212,7 @@ async function runUsageNotifications(notifications: Array<WireMessage | string>,
       });
     }
   });
-  const result = await new CodexAppServerClient(server).run(input(), (event) => { events.push(event); }, new AbortController().signal);
+  const result = await new CodexAppServerClient(server).run(input(overrides), (event) => { events.push(event); }, new AbortController().signal);
   expect(server.killed).toBe(true);
   return { result, events, server };
 }
@@ -140,6 +261,52 @@ function standardHandler(message: WireMessage, server: FakeAppServer): void {
 }
 
 describe("CodexAppServerClient", () => {
+  it.each([false, true])("confirms the fixed profile before thread creation or resume: %s", async (resume) => {
+    const server = new FakeAppServer((message, current) => {
+      if (message.method === "config/read") current.send({ id: message.id, result: { config: { skills: { include_instructions: false }, private: "synthetic-private-config" } } });
+      else standardHandler(message, current);
+    });
+    const events: AgentEvent[] = [];
+    await new CodexAppServerClient(server).run(input({ runtimeContextProfile: GOVERNED_RUNTIME_CONTEXT_PROFILE,
+      contextFingerprint: "a".repeat(64), ...(resume ? { threadId: "thread-1", resumeContextFingerprint: "a".repeat(64) } : {}) }),
+      (event) => { events.push(event); }, new AbortController().signal);
+    expect(server.received.map((message) => message.method)).toEqual(["initialize", "initialized", "config/read", resume ? "thread/resume" : "thread/start", "turn/start"]);
+    expect(server.received[2].params).toEqual({ includeLayers: false, cwd: "C:\\repo" });
+    expect(server.received[3].params).toMatchObject({ sandbox: "read-only", approvalPolicy: "on-request", approvalsReviewer: "user",
+      config: { skills: { include_instructions: false }, agents: { enabled: false }, shell_environment_policy: { inherit: "core", ignore_default_excludes: false } } });
+    expect(JSON.stringify(server.received)).not.toContain("runtimeContextProfile");
+    expect(JSON.stringify(events)).not.toContain("synthetic-private-config");
+    expect(server.killed).toBe(true);
+  });
+  it.each([undefined, null, {}, { config: null }, { config: {} }, { config: { skills: {} } },
+    { config: { skills: { include_instructions: true } } }, { config: { skills: { include_instructions: "false" } } },
+    { config: { skills: { include_instructions: null } } }])("refuses unconfirmed config without a thread: %#", async (result) => {
+    const server = new FakeAppServer((message, current) => {
+      if (message.method === "initialize") current.send({ id: message.id, result: {} });
+      if (message.method === "config/read") current.send({ id: message.id, result });
+    });
+    await expect(new CodexAppServerClient(server).run(input({ runtimeContextProfile: GOVERNED_RUNTIME_CONTEXT_PROFILE }), () => {}, new AbortController().signal))
+      .rejects.toThrow("Required runtime context configuration was not confirmed");
+    expect(server.received.map((message) => message.method)).toEqual(["initialize", "initialized", "config/read"]);
+    expect(server.killed).toBe(true);
+  });
+  it.each([-32601, -32602])("sanitizes unsupported or refused config/read: %s", async (code) => {
+    const events: AgentEvent[] = [];
+    const server = new FakeAppServer((message, current) => {
+      if (message.method === "initialize") current.send({ id: message.id, result: {} });
+      if (message.method === "config/read") current.send({ id: message.id, error: { code, message: "synthetic-private-config" } });
+    });
+    await expect(new CodexAppServerClient(server).run(input({ runtimeContextProfile: GOVERNED_RUNTIME_CONTEXT_PROFILE }),
+      (event) => { events.push(event); }, new AbortController().signal)).rejects.toThrow(/^Required runtime context configuration was not confirmed$/);
+    expect(server.received.map((message) => message.method)).toEqual(["initialize", "initialized", "config/read"]);
+    expect(JSON.stringify(events)).not.toContain("synthetic-private-config");
+    expect(server.killed).toBe(true);
+  });
+  it("refuses an unknown internal profile before handshake and closes the child", async () => {
+    const server = new FakeAppServer(standardHandler);
+    await expect(new CodexAppServerClient(server).run(input({ runtimeContextProfile: "unknown" as RuntimeContextProfileId }), () => {}, new AbortController().signal)).rejects.toThrow();
+    expect(server.received).toEqual([]); expect(server.killed).toBe(true);
+  });
   it.each([undefined, "b".repeat(64)])("rejects mismatched governed thread bindings before even initializing", async (resumeContextFingerprint) => {
     const server = new FakeAppServer(standardHandler);
     await expect(new CodexAppServerClient(server).run(input({ threadId: "thread-1", contextFingerprint: "a".repeat(64), resumeContextFingerprint }), () => {}, new AbortController().signal)).rejects.toThrow(/binding/);
@@ -383,17 +550,105 @@ describe("CodexAppServerClient", () => {
     expect(events.filter((event) => event.type === "usage-unknown").map((event) => event.reason)).toEqual(["invalid-usage", "final-usage-unproven"]);
   });
 
-  it("retains observed excess, ignores duplicate/decreasing high-water and can retain a later valid sample without claiming completeness", async () => {
+  it("retains observed excess and duplicate totals but rejects a decreasing thread total without refund", async () => {
     const high = { ...observedUsage, inputTokens: 100, outputTokens: 40, totalTokens: 140 };
     const low = { ...observedUsage, inputTokens: 2, outputTokens: 1, totalTokens: 3 };
     const { result, events } = await runUsageNotifications([
       usageNotification(usagePayload(high, high)), usageNotification(usagePayload(high, high)),
       usageNotification(usagePayload(null)), usageNotification(usagePayload(low, low)),
     ]);
-    expect(result.usage).toEqual({ inputTokens: 2, cachedInputTokens: 3, outputTokens: 1, reasoningOutputTokens: 2, totalTokens: 3 });
+    expect(result.usage).toBeNull();
     expect(result.usageHighWater).toEqual({ ...internalUsage, inputTokens: 100, outputTokens: 40, totalTokens: 140 });
     expect(result.usageComplete).toBe(false);
-    expect(events.filter((event) => event.type === "usage")).toHaveLength(3);
+    expect(events.filter((event) => event.type === "usage")).toHaveLength(2);
+    expect(events.filter((event) => event.type === "usage-unknown").map((event) => event.reason)).toEqual(["invalid-usage", "invalid-usage", "final-usage-unproven"]);
+  });
+
+  it("charges the full cumulative turn across multiple model responses in a new thread", async () => {
+    const { result, events } = await runUsageNotifications(multiResponseUsage.map(({ last, total }) => usageNotification(usagePayload(last, total))));
+    const observed = events.filter((event) => event.type === "usage").map((event) => event.usage.totalTokens);
+    expect(observed).toEqual([21814, 44954, 68534, 102330, 143738]);
+    expect(observed.find((tokens) => tokens > 40000)).toBe(44954);
+    expect(observed.find((tokens) => tokens > 100000)).toBe(102330);
+    expect(result.usage).toEqual({ inputTokens: 141625, cachedInputTokens: 100608, outputTokens: 2113, reasoningOutputTokens: 231, totalTokens: 143738 });
+    expect(result.usageHighWater).toEqual(result.usage);
+    expect(result.usageComplete).toBe(false);
+  });
+
+  it("interrupts on the second cumulative sample rather than the last-response maximum", async () => {
+    const controller = new AbortController(), charged: number[] = [];
+    const server = new FakeAppServer((message, current) => {
+      if (message.method === "initialize") current.send({ id: message.id, result: {} });
+      if (message.method === "thread/start") current.send({ id: message.id, result: { thread: { id: "thread-1" } } });
+      if (message.method === "turn/start") {
+        current.send({ id: message.id, result: { turn: { id: "turn-1" } } });
+        let index = 0;
+        const next = () => {
+          if (controller.signal.aborted) return;
+          const sample = multiResponseUsage[index++];
+          if (!sample) { current.send(completedTurn()); return; }
+          current.send(usageNotification(usagePayload(sample.last, sample.total)));
+          setImmediate(next);
+        };
+        setImmediate(next);
+      }
+      if (message.method === "turn/interrupt") {
+        current.send({ id: message.id, result: {} }); current.send(completedTurn("interrupted"));
+      }
+    });
+    const run = new CodexAppServerClient(server).run(input(), (event) => {
+      if (event.type === "usage") {
+        charged.push(event.usage.totalTokens);
+        if (event.usage.totalTokens > 40000) controller.abort();
+      }
+    }, controller.signal);
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    expect(charged).toEqual([21814, 44954]);
+    expect(server.received.filter((message) => message.method === "turn/interrupt")).toHaveLength(1);
+    expect(server.killed).toBe(true);
+  });
+
+  it("attributes only a proven lower bound on resume and then adds cumulative deltas", async () => {
+    const first = { last: counters(10, 2, 5), total: counters(1010, 202, 805) };
+    const next = { last: counters(20, 3, 10), total: counters(1030, 205, 815) };
+    const { result, events, server } = await runUsageNotifications([
+      usageNotification(usagePayload(first.last, first.total)), usageNotification(usagePayload(next.last, next.total)),
+    ], completedTurn(), { threadId: "thread-1" });
+    expect(server.received.some((message) => message.method === "thread/resume")).toBe(true);
+    expect(events.filter((event) => event.type === "usage").map((event) => event.usage.totalTokens)).toEqual([12, 35]);
+    expect(result.usage).toEqual({ inputTokens: 30, outputTokens: 5, cachedInputTokens: 15, reasoningOutputTokens: 0, totalTokens: 35 });
+    expect(result.usageComplete).toBe(false);
+  });
+
+  it("does not count a duplicate total twice when last-response fields differ", async () => {
+    const total = counters(30, 5, 15);
+    const { result, events } = await runUsageNotifications([
+      usageNotification(usagePayload(counters(10, 2, 5), total)),
+      usageNotification(usagePayload(counters(5, 1), total)),
+    ]);
+    expect(events.filter((event) => event.type === "usage").map((event) => event.usage.totalTokens)).toEqual([35, 35]);
+    expect(result.usageHighWater?.totalTokens).toBe(35);
+    expect(result.usageComplete).toBe(false);
+  });
+
+  it.each(protocolUsageFields)("rejects last-response %s above its thread total", (field) => {
+    const last = { ...observedUsage, [field]: observedUsage[field as keyof typeof observedUsage] + 1 };
+    return runUsageNotifications([usageNotification(usagePayload(last, observedUsage))]).then(({ result, events }) => {
+      expect(result.usage).toBeNull(); expect(result.usageHighWater).toBeNull();
+      expect(events).toContainEqual(expect.objectContaining({ type: "usage-unknown", reason: "invalid-usage" }));
+    });
+  });
+
+  it("can retain a later cumulative sample after regression without erasing uncertainty", async () => {
+    const { result, events } = await runUsageNotifications([
+      usageNotification(usagePayload(counters(10, 2), counters(30, 5))),
+      usageNotification(usagePayload(counters(5, 1), counters(20, 3))),
+      usageNotification(usagePayload(counters(10, 2), counters(40, 7))),
+    ]);
+    expect(result.usageHighWater?.totalTokens).toBe(47);
+    expect(events.filter((event) => event.type === "usage").map((event) => event.usage.totalTokens)).toEqual([35, 47]);
+    expect(events.filter((event) => event.type === "usage-unknown").map((event) => event.reason)).toEqual(["invalid-usage", "final-usage-unproven"]);
+    expect(result.usageComplete).toBe(false);
   });
 
   it.each([["other-thread", "turn-1"], ["thread-1", "other-turn"], ["", "turn-1"], ["thread-1", ""]])("ignores usage bound to %s/%s, including invalid samples", async (threadId, turnId) => {

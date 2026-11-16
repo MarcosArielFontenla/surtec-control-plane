@@ -5,6 +5,7 @@ import { WORKFLOW_TEMPLATES, type WorkflowRoleId, type WorkflowTemplateId } from
 import {
   controlWorkflow, decideWorkflow, getClientContextOptions, getContextRoles, getWorkIssue, getWorkflow, getWorkflows,
   previewWorkflow, startWorkflow, type ContextRole, type WorkflowDetail, type WorkflowPreview, type WorkflowPreviewRequest,
+  offerPlannerRecovery, type PlannerRecoveryInput,
 } from "../api";
 import { ClientContextConsent, ContextManifestEvidence, contextDisplayText, matchingPreviewBudget } from "./ContextPreview";
 import { BudgetSummary } from "./BudgetSummary";
@@ -16,6 +17,19 @@ const MAX_BUDGET = { max_tasks: 7, max_attempts: 14, max_runtime_ms: 1800000, ma
 const TERMINAL = ["completed", "cancelled"];
 const HASH = /^[a-f0-9]{64}$/;
 const safe = contextDisplayText;
+const ISSUE_OPERATING_LABELS: Partial<Record<WorkIssue["status"], string>> = {
+  working: "Trabajando", checking: "Verificando", "needs-decision": "Necesita decisión",
+  "ready-for-review": "Listo para revisión", done: "Hecho", blocked: "Bloqueado",
+};
+const DECISION_TRIGGERS: Record<WorkflowDetail["decisions"][number]["kind"], string> = {
+  "plan-approval": "Aprobación del plan exacto",
+  "scope-authorization": "Autorización de una revisión de alcance",
+  "candidate-acceptance": "Aceptación humana del candidato exacto",
+  "risk-acknowledgement": "Reconocimiento humano de riesgos registrados",
+  "proposal-acknowledgement": "Revisión humana de la propuesta registrada",
+  recovery: "Revisión humana de recuperación",
+  replacement: "Revisión humana de reemplazo",
+};
 function selectedRoles(template: WorkflowTemplateId, analysis: "portfolio-analyst" | "planner", qa: boolean): WorkflowRoleId[] {
   if (template === "analysis") return [analysis];
   if (template === "operations-investigation") return ["operations-observer"];
@@ -69,32 +83,73 @@ function roleBudgetPreview(preview: WorkflowPreview, role: WorkflowRoleId): Budg
 
 function WorkflowEvidence({ detail, lineage, onOpenTask }: { detail: WorkflowDetail; lineage: IssueLineage; onOpenTask?: (id: string) => void }) {
   const owner = detail.workflow, stage = detail.stages.find((entry) => entry.id === owner.current_stage_id), binding = owner.candidate;
+  const pendingDecision = detail.decisions.find((entry) => entry.id === owner.pending_decision_id && entry.status === "pending");
+  const decisionTrigger = pendingDecision && Object.hasOwn(DECISION_TRIGGERS, pendingDecision.kind) ? `${DECISION_TRIGGERS[pendingDecision.kind]} · ${pendingDecision.kind} · ${safe(pendingDecision.id)}` : null;
+  const operatingState = owner.status === "running" ? stage?.phase === "verification" || stage?.kind === "review" || stage?.kind === "qa" ? "Verificando" : "Trabajando"
+    : owner.status === "waiting-human" || owner.status === "needs-decision" ? "Necesita decisión" : null;
   const writer = binding ? lineage.tasks.find((entry) => entry.task.envelope.id === binding.task_id)?.task : null;
   const receipt = writer?.testing_evidence, valid = currentCandidate(detail, lineage);
   const evidence = lineage.evidence.filter((entry) => detail.stages.some((entryStage) => entryStage.task_id === entry.task_id) || entry.candidate_id === binding?.candidate_id);
   const correctionIds = new Set(detail.stages.filter((entry) => entry.kind === "correction" || entry.ordinal > (detail.stages.find((entry) => entry.kind === "correction")?.ordinal ?? Infinity)).map((entry) => entry.id));
   const charges = detail.accounting.filter((entry) => correctionIds.has(entry.stage_id));
+  const correctionUsageKnown = Boolean(detail.lineage && owner.counters.accounting_complete && charges.every((entry) => entry.usage_complete)
+    && (detail.lineage.corrections_consumed === 0 || detail.stages.some((entry) => entry.id === detail.lineage?.consumed_stage_id && entry.kind === "correction"))
+    && detail.stages.filter((entry) => correctionIds.has(entry.id) && entry.execution_id).every((entry) => charges.some((charge) => charge.execution_id === entry.execution_id && charge.task_id === entry.task_id)));
   return <>
+    <section className="workflow-decision" aria-label="Estado operativo y disparador del workflow">
+      <h4>Estado operativo y decisión actual</h4>
+      <dl className="detail-dl workflow-facts">
+        <dt>Estado operativo del workflow</dt><dd>{operatingState ?? "Sin estado operativo activo"}</dd>
+        <dt>Estado registrado del workflow</dt><dd>{owner.status}</dd>
+        <dt>Estado del issue vinculado</dt><dd>{ISSUE_OPERATING_LABELS[lineage.issue.status] ?? "Sin etiqueta operativa"} · {lineage.issue.status}</dd>
+        <dt>Disparador registrado</dt><dd>{pendingDecision ? decisionTrigger ?? "Brecha de evidencia: tipo de decisión no reconocido; no se infiere un disparador."
+          : owner.blocked_reason ? "Bloqueo registrado; sin categoría inferida a partir de su texto."
+          : operatingState === "Necesita decisión" ? "Brecha de evidencia: falta la decisión pendiente o el motivo registrado."
+          : "Sin decisión pendiente registrada"}</dd>
+        <dt>Bloqueo</dt><dd>{owner.blocked_reason ? safe(owner.blocked_reason) : "Sin bloqueo registrado"}</dd>
+        <dt>Próxima acción permitida</dt><dd>{safe(owner.next_action)}</dd>
+        <dt>Observación del workflow</dt><dd><time dateTime={owner.updated_at}>{owner.updated_at}</time></dd>
+      </dl>
+      {owner.pending_decision_id && !pendingDecision && <p className="work-issue-note">Brecha de evidencia: la referencia de decisión pendiente no tiene un registro pendiente disponible.</p>}
+      {owner.status === "completed" && <p className="work-issue-note">Workflow finalizado. No implica issue Hecho, candidato vigente, aceptación técnica ni entrega.</p>}
+      {owner.status === "cancelled" && <p className="work-issue-note">Workflow cancelado; no se convierte en Hecho ni elimina la evidencia retenida.</p>}
+      {pendingDecision && owner.blocked_reason && <p className="work-issue-note">La decisión y el bloqueo son hechos independientes; ninguno sustituye los bindings ni habilita una acción.</p>}
+      <p className="work-issue-note">Las etiquetas y la próxima acción registrada son orientativas, no una autorización. Las confirmaciones actuales se verifican por separado.</p>
+    </section>
+    <section className="workflow-evidence" aria-label="Alcance, clasificación y requisitos del workflow">
+      <h4>Alcance, clasificación y requisitos</h4>
     <dl className="detail-dl workflow-facts">
       <dt>Workflow</dt><dd>{safe(owner.id)} · r{owner.revision} · autoridad r{owner.authority_revision}</dd>
       <dt>Template</dt><dd>{LABELS[owner.template_id]} · v{owner.template_version} · {owner.status}</dd>
       <dt>Etapa actual</dt><dd>{stage ? `${stage.kind} · ${stage.status} · ${stage.phase} · generación ${stage.generation}` : "Sin etapa activa"}</dd>
       <dt>Rol activo</dt><dd>{stage ? `${stage.role_id} → ${stage.agent_id} · ${stage.sandbox}` : "Sin rol activo"}</dd>
       <dt>Issue</dt><dd>{lineage.issue.status} · {owner.work_scale} · scope autorizado r{owner.scope_revision} · issue r{lineage.issue.revision}</dd>
-      <dt>Bloqueo</dt><dd>{owner.blocked_reason ? safe(owner.blocked_reason) : "Sin bloqueo registrado"}</dd>
+      <dt>Clasificación registrada</dt><dd>{lineage.issue.work_scale} · {lineage.issue.criticality} · {lineage.issue.classification_inputs.affected_domains.map(safe).join(", ") || "Sin dominios registrados"}</dd>
+      <dt>Asignación del issue</dt><dd>{lineage.issue.assigned_role_id ? safe(lineage.issue.assigned_role_id) : "Sin asignación registrada; no se infiere un permiso"}</dd>
+      <dt>Alcance actual del issue</dt><dd>r{lineage.issue.scope_revision} · {lineage.issue.scope_revision === owner.scope_revision ? "Coincide con la revisión registrada del workflow" : "Revisiones diferentes; no se infiere autorización actual"}</dd>
       <dt>Recovery</dt><dd>{owner.recovery_state}</dd>
-      <dt>Próxima acción permitida</dt><dd>{safe(owner.next_action)}</dd>
       <dt>Revisión</dt><dd>{owner.review_policy ? `intrínseca ${owner.review_policy.intrinsic_depth} · efectiva ${owner.review_policy.effective_depth} · QA ${owner.review_policy.qa_required ? "requerido" : "no requerido"}` : "Política no disponible; no se infiere aprobación"}</dd>
       <dt>Testing</dt><dd>{detail.grant.testing_mode} · mínimo {detail.grant.minimum_review_depth}</dd>
+    </dl>
+    <Notes items={lineage.issue.classification_rationale} />
+    <Notes items={owner.review_policy?.reasons ?? []} />
+    <p className="work-issue-note">Los requisitos registrados pertenecen a este workflow; no sustituyen una nueva evaluación de la política actual.</p>
+    </section>
+    <section className="workflow-evidence" aria-label="Candidato exacto y corrección acotada del workflow">
+      <h4>Candidato exacto, consumo y corrección</h4>
+    <dl className="detail-dl workflow-facts">
       <dt>Presupuesto raíz</dt><dd>{owner.counters.tasks}/{owner.budget.max_tasks} tareas · {owner.counters.attempts}/{owner.budget.max_attempts} intentos · {owner.counters.runtime_ms}/{owner.budget.max_runtime_ms} ms activos · {owner.counters.total_tokens}/{owner.budget.max_total_tokens} tokens</dd>
       <dt>Accounting</dt><dd>{owner.counters.accounting_complete ? "Completo" : "Incompleto; no se interpreta como consumo cero"}</dd>
       <dt>Corrección</dt><dd>{detail.grant.correction.enabled ? `Opt-in · ${detail.lineage?.corrections_consumed ?? "desconocido"}/${detail.grant.correction.max_corrections} consumida` : "Desactivada"}</dd>
-      {detail.grant.correction.budget && <><dt>Subpresupuesto de corrección</dt><dd>{detail.stages.filter((entry) => correctionIds.has(entry.id) && entry.task_id).length}/{detail.grant.correction.budget.max_tasks} tareas · {charges.length}/{detail.grant.correction.budget.max_attempts} intentos · {charges.reduce((sum, entry) => sum + entry.active_runtime_ms, 0)}/{detail.grant.correction.budget.max_runtime_ms} ms · {charges.reduce((sum, entry) => sum + entry.observed_tokens, 0)}/{detail.grant.correction.budget.max_total_tokens} tokens; dentro de la raíz, no capacidad adicional</dd></>}
+      {detail.grant.correction.budget && <><dt>Subpresupuesto de corrección</dt><dd>{correctionUsageKnown
+        ? `${detail.stages.filter((entry) => correctionIds.has(entry.id) && entry.task_id).length}/${detail.grant.correction.budget.max_tasks} tareas · ${charges.length}/${detail.grant.correction.budget.max_attempts} intentos · ${charges.reduce((sum, entry) => sum + entry.active_runtime_ms, 0)}/${detail.grant.correction.budget.max_runtime_ms} ms · ${charges.reduce((sum, entry) => sum + entry.observed_tokens, 0)}/${detail.grant.correction.budget.max_total_tokens} tokens`
+        : `Consumo no confirmado; límites ${detail.grant.correction.budget.max_tasks} tareas · ${detail.grant.correction.budget.max_attempts} intentos · ${detail.grant.correction.budget.max_runtime_ms} ms · ${detail.grant.correction.budget.max_total_tokens} tokens`}; dentro de la raíz, no capacidad adicional</dd></>}
       <dt>Candidato</dt><dd>{binding ? `${binding.candidate_id} · ${valid ? "Vigente según registros" : "Invalidado, reemplazado o sin binding actual"}` : "Sin candidato; no se infiere validez"}</dd>
       {binding && <><dt>Commit / fingerprint</dt><dd>{binding.candidate_revision}<br />{binding.diff_fingerprint}<br />contenido {binding.content_fingerprint}</dd></>}
     </dl>
-    <Notes items={owner.review_policy?.reasons ?? []} />
+    <p className="work-issue-note">Los contadores son consumo observado; con accounting incompleto son parciales, no saldo disponible ni cero consumo desconocido.</p>
     <p className="work-issue-note">La validez mostrada corresponde a los registros. El servidor revalida el árbol Git, receipts y autoridad al ejecutar y decidir; este panel no demuestra que el árbol permanezca limpio.</p>
+    </section>
     <details className="workflow-evidence"><summary>Etapas, roles y consentimiento aprobado</summary>
       {detail.grant.role_assignments.map((assignment) => <div key={assignment.role_id}><b>{assignment.role_id} → {assignment.agent_id}</b><p>{assignment.sandbox} · categorías: {assignment.client_context_categories.join(", ") || "ninguna"}</p></div>)}
       {detail.stages.map((entry) => <div key={entry.id}><b>{entry.ordinal}. {entry.kind} · {entry.status} · g{entry.generation}</b><p>{entry.role_id} · {entry.task_id ?? "sin tarea"}</p>
@@ -108,16 +163,55 @@ function WorkflowEvidence({ detail, lineage, onOpenTask }: { detail: WorkflowDet
       {detail.handoffs.map((handoff) => <div key={handoff.id}><b>{handoff.from_role_id} → {handoff.to_role_id}</b><p>{safe(handoff.outcome_summary)}</p><small>{handoff.id} · ejecución {handoff.execution_id} · evidencia {handoff.evidence_ids.join(", ") || "sin referencias"}</small><Notes items={handoff.unresolved_questions} /><Notes items={handoff.risks} /><p>{safe(handoff.recommended_next_action)}</p>{handoff.requested_decision && <p>{safe(handoff.requested_decision)}</p>}</div>)}
     </details>
     <details className="workflow-evidence"><summary>Evidencia, verificación y receipts ({evidence.length})</summary>
+      <p className="work-issue-note">Las referencias pueden incluir evidencia histórica. Un receipt o un veredicto aislado no prueba aceptación ni vigencia del candidato actual.</p>
       {evidence.map((entry) => <div key={entry.id}><b>{entry.status} · {safe(entry.label)}</b><p>{entry.id} · {safe(entry.reference)}</p></div>)}
       {receipt ? <div><b>Receipt de testing · {receipt.mode}</b><p>{receipt.fingerprint} · ejecución {receipt.execution_id}</p>{receipt.observations.map((observation, index) => <p key={index}>{observation.stage} · {observation.outcome} · exit {observation.exit_code ?? "sin código"} · {observation.command_fingerprint}</p>)}</div> : <p>Sin receipt de testing capturado para el candidato; no se inventa un resultado.</p>}
       {detail.review_receipts.map((review) => <div key={review.id}><b>{review.role_id} · {review.verdict}</b><p>{review.id} · candidato {review.candidate.candidate_id} · {review.fingerprint}</p><p>Testing {review.candidate.testing_evidence_fingerprint} · contexto {review.context_fingerprint} · política {review.review_policy_fingerprint}</p><Notes items={review.findings.map((finding) => `${finding.severity}: ${finding.summary}${finding.path ? ` (${finding.path})` : ""}`)} /></div>)}
       <Notes items={lineage.evidence_gaps} />
     </details>
     <details className="workflow-evidence"><summary>Recovery, intents y eventos</summary>
+      {owner.planner_recovery && <section aria-label="Procedencia humana del plan">
+        <h4>Propuesta retenida de Planner</h4><p>Planner conserva su resultado needs-review. {owner.approved_plan ? "El plan exacto fue adoptado mediante aprobación humana." : "Una persona ofreció la propuesta; su aprobación exacta sigue pendiente."}</p>
+        <p>{owner.planner_recovery.id} · {owner.planner_recovery.fingerprint}</p><p>{safe(owner.planner_recovery.rationale)}</p>
+        {owner.planner_recovery.questions.map((question) => <p key={question.index}>Pregunta {question.index + 1}: {safe(question.answer)}</p>)}
+        <p>Los riesgos reconocidos y el consumo original se conservan; este registro no acredita verificación ni aceptación del candidato.</p>
+      </section>}
+      <h4>Intentos y ejecuciones registrados</h4>
+      {detail.accounting.length ? detail.accounting.map((entry) => <p key={entry.id}>{entry.task_id} · ejecución {entry.execution_id} · intento {entry.attempt} · etapa {entry.stage_id} · {entry.active_runtime_ms} ms · {entry.observed_tokens} tokens observados · {entry.usage_complete ? "registro completo" : "consumo incompleto; total desconocido"}</p>) : <p>Sin intentos de accounting registrados; no se infiere ejecución ni consumo cero.</p>}
       {detail.admission_intents.map((intent) => <p key={intent.id}>{intent.id} · {intent.status} · {intent.task_id} · {intent.blocked_reason ? safe(intent.blocked_reason) : "sin bloqueo"}</p>)}
       {detail.events.map((entry) => <p key={entry.id}>r{entry.revision} · {entry.type} · {safe(entry.summary)}</p>)}
     </details>
   </>;
+}
+
+function PlannerRecoveryControls({ detail, issueRevision, disabled, onRecover }: {
+  detail: WorkflowDetail; issueRevision: number; disabled: boolean; onRecover: (input: PlannerRecoveryInput) => void;
+}) {
+  const [confirmed, setConfirmed] = useState(false), [rationale, setRationale] = useState("");
+  const [answers, setAnswers] = useState<Record<number, string>>({}), [kinds, setKinds] = useState<Record<number, string>>({});
+  const [risks, setRisks] = useState<number[]>([]);
+  const offer = detail.planner_recovery_offer;
+  if (!offer?.eligible) return null;
+  const current = offer.workflow_revision === detail.workflow.revision && offer.issue_revision === issueRevision && HASH.test(offer.source_fingerprint);
+  const ready = current && !disabled && confirmed && rationale.trim().length > 0 && rationale === safe(rationale)
+    && offer.questions.every((q) => ["plan-approval-gate", "operator-clarification"].includes(kinds[q.index]) && answers[q.index]?.trim() && safe(answers[q.index]) === answers[q.index])
+    && offer.risks.every((risk) => risks.includes(risk.index));
+  return <section className="workflow-decision" aria-label="Recuperar propuesta de Planner">
+    <h4>Ofrecer la propuesta retenida</h4><p>Planner terminó needs-review. Esta acción conserva su salida y consumo, y abre una aprobación del plan por separado. No inicia Engineer.</p>
+    {offer.questions.map((q) => <fieldset key={q.index}><legend>{safe(q.text)}</legend>
+      <label className="workflow-field">Resolución de pregunta {q.index + 1}<select aria-label={`Resolución de pregunta ${q.index + 1}`} value={kinds[q.index] ?? ""} disabled={disabled || !current} onChange={(e) => setKinds((previous) => ({ ...previous, [q.index]: e.target.value }))}>
+        <option value="">Elegí la resolución</option><option value="plan-approval-gate">Aprobación en el siguiente gate</option><option value="operator-clarification">Aclaración sin cambiar el plan</option>
+      </select></label>
+      <label className="workflow-field">Respuesta a pregunta {q.index + 1}<textarea aria-label={`Respuesta a pregunta ${q.index + 1}`} maxLength={500} value={answers[q.index] ?? ""} disabled={disabled || !current} onChange={(e) => setAnswers((previous) => ({ ...previous, [q.index]: e.target.value }))} /></label>
+    </fieldset>)}
+    {offer.risks.map((risk) => <label className="work-issue-toggle" key={risk.index}><input type="checkbox" checked={risks.includes(risk.index)} disabled={disabled || !current} onChange={(e) => setRisks((previous) => e.target.checked ? [...previous, risk.index] : previous.filter((index) => index !== risk.index))} />Reconozco el riesgo: {safe(risk.text)}</label>)}
+    <label className="workflow-field">Motivo de recuperación<textarea aria-label="Motivo de recuperación" maxLength={1000} value={rationale} disabled={disabled || !current} onChange={(e) => setRationale(e.target.value)} /></label>
+    <label className="work-issue-toggle"><input type="checkbox" checked={confirmed} disabled={disabled || !current} onChange={(e) => setConfirmed(e.target.checked)} />Confirmo ofrecer este plan sin cambiar alcance, límites ni verificaciones</label>
+    <button type="button" className="ibtn" disabled={!ready} onClick={() => { if (!ready) return; onRecover({ expected_revision: detail.workflow.revision, expected_issue_revision: issueRevision,
+      source_fingerprint: offer.source_fingerprint, rationale,
+      questions: offer.questions.map((q) => ({ index: q.index, fingerprint: q.fingerprint, kind: kinds[q.index] as "plan-approval-gate" | "operator-clarification", answer: answers[q.index] })),
+      risks: offer.risks.map((risk) => ({ index: risk.index, fingerprint: risk.fingerprint })) }); }}>Ofrecer plan para aprobación</button>
+  </section>;
 }
 
 export function WorkflowPanel({ issue, refreshKey = 0, initialWorkflowId, onChanged, onOpenTask }: {
@@ -144,8 +238,8 @@ export function WorkflowPanel({ issue, refreshKey = 0, initialWorkflowId, onChan
     if (identity.current !== nextIdentity) { identity.current = nextIdentity; selection.current = initialWorkflowId ?? ""; }
     setRoles([]); setAgents({}); setCategories({}); setConsentOptions(null); setConsentError(null); setTemplate("analysis"); setAnalysisRole("portfolio-analyst"); setQa(false); setCorrection(false); setBudget({ ...DEFAULT_BUDGET });
     setOwners(null); setFacts(null); setSelected(""); setReadError(null); setActionError(null); setBusy(false); setPreviewState(null); setPreviewPending(false); setRootConfirmed(""); setAck({ key: "", confirmed: false, rationale: "", criteria: [], stop: false, recover: false });
-    getContextRoles(issue.project_id).then((value) => { if (sequence.current === generation) setRoles(value.roles); }).catch((reason) => { if (sequence.current === generation) setReadError(safe((reason as Error).message)); });
-    getClientContextOptions(issue.project_id).then((value) => { if (sequence.current === generation) setConsentOptions(value); }).catch((reason) => { if (sequence.current === generation) setConsentError(safe((reason as Error).message)); });
+    getContextRoles(issue.project_id).then((value) => { if (sequence.current === generation) setRoles(value.roles); }).catch(() => { if (sequence.current === generation) setReadError("No se pudieron confirmar los roles actuales; no se habilita una acción."); });
+    getClientContextOptions(issue.project_id).then((value) => { if (sequence.current === generation) setConsentOptions(value); }).catch(() => { if (sequence.current === generation) setConsentError("No se pudieron confirmar las opciones de consentimiento actuales."); });
     let loading = false;
     async function load() {
       if (loading) return; loading = true;
@@ -160,7 +254,7 @@ export function WorkflowPanel({ issue, refreshKey = 0, initialWorkflowId, onChan
         if (detail && (detail.workflow.issue_id !== issue.id || detail.workflow.project_id !== issue.project_id)) throw new Error("Workflow detail belongs to another issue");
         setOwners(list.workflows); setSelected(id); setFacts(detail ? { detail, lineage } : null); setReadError(null);
         if (lineage.issue.revision !== observedRevision.current) { observedRevision.current = lineage.issue.revision; previews.current++; setPreviewState(null); setRootConfirmed(""); setCategories({}); void onChange.current(); }
-      } catch (reason) { if (sequence.current === generation) { setReadError(safe((reason as Error).message)); previews.current++; setPreviewState(null); setRootConfirmed(""); } }
+      } catch { if (sequence.current === generation) { setReadError("No se pudieron confirmar el workflow y su evidencia actual; actualizá antes de decidir."); previews.current++; setPreviewState(null); setRootConfirmed(""); } }
       finally { loading = false; }
     }
     void load(); const timer = setInterval(() => void load(), 3000);
@@ -194,7 +288,7 @@ export function WorkflowPanel({ issue, refreshKey = 0, initialWorkflowId, onChan
   async function perform(operation: () => Promise<WorkflowDetail>) {
     const generation = sequence.current; invalidate(); setBusy(true); setAck({ key: "", confirmed: false, rationale: "", criteria: [], stop: false, recover: false });
     try { const next = await operation(); if (sequence.current !== generation) return; selection.current = next.workflow.id; await onChange.current(); if (sequence.current === generation) setEpoch((value) => value + 1); }
-    catch (reason) { if (sequence.current === generation) { setActionError(safe((reason as Error).message)); setPreviewState(null); setRootConfirmed(""); setCategories({}); } }
+    catch { if (sequence.current === generation) { setActionError("No se pudo confirmar el resultado de la acción. Revisá los registros actuales; no se repite automáticamente."); setPreviewState(null); setRootConfirmed(""); setCategories({}); } }
     finally { if (sequence.current === generation) setBusy(false); }
   }
 
@@ -205,6 +299,11 @@ export function WorkflowPanel({ issue, refreshKey = 0, initialWorkflowId, onChan
     {owners && owners.length > 0 && <label className="workflow-field">Workflow registrado<select aria-label="Workflow registrado" value={selected} disabled={busy} onChange={(event) => { selection.current = event.target.value; setFacts(null); invalidate(); setEpoch((value) => value + 1); }}>{owners.map((owner) => <option key={owner.id} value={owner.id}>{LABELS[owner.template_id]} · {owner.status} · {owner.id}</option>)}</select></label>}
     {facts && <>
       <WorkflowEvidence detail={facts.detail} lineage={facts.lineage} onOpenTask={onOpenTask} />
+      <PlannerRecoveryControls key={`${actionKey}:${busy}`} detail={facts.detail} issueRevision={facts.lineage.issue.revision} disabled={busy || Boolean(readError) || !facts.detail.execution_enabled}
+        onRecover={(input) => void perform(async () => {
+          try { return await offerPlannerRecovery(facts.detail.workflow.id, input); }
+          catch (error) { setFacts(null); setReadError("Resultado de recuperación desconocido. Actualizá el workflow antes de decidir; no se repite la solicitud."); throw error; }
+        })} />
       <BudgetSummary projectId={issue.project_id} refreshKey={JSON.stringify([resetKey, facts.detail.workflow.id, facts.detail.workflow.revision])}
         title="Presupuesto actual del proyecto vinculado al workflow" />
       <p className="work-issue-note">Esta lectura tiene alcance de proyecto; no demuestra capacidad disponible para este workflow, su etapa o su candidato exactos.</p>
@@ -262,7 +361,7 @@ export function WorkflowPanel({ issue, refreshKey = 0, initialWorkflowId, onChan
       <div className="actions"><button type="button" className="ibtn" disabled={busy || previewPending || Boolean(readError) || !budgetValid || roleIds.some((id) => !eligible(id).includes(selectedAgents[id] ?? ""))} onClick={() => {
         const attempt = ++previews.current; setPreviewPending(true); setPreviewState(null); setRootConfirmed(""); setActionError(null);
         void previewWorkflow(request).then((value) => { if (attempt !== previews.current) return; if (!matchesPreview(value, request)) throw new Error("Unsupported or mismatched workflow preview; regenerate before approval"); setPreviewState({ key: requestKey, value, at: Date.now() }); })
-          .catch((reason) => { if (attempt === previews.current) setActionError(safe((reason as Error).message)); }).finally(() => { if (attempt === previews.current) setPreviewPending(false); });
+          .catch(() => { if (attempt === previews.current) setActionError("No se pudo confirmar el preview actual. Generá uno nuevo antes de aprobar."); }).finally(() => { if (attempt === previews.current) setPreviewPending(false); });
       }}>{previewPending ? "Previsualizando workflow…" : "Previsualizar workflow"}</button><button type="button" className="ibtn primary" disabled={busy || previewPending || Boolean(readError) || !preview?.allowed || rootConfirmed !== requestKey} onClick={() => { if (preview?.allowed && rootConfirmed === requestKey && !busy && !readError) void perform(() => startWorkflow(request, preview.fingerprint)); }}>Iniciar workflow aprobado</button></div>
     </details>}
     {activeOwner && !facts && <p>Hay un workflow activo. Sus decisiones se mantienen bloqueadas hasta cargar el detalle actual.</p>}

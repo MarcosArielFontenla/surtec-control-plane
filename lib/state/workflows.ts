@@ -4,14 +4,28 @@ import {
   readFileSync, readSync, renameSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, types as nodeTypes } from "node:util";
 import { WORKFLOW_LIMITS, type WorkflowDocument } from "../workflows/types";
 import { assertWorkflowDocument, assertWorkflowDocumentMutation } from "../workflows/validation";
-import { locksDir, workflowStatePath } from "./paths";
+import { assertMaintenanceMutation, assertSynchronousMaintenanceResult, withMaintenanceMutation } from "./maintenance";
+import { locksDir, stateRootForStoreFile, workflowStatePath } from "./paths";
 import { StateLockConflictError } from "./store";
 
+export interface WorkflowWriteDiagnostic {
+  phase: "stage-open" | "stage-write" | "stage-flush" | "stage-close" | "ownership" | "rename";
+  code: "EPERM" | "EACCES" | "ENOSPC" | "EIO" | "EBUSY" | "EXDEV" | "ENOENT" | "EMFILE" | "ENFILE" | "UNKNOWN";
+  syscall: "open" | "write" | "fsync" | "close" | "rename" | "UNKNOWN";
+}
+function workflowWriteDiagnostic(phase: WorkflowWriteDiagnostic["phase"], error: unknown): Readonly<WorkflowWriteDiagnostic> {
+  const value = (key: string): unknown => error && typeof error === "object" && !nodeTypes.isProxy(error)
+    ? Object.getOwnPropertyDescriptor(error, key)?.value : undefined;
+  const code = value("code"), syscall = value("syscall");
+  return Object.freeze({ phase,
+    code: typeof code === "string" && ["EPERM", "EACCES", "ENOSPC", "EIO", "EBUSY", "EXDEV", "ENOENT", "EMFILE", "ENFILE"].includes(code) ? code as WorkflowWriteDiagnostic["code"] : "UNKNOWN",
+    syscall: typeof syscall === "string" && ["open", "write", "fsync", "close", "rename"].includes(syscall) ? syscall as WorkflowWriteDiagnostic["syscall"] : "UNKNOWN" });
+}
 export class WorkflowStateError extends Error {
-  constructor(message = "Workflow state is invalid, unsupported or inaccessible; no automatic repair was performed.") {
+  constructor(message = "Workflow state is invalid, unsupported or inaccessible; no automatic repair was performed.", readonly diagnostic?: Readonly<WorkflowWriteDiagnostic>) {
     super(message); this.name = "WorkflowStateError";
   }
 }
@@ -65,14 +79,19 @@ function atomicWrite(filePath: string, document: WorkflowDocument, checkOwnershi
   safePath(filePath, true);
   const staged = `${filePath}.${randomUUID()}.tmp`;
   let fd: number | undefined, created = false;
+  let phase: WorkflowWriteDiagnostic["phase"] = "stage-open";
   try {
     fd = openSync(staged, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
     created = true;
-    writeFileSync(fd, encoded, "utf8"); fsyncSync(fd); closeSync(fd); fd = undefined;
+    phase = "stage-write"; writeFileSync(fd, encoded, "utf8");
+    phase = "stage-flush"; fsyncSync(fd);
+    phase = "stage-close"; closeSync(fd); fd = undefined;
+    phase = "ownership";
     safePath(filePath, true); checkOwnership();
+    phase = "rename";
     renameSync(staged, filePath);
     created = false;
-  } catch { throw new WorkflowStateError("Workflow replacement failed; the previous snapshot was not replaced."); }
+  } catch (error) { throw new WorkflowStateError("Workflow replacement failed; the previous snapshot was not replaced.", workflowWriteDiagnostic(phase, error)); }
   finally {
     if (fd !== undefined) closeSync(fd);
     if (created) { try { unlinkSync(staged); } catch { /* Only this call's uniquely created staging file is eligible. */ } }
@@ -124,15 +143,23 @@ export function readWorkflowDocument(filePath: string = workflowStatePath()): Wo
 // locks, invoke model/Git effects or await anything inside the callback. Read
 // cross-store facts before entering, then use higher-level revision fences.
 export function mutateWorkflowDocument<T>(mutate: (document: WorkflowDocument) => T, filePath: string = workflowStatePath()): T {
-  const path = resolve(filePath);
-  read(path); // corrupt/future/unsafe existing bytes cause no directory/lock write
-  return withWorkflowLock(locksDir(dirname(dirname(path))), (checkOwnership) => {
-    const before = read(path), document = structuredClone(before);
-    const result = mutate(document);
-    if (result && typeof (result as { then?: unknown }).then === "function") throw new WorkflowStateError("Workflow mutation must be synchronous.");
-    assertWorkflowDocumentMutation(before, document);
-    checkOwnership();
-    if (!isDeepStrictEqual(before, document)) atomicWrite(path, document, checkOwnership);
-    return result;
+  if (typeof mutate !== "function" || nodeTypes.isProxy(mutate) || nodeTypes.isAsyncFunction(mutate) || nodeTypes.isGeneratorFunction(mutate)) throw new WorkflowStateError("Workflow mutation must be synchronous and non-proxied.");
+  const path = resolve(filePath), root = stateRootForStoreFile(path, "workflows");
+  // Read-only path preflight retains the store's unsafe-path error, but carries
+  // no document or mutation authority across the cooperative boundary.
+  safePath(path, true);
+  return withMaintenanceMutation(root, () => {
+    read(path); // discarded preflight; malformed bytes cause no workflow lock write
+    return withWorkflowLock(locksDir(root), (checkOwnership) => {
+      const checkMutation = () => { assertMaintenanceMutation(root); checkOwnership(); };
+      const before = read(path), document = structuredClone(before);
+      const result = mutate(document);
+      try { assertSynchronousMaintenanceResult(result); }
+      catch { throw new WorkflowStateError("Workflow mutation must be synchronous and non-proxied."); }
+      assertWorkflowDocumentMutation(before, document);
+      checkMutation();
+      if (!isDeepStrictEqual(before, document)) atomicWrite(path, document, checkMutation);
+      return result;
+    });
   });
 }

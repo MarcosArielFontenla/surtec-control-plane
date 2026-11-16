@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { closeSync, existsSync, lstatSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { writeTask, readTask, listTasks, upsertProjectOverride, listProjectOverrides, updateTask, withStateLock, StateLockConflictError } from "./store";
+import { writeTask, readTask, listTasks, upsertProjectOverride, listProjectOverrides, updateTask, withStateLock, StateLockConflictError, writeJsonAtomic } from "./store";
+import { acquireMaintenanceExclusive, releaseMaintenanceExclusive, setMaintenanceHold, MaintenanceConflictError, MaintenanceStateError, withMaintenanceMutation } from "./maintenance";
+import { maintenanceDir, maintenanceGatePath } from "./paths";
+import { appendTaskEvent, readTaskEvents } from "./events";
 import type { TaskRecord } from "./types";
 import { assembleContext, contextHash } from "../context/assemble";
 import { defaultTaskOrchestration } from "./orchestration";
@@ -552,5 +555,182 @@ describe("store", () => {
   it("validates project overrides before persisting them", () => {
     expect(() => upsertProjectOverride({ id: "../escape", health: "ok" }, projects)).toThrow();
     expect(() => upsertProjectOverride({ id: "alpha", health: "unknown" as never }, projects)).toThrow(/invalid project override/);
+  });
+
+  it.each(["write-task", "update-task", "project", "atomic", "store-lock"] as const)("fences %s before creating a payload directory, old lock, or invoking callbacks", (operation) => {
+    const proof = acquireMaintenanceExclusive(dir);
+    let effects = 0;
+    const denied = () => {
+      if (operation === "write-task") writeTask(makeRecord("HELD"), tasks);
+      if (operation === "update-task") updateTask("HELD", () => { effects++; }, tasks);
+      if (operation === "project") upsertProjectOverride({ id: "alpha", health: "ok" }, projects);
+      if (operation === "atomic") writeJsonAtomic(join(tasks, "HELD.json"), { toJSON: () => { effects++; return {}; } });
+      if (operation === "store-lock") withStateLock("HELD", () => { effects++; }, join(dir, "locks"));
+    };
+    try {
+      expect(denied).toThrow(MaintenanceConflictError);
+      expect(effects).toBe(0);
+      for (const path of [tasks, projects, join(dir, "locks")]) expect(existsSync(path)).toBe(false);
+    } finally { releaseMaintenanceExclusive(proof); }
+  });
+
+  it.each(["restore", "rollback", "ownership-review"] as const)("preserves legacy task/project bytes and pure reads across a persistent %s hold", (kind) => {
+    mkdirSync(tasks, { recursive: true }); mkdirSync(projects, { recursive: true });
+    const taskPath = join(tasks, "HISTORICAL.json"), projectPath = join(projects, "alpha.json");
+    const taskBytes = ` ${JSON.stringify(makeRecord("HISTORICAL"))}\n`, projectBytes = '{ "id": "alpha", "health": "ok" }\n';
+    writeFileSync(taskPath, taskBytes); writeFileSync(projectPath, projectBytes);
+    const proof = acquireMaintenanceExclusive(dir);
+    try { setMaintenanceHold(proof, { operation_id: "held-operation", kind }); }
+    finally { releaseMaintenanceExclusive(proof); }
+    let effects = 0;
+    expect(() => updateTask("HISTORICAL", () => { effects++; }, tasks)).toThrow(MaintenanceStateError);
+    expect(() => writeTask(makeRecord("HISTORICAL"), tasks)).toThrow(MaintenanceStateError);
+    expect(() => upsertProjectOverride({ id: "alpha", health: "blocked" }, projects)).toThrow(MaintenanceStateError);
+    expect(readTask("HISTORICAL", tasks)).toEqual(makeRecord("HISTORICAL"));
+    expect(listTasks(tasks)).toHaveLength(1); expect(listProjectOverrides(projects)).toEqual([{ id: "alpha", health: "ok" }]);
+    expect(effects).toBe(0); expect(readFileSync(taskPath, "utf8")).toBe(taskBytes); expect(readFileSync(projectPath, "utf8")).toBe(projectBytes);
+    expect(existsSync(join(dir, "locks"))).toBe(false); expect(existsSync(`${taskPath}.tmp`)).toBe(false);
+  });
+
+  it("keeps the complete task RMW privately owned and allows nested synchronous snapshot/event writes without claiming a shared transaction", () => {
+    writeTask(makeRecord("OWNED"), tasks);
+    const events = join(dir, "events");
+    const updated = updateTask("OWNED", (record) => {
+      expect(() => acquireMaintenanceExclusive(dir)).toThrow(MaintenanceConflictError);
+      record.lifecycle = "running";
+      appendTaskEvent({ task_id: "OWNED", type: "started", revision: 1 }, events);
+    }, tasks)!;
+    expect(updated.revision).toBe(1); expect(readTask("OWNED", tasks)).toEqual(updated);
+    expect(readTaskEvents("OWNED", events)).toHaveLength(1);
+    const proof = acquireMaintenanceExclusive(dir);
+    try { expect(() => writeTask(makeRecord("LATE"), tasks)).toThrow(MaintenanceConflictError); }
+    finally { releaseMaintenanceExclusive(proof); }
+  });
+
+  it.each([false, true])("retains the authoritative snapshot and absent/partial history after append refusal and fresh reads (prior event: %s)", (priorEvent) => {
+    const events = join(dir, "events"), eventPath = join(events, "GAP.jsonl");
+    writeTask({ ...makeRecord("GAP"), revision: 1 }, tasks);
+    if (priorEvent) appendTaskEvent({ task_id: "GAP", type: "queued", revision: 1 }, events);
+    const eventBytes = priorEvent ? readFileSync(eventPath) : null;
+    updateTask("GAP", (record) => { record.lifecycle = "running"; }, tasks);
+    const bytes = readFileSync(join(tasks, "GAP.json"));
+    const proof = acquireMaintenanceExclusive(dir);
+    try { setMaintenanceHold(proof, { operation_id: "event-gap", kind: "ownership-review" }); }
+    finally { releaseMaintenanceExclusive(proof); }
+    expect(() => appendTaskEvent({ task_id: "GAP", type: "started", revision: 2 }, events)).toThrow(MaintenanceStateError);
+    for (let read = 0; read < 2; read++) {
+      expect(readTask("GAP", tasks)).toMatchObject({ revision: 2, lifecycle: "running" });
+      expect(readTaskEvents("GAP", events).map((event) => event.revision)).toEqual(priorEvent ? [1] : []);
+      expect(readFileSync(join(tasks, "GAP.json"))).toEqual(bytes);
+      if (priorEvent) expect(readFileSync(eventPath)).toEqual(eventBytes);
+      else expect(existsSync(events)).toBe(false);
+    }
+  });
+
+  it("never steals an unknown old maintenance gate through the legacy task-lock recovery path", () => {
+    mkdirSync(maintenanceDir(dir), { recursive: true });
+    const gate = maintenanceGatePath(dir), bytes = "unknown-maintenance-owner\n";
+    writeFileSync(gate, bytes); utimesSync(gate, new Date(0), new Date(0));
+    let effects = 0;
+    expect(() => withStateLock("OLD", () => { effects++; }, join(dir, "locks"))).toThrow(MaintenanceConflictError);
+    expect(effects).toBe(0); expect(readFileSync(gate, "utf8")).toBe(bytes); expect(existsSync(join(dir, "locks"))).toBe(false);
+  });
+
+  it("binds arbitrary flat task/project/atomic/lock directories to their own root and not a shared temporary parent", () => {
+    const flat = join(dir, "flat-store"), independent = join(dir, "independent");
+    mkdirSync(flat); mkdirSync(independent);
+    const proof = acquireMaintenanceExclusive(flat);
+    try {
+      expect(() => writeTask(makeRecord("FLAT"), flat)).toThrow(MaintenanceConflictError);
+      expect(() => upsertProjectOverride({ id: "flat-project", health: "ok" }, flat)).toThrow(MaintenanceConflictError);
+      expect(() => writeJsonAtomic(join(flat, "flat.json"), {})).toThrow(MaintenanceConflictError);
+      expect(() => withStateLock("FLAT", () => undefined, flat)).toThrow(MaintenanceConflictError);
+      writeTask(makeRecord("INDEPENDENT"), independent);
+      expect(readTask("INDEPENDENT", independent)).not.toBeNull();
+      expect(existsSync(join(flat, "FLAT.json"))).toBe(false);
+    } finally { releaseMaintenanceExclusive(proof); }
+    withMaintenanceMutation(flat, () => writeTask(makeRecord("FLAT"), flat));
+    expect(readTask("FLAT", flat)).not.toBeNull();
+    updateTask("FLAT", (record) => {
+      expect(() => acquireMaintenanceExclusive(flat)).toThrow(MaintenanceConflictError);
+      record.lifecycle = "running";
+    }, flat);
+    expect(readTask("FLAT", flat)!.revision).toBe(1);
+    expect(existsSync(join(flat, "locks"))).toBe(true);
+    expect(existsSync(join(dir, "locks"))).toBe(false);
+  });
+
+  it("rejects an accidentally mismatched explicit internal root before coordination, serialization, lock creation or payload effects", () => {
+    const boundary = join(dir, "declared-root"), outside = join(dir, "outside-root");
+    mkdirSync(boundary); mkdirSync(outside); let effects = 0;
+    expect(() => writeJsonAtomic(join(outside, "payload.json"), { toJSON: () => { effects++; return {}; } }, boundary)).toThrow(MaintenanceStateError);
+    expect(() => withStateLock("MISMATCH", () => { effects++; }, join(outside, "locks"), boundary)).toThrow(MaintenanceStateError);
+    expect(effects).toBe(0); expect(existsSync(maintenanceDir(boundary))).toBe(false);
+    expect(existsSync(join(outside, "payload.json"))).toBe(false); expect(existsSync(join(outside, "locks"))).toBe(false);
+  });
+
+  it.runIf(process.platform === "win32")("binds uppercase TASKS atomic writes and LOCKS callbacks to the same held Windows root without serialization", () => {
+    const proof = acquireMaintenanceExclusive(dir); let effects = 0;
+    try {
+      expect(() => writeJsonAtomic(join(dir, "TASKS", "UPPER.json"), { toJSON: () => { effects++; return {}; } })).toThrow(MaintenanceConflictError);
+      expect(() => writeTask(makeRecord("UPPER"), join(dir, "TASKS"))).toThrow(MaintenanceConflictError);
+      expect(() => withStateLock("UPPER", () => { effects++; }, join(dir, "LOCKS"))).toThrow(MaintenanceConflictError);
+      expect(effects).toBe(0); expect(existsSync(tasks)).toBe(false); expect(existsSync(join(dir, "locks"))).toBe(false);
+    } finally { releaseMaintenanceExclusive(proof); }
+  });
+
+  it.each(["async", "generator", "proxy"] as const)("rejects a %s state-lock action before callback invocation or filesystem coordination", async (kind) => {
+    let effects = 0;
+    const callback = kind === "async" ? async () => { effects++; await Promise.resolve(); effects++; }
+      : kind === "generator" ? function* () { effects++; yield 1; }
+      : new Proxy(() => { effects++; }, { apply: () => { effects++; }, get: () => { effects++; return undefined; } });
+    expect(() => withStateLock("INVALID-CALLBACK", callback as never, join(dir, "locks"))).toThrow(MaintenanceStateError);
+    await Promise.resolve();
+    expect(effects).toBe(0); expect(existsSync(join(dir, "locks"))).toBe(false); expect(existsSync(maintenanceDir(dir))).toBe(false);
+  });
+
+  it.each(["async", "generator", "proxy"] as const)("rejects a %s task-mutator before authoritative reads, callback invocation or filesystem coordination", async (kind) => {
+    let effects = 0;
+    const callback = kind === "async" ? async () => { effects++; await Promise.resolve(); effects++; }
+      : kind === "generator" ? function* () { effects++; yield 1; }
+      : new Proxy(() => { effects++; }, { apply: () => { effects++; }, get: () => { effects++; return undefined; } });
+    expect(() => updateTask("INVALID-CALLBACK", callback as never, tasks)).toThrow(MaintenanceStateError);
+    await Promise.resolve();
+    expect(effects).toBe(0); expect(existsSync(tasks)).toBe(false); expect(existsSync(join(dir, "locks"))).toBe(false);
+    expect(existsSync(maintenanceDir(dir))).toBe(false);
+  });
+
+  it("detects a Promise returned by a normal mutator before snapshot write and retains an unknown boundary against its late continuation", async () => {
+    writeTask(makeRecord("PROMISE-MUTATOR"), tasks);
+    const path = join(tasks, "PROMISE-MUTATOR.json"), before = readFileSync(path);
+    let pending: Promise<void> | undefined, lateError: unknown;
+    const mutate = (record: TaskRecord) => {
+      record.lifecycle = "running";
+      pending = Promise.resolve().then(() => {
+        try { writeTask(makeRecord("LATE-PROMISE"), tasks); }
+        catch (error) { lateError = error; }
+      });
+      return pending;
+    };
+    expect(() => updateTask("PROMISE-MUTATOR", mutate as never, tasks)).toThrow(MaintenanceStateError);
+    await pending;
+    expect(lateError).toBeInstanceOf(MaintenanceConflictError);
+    expect(readFileSync(path)).toEqual(before); expect(existsSync(join(tasks, "LATE-PROMISE.json"))).toBe(false);
+    expect(existsSync(maintenanceGatePath(dir))).toBe(true);
+    expect(() => acquireMaintenanceExclusive(dir)).toThrow(MaintenanceConflictError);
+  });
+
+  it("detects a normal mutator's descriptor-defined thenable without getter hooks and preserves the unknown boundary and snapshot", () => {
+    writeTask(makeRecord("THENABLE-MUTATOR"), tasks);
+    const path = join(tasks, "THENABLE-MUTATOR.json"), before = readFileSync(path);
+    let hooks = 0;
+    const thenable = Object.create({ get then() { hooks++; return () => { hooks++; }; } }) as unknown;
+    const mutate = (record: TaskRecord) => { record.lifecycle = "running"; return thenable; };
+    expect(() => updateTask("THENABLE-MUTATOR", mutate as never, tasks)).toThrow(MaintenanceStateError);
+    expect(hooks).toBe(0); expect(readFileSync(path)).toEqual(before);
+    expect(existsSync(maintenanceGatePath(dir))).toBe(true);
+    expect(() => writeTask(makeRecord("LATE-THENABLE"), tasks)).toThrow(MaintenanceConflictError);
+    expect(() => acquireMaintenanceExclusive(dir)).toThrow(MaintenanceConflictError);
+    expect(existsSync(join(tasks, "LATE-THENABLE.json"))).toBe(false);
   });
 });

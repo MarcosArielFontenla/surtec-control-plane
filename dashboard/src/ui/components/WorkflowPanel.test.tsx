@@ -79,6 +79,163 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("WorkflowPanel", () => {
+  it("separates recorded operating state, scope requirements and exact candidate evidence without invoking actions", async () => {
+    retain(); render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const state = await screen.findByRole("region", { name: "Estado operativo y disparador del workflow" });
+    expect(within(state).getByText("Necesita decisión")).toBeInTheDocument();
+    expect(within(state).getByText("Sin etiqueta operativa · authorized")).toBeInTheDocument();
+    expect(within(state).getByText(at)).toHaveAttribute("dateTime", at);
+    const scope = screen.getByRole("region", { name: "Alcance, clasificación y requisitos del workflow" });
+    expect(within(scope).getByText("trivial · low · ui")).toBeInTheDocument();
+    expect(within(scope).getByText("backend-engineer")).toBeInTheDocument();
+    expect(within(scope).getByText("Trusted focused floor")).toBeInTheDocument();
+    expect(within(scope).getByText("functional · mínimo focused")).toBeInTheDocument();
+    const candidate = screen.getByRole("region", { name: "Candidato exacto y corrección acotada del workflow" });
+    expect(within(candidate).getByText("Sin candidato; no se infiere validez")).toBeInTheDocument();
+    expect(api.startWorkflow).not.toHaveBeenCalled(); expect(api.decideWorkflow).not.toHaveBeenCalled(); expect(api.controlWorkflow).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["running", "planning", "Trabajando"], ["running", "review", "Verificando"], ["running", "qa", "Verificando"],
+    ["waiting-human", "planning", "Necesita decisión"], ["needs-decision", "planning", "Necesita decisión"],
+    ["completed", "planning", "Sin estado operativo activo"], ["cancelled", "planning", "Sin estado operativo activo"],
+  ] as const)("presents %s/%s as %s without making the linked issue Done", async (status, kind, label) => {
+    const value = detail(); value.workflow.status = status; value.stages[0]!.kind = kind;
+    if (status !== "waiting-human") { value.workflow.pending_decision_id = null; value.decisions = []; }
+    if (status === "completed" || status === "cancelled") value.workflow.current_stage_id = null;
+    retain(value); render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const state = await screen.findByRole("region", { name: "Estado operativo y disparador del workflow" });
+    expect(within(state).getByText(label)).toBeInTheDocument();
+    expect(within(state).getByText(status)).toBeInTheDocument();
+    expect(within(state).getByText("Sin etiqueta operativa · authorized")).toBeInTheDocument();
+    expect(within(state).queryByText("Hecho · done")).toBeNull(); expect(api.decideWorkflow).not.toHaveBeenCalled();
+    if (status === "completed") expect(within(state).getByText(/Workflow finalizado. No implica issue Hecho/)).toBeInTheDocument();
+    if (status === "cancelled") expect(within(state).getByText(/Workflow cancelado; no se convierte en Hecho/)).toBeInTheDocument();
+  });
+  it.each(["implementation", "correction"] as const)("presents a running %s writer in verification phase as Checking, not Working", async (kind) => {
+    const value = detail(); value.workflow.status = "running"; value.workflow.pending_decision_id = null; value.decisions = [];
+    value.stages[0]!.kind = kind; value.stages[0]!.phase = "verification";
+    retain(value); render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const state = await screen.findByRole("region", { name: "Estado operativo y disparador del workflow" });
+    expect(within(state).getByText("Verificando")).toBeInTheDocument(); expect(within(state).queryByText("Trabajando")).toBeNull();
+    expect(within(state).getByText("Sin etiqueta operativa · authorized")).toBeInTheDocument();
+    expect(api.startWorkflow).not.toHaveBeenCalled(); expect(api.decideWorkflow).not.toHaveBeenCalled(); expect(api.controlWorkflow).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["working", "Trabajando"], ["checking", "Verificando"], ["needs-decision", "Necesita decisión"],
+    ["ready-for-review", "Listo para revisión"], ["done", "Hecho"], ["blocked", "Bloqueado"],
+    ["proposed", "Sin etiqueta operativa"], ["authorized", "Sin etiqueta operativa"], ["cancelled", "Sin etiqueta operativa"],
+  ] as const)("keeps authoritative issue %s separate from workflow completion", async (status, label) => {
+    const facts = lineage(); facts.issue.status = status;
+    const value = detail(); value.workflow.status = "completed"; value.workflow.current_stage_id = null; value.workflow.pending_decision_id = null;
+    retain(value, facts); render(<WorkflowPanel issue={facts.issue} onChanged={async () => {}} />);
+    const state = await screen.findByRole("region", { name: "Estado operativo y disparador del workflow" });
+    expect(within(state).getByText(`${label} · ${status}`)).toBeInTheDocument();
+    expect(within(state).getByText("Sin estado operativo activo")).toBeInTheDocument();
+    expect(api.decideWorkflow).not.toHaveBeenCalled(); expect(api.controlWorkflow).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["plan-approval", "Aprobación del plan exacto"], ["scope-authorization", "Autorización de una revisión de alcance"],
+    ["candidate-acceptance", "Aceptación humana del candidato exacto"], ["risk-acknowledgement", "Reconocimiento humano de riesgos registrados"],
+    ["proposal-acknowledgement", "Revisión humana de la propuesta registrada"], ["recovery", "Revisión humana de recuperación"],
+    ["replacement", "Revisión humana de reemplazo"],
+  ] as const)("attributes the exact %s trigger without deriving authority from its label", async (kind, trigger) => {
+    const value = detail(); value.decisions[0]!.kind = kind;
+    retain(value); render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const state = await screen.findByRole("region", { name: "Estado operativo y disparador del workflow" });
+    expect(within(state).getByText(`${trigger} · ${kind} · D-1`)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Aprobar decisión exacta" })).toBeDisabled();
+    expect(api.decideWorkflow).not.toHaveBeenCalled();
+  });
+  it("retains an exact recorded blocker without guessing a category from free text", async () => {
+    const value = detail(); value.workflow.status = "needs-decision"; value.workflow.pending_decision_id = null;
+    value.workflow.blocked_reason = "A mention of budget and policy is not a structured denial code";
+    retain(value); render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const state = await screen.findByRole("region", { name: "Estado operativo y disparador del workflow" });
+    expect(within(state).getByText(value.workflow.blocked_reason)).toBeInTheDocument();
+    expect(within(state).getByText("Bloqueo registrado; sin categoría inferida a partir de su texto.")).toBeInTheDocument();
+    expect(within(state).queryByText("budget-exhausted")).toBeNull(); expect(api.controlWorkflow).not.toHaveBeenCalled();
+  });
+  it("reports an unsupported decision kind as an evidence gap while preserving the existing denied action", async () => {
+    const value = detail(); value.decisions[0]!.kind = "future-decision" as never;
+    retain(value); render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const state = await screen.findByRole("region", { name: "Estado operativo y disparador del workflow" });
+    expect(within(state).getByText("Brecha de evidencia: tipo de decisión no reconocido; no se infiere un disparador.")).toBeInTheDocument();
+    expect(within(state).queryByText(/undefined/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Aprobar decisión exacta" })).toBeDisabled(); expect(api.decideWorkflow).not.toHaveBeenCalled();
+  });
+  it("reports unavailable pending decision evidence instead of inventing a trigger or acknowledgement", async () => {
+    const value = detail(); value.decisions = [];
+    retain(value); render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const state = await screen.findByRole("region", { name: "Estado operativo y disparador del workflow" });
+    expect(within(state).getByText("Brecha de evidencia: falta la decisión pendiente o el motivo registrado.")).toBeInTheDocument();
+    expect(within(state).getByText(/la referencia de decisión pendiente no tiene un registro/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Aprobar decisión exacta" })).toBeNull(); expect(api.decideWorkflow).not.toHaveBeenCalled();
+  });
+  it("does not resolve conflicting decision and blocker records into permission", async () => {
+    const value = detail(); value.workflow.blocked_reason = "Retained independent blocker";
+    value.decisions[0]!.expected_workflow_revision = 3;
+    retain(value); render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const state = await screen.findByRole("region", { name: "Estado operativo y disparador del workflow" });
+    expect(within(state).getByText("Retained independent blocker")).toBeInTheDocument();
+    expect(within(state).getByText(/La decisión y el bloqueo son hechos independientes/)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Revisé esta decisión y sus bindings actuales" })).toBeDisabled();
+    expect(api.decideWorkflow).not.toHaveBeenCalled();
+  });
+  it("exposes an unassigned role and changed scope without inventing a current grant", async () => {
+    const facts = lineage(); facts.issue.scope_revision = 2; facts.issue.assigned_role_id = null;
+    retain(detail(), facts); render(<WorkflowPanel issue={facts.issue} onChanged={async () => {}} />);
+    const scope = await screen.findByRole("region", { name: "Alcance, clasificación y requisitos del workflow" });
+    expect(within(scope).getByText("Sin asignación registrada; no se infiere un permiso")).toBeInTheDocument();
+    expect(within(scope).getByText("r2 · Revisiones diferentes; no se infiere autorización actual")).toBeInTheDocument();
+    expect(api.decideWorkflow).not.toHaveBeenCalled();
+  });
+  it.each(["missing lineage", "missing consumed stage", "incomplete counters", "incomplete run", "missing run"])("leaves correction consumption unknown with %s", async (gap) => {
+    const value = detail(); value.grant.correction = { enabled: true, max_corrections: 1, budget: { max_tasks: 3, max_attempts: 4, max_runtime_ms: 300000, max_total_tokens: 40000 } };
+    value.lineage = { schema_version: 1, id: "L-1", project_id: "alpha", issue_id: "I-1", scope_revision: 1, origin_task_id: "T-1", workflow_ids: ["W-1"], candidate_ids: [], correction_limit: 1, corrections_consumed: 1, consumed_stage_id: "S-1", consumed_at: at };
+    value.stages[0]!.kind = "correction";
+    value.accounting = [{ schema_version: 1, id: "A-1", workflow_id: "W-1", stage_id: "S-1", task_id: "T-1", execution_id: "R-1", attempt: 1, attempt_charged: true, active_runtime_ms: 1200, observed_tokens: 20, usage_complete: true, captured_at: at }];
+    if (gap === "missing lineage") value.lineage = null;
+    if (gap === "missing consumed stage") value.stages[0]!.kind = "planning";
+    if (gap === "incomplete counters") value.workflow.counters.accounting_complete = false;
+    if (gap === "incomplete run") value.accounting[0]!.usage_complete = false;
+    if (gap === "missing run") value.accounting = [];
+    retain(value); render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const candidate = await screen.findByRole("region", { name: "Candidato exacto y corrección acotada del workflow" });
+    expect(within(candidate).getByText(/Consumo no confirmado; límites 3 tareas · 4 intentos/)).toBeInTheDocument();
+    expect(within(candidate).queryByText(/0\/300000 ms/)).toBeNull();
+    expect(api.startWorkflow).not.toHaveBeenCalled(); expect(api.decideWorkflow).not.toHaveBeenCalled();
+  });
+  it("shows recorded correction attempts and observed consumption without allocating another root budget", async () => {
+    const value = detail(); value.grant.correction = { enabled: true, max_corrections: 1, budget: { max_tasks: 3, max_attempts: 4, max_runtime_ms: 300000, max_total_tokens: 40000 } };
+    value.lineage = { schema_version: 1, id: "L-1", project_id: "alpha", issue_id: "I-1", scope_revision: 1, origin_task_id: "T-1", workflow_ids: ["W-1"], candidate_ids: [], correction_limit: 1, corrections_consumed: 1, consumed_stage_id: "S-1", consumed_at: at };
+    value.stages[0]!.kind = "correction";
+    value.accounting = [{ schema_version: 1, id: "A-1", workflow_id: "W-1", stage_id: "S-1", task_id: "T-1", execution_id: "R-1", attempt: 1, attempt_charged: true, active_runtime_ms: 1200, observed_tokens: 20, usage_complete: true, captured_at: at }];
+    const open = vi.fn(); retain(value); render(<WorkflowPanel issue={issue} onChanged={async () => {}} onOpenTask={open} />);
+    const candidate = await screen.findByRole("region", { name: "Candidato exacto y corrección acotada del workflow" });
+    expect(within(candidate).getByText(/1\/3 tareas · 1\/4 intentos · 1200\/300000 ms · 20\/40000 tokens; dentro de la raíz, no capacidad adicional/)).toBeInTheDocument();
+    expect(screen.getByText(/T-1 · ejecución R-1 · intento 1 · etapa S-1/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Ver tarea T-1" })); expect(open).toHaveBeenCalledWith("T-1");
+    expect(api.startWorkflow).not.toHaveBeenCalled(); expect(api.decideWorkflow).not.toHaveBeenCalled(); expect(api.controlWorkflow).not.toHaveBeenCalled();
+  });
+  it.each(["roles", "consent", "detail", "preview", "action"])("does not display private raw %s errors", async (source) => {
+    const privateFailure = new Error("CONFIDENTIAL_PROVIDER_FAILURE C:\\private\\workflow.txt");
+    if (source === "roles") vi.mocked(api.getContextRoles).mockRejectedValue(privateFailure);
+    if (source === "consent") vi.mocked(api.getClientContextOptions).mockRejectedValue(privateFailure);
+    if (source === "detail") { retain(); vi.mocked(api.getWorkflow).mockRejectedValue(privateFailure); }
+    if (source === "preview") vi.mocked(api.previewWorkflow).mockRejectedValue(privateFailure);
+    if (source === "action") { retain(); vi.mocked(api.decideWorkflow).mockRejectedValue(privateFailure); }
+    render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    if (source === "preview") {
+      await waitFor(() => expect(screen.getByRole("button", { name: "Previsualizar workflow" })).not.toBeDisabled());
+      fireEvent.click(screen.getByRole("button", { name: "Previsualizar workflow" }));
+    }
+    if (source === "action") { await acknowledge(); fireEvent.click(screen.getByRole("button", { name: "Aprobar decisión exacta" })); }
+    if (source === "consent") await screen.findByRole("note"); else await screen.findByRole("alert");
+    expect(document.body.textContent).not.toContain("CONFIDENTIAL_PROVIDER_FAILURE");
+    expect(document.body.textContent).not.toContain("C:\\private\\workflow.txt");
+    expect(api.startWorkflow).not.toHaveBeenCalled(); expect(api.controlWorkflow).not.toHaveBeenCalled();
+    expect(api.decideWorkflow).toHaveBeenCalledTimes(source === "action" ? 1 : 0);
+  });
   it("offers only five finite templates and starts only after exact preview plus explicit confirmation", async () => {
     const changed = vi.fn(async () => {}); render(<WorkflowPanel issue={issue} onChanged={changed} />);
     await screen.findByLabelText("Template de workflow"); expect(screen.getByLabelText("Template de workflow").querySelectorAll("option")).toHaveLength(5);
@@ -309,5 +466,48 @@ describe("workflow API projections", () => {
     expect(mutationCount).toBe(1); expect(sessionCount).toBe(1);
     await expect(api.controlWorkflow("W-1", "cancel", 4, 3)).resolves.toHaveProperty("workflow.id", "W-1");
     expect(mutationCount).toBe(2); expect(sessionCount).toBe(2);
+  });
+});
+
+describe("planner-recovery explicit UI gates", () => {
+  function retainedDetail() {
+    const value = detail(); value.workflow.status = "needs-decision"; value.workflow.pending_decision_id = null; value.workflow.recovery_state = "awaiting-human"; value.workflow.blocked_reason = "Incomplete role result";
+    value.decisions = []; value.stages[0]!.status = "running"; value.stages[0]!.output!.status = "needs-review";
+    value.planner_recovery_offer = { eligible: true, reasons: [], source_fingerprint: hash, workflow_revision: value.workflow.revision, issue_revision: issue.revision,
+      questions: [{ index: 0, text: "Approve this exact plan?", fingerprint: hash }], risks: [{ index: 0, text: "Unmeasured verification cost", fingerprint: hash }] };
+    return value;
+  }
+  async function fillRecovery() {
+    const button = await screen.findByRole("button", { name: "Ofrecer plan para aprobación" }); expect(button).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Resolución de pregunta 1"), { target: { value: "plan-approval-gate" } });
+    fireEvent.change(screen.getByLabelText("Respuesta a pregunta 1"), { target: { value: "Defer approval to the next exact gate" } });
+    fireEvent.change(screen.getByLabelText("Motivo de recuperación"), { target: { value: "Offer unchanged retained proposal" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /Reconozco el riesgo:/ }));
+    expect(button).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Confirmo ofrecer este plan sin cambiar alcance, límites ni verificaciones" }));
+    expect(button).not.toBeDisabled(); return button;
+  }
+  it("requires deliberate question/risk confirmation and never approves the plan automatically", async () => {
+    const value = retainedDetail(); retain(value); const recover = vi.spyOn(api, "offerPlannerRecovery").mockResolvedValue(detail());
+    render(<WorkflowPanel issue={issue} onChanged={async () => {}} />);
+    const button = await fillRecovery(); expect(recover).not.toHaveBeenCalled(); fireEvent.click(button);
+    await waitFor(() => expect(recover).toHaveBeenCalledOnce());
+    expect(recover.mock.calls[0]![1]).toMatchObject({ expected_revision: value.workflow.revision, expected_issue_revision: issue.revision, source_fingerprint: hash,
+      questions: [{ index: 0, fingerprint: hash, kind: "plan-approval-gate", answer: "Defer approval to the next exact gate" }], risks: [{ index: 0, fingerprint: hash }] });
+    expect(api.decideWorkflow).not.toHaveBeenCalled(); expect(api.startWorkflow).not.toHaveBeenCalled(); expect(api.controlWorkflow).not.toHaveBeenCalled();
+  });
+  it("requires a fresh read after a lost response without replaying the POST", async () => {
+    retain(retainedDetail()); const recover = vi.spyOn(api, "offerPlannerRecovery").mockRejectedValue(new Error("synthetic lost response"));
+    render(<WorkflowPanel issue={issue} onChanged={async () => {}} />); fireEvent.click(await fillRecovery());
+    await screen.findByText(/Resultado de recuperación desconocido/); expect(recover).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Ofrecer plan para aprobación" })).not.toBeInTheDocument(); expect(api.decideWorkflow).not.toHaveBeenCalled();
+  });
+  it("clears the recovery confirmations when refreshed bindings change", async () => {
+    const value = retainedDetail(); retain(value); const recover = vi.spyOn(api, "offerPlannerRecovery").mockResolvedValue(detail());
+    const view = render(<WorkflowPanel issue={issue} onChanged={async () => {}} />); await fillRecovery();
+    const changed = retainedDetail(); changed.workflow.revision++; changed.planner_recovery_offer = { ...changed.planner_recovery_offer!, eligible: true, workflow_revision: changed.workflow.revision, source_fingerprint: "b".repeat(64) } as NonNullable<api.WorkflowDetail["planner_recovery_offer"]>;
+    retain(changed); view.rerender(<WorkflowPanel issue={issue} refreshKey={1} onChanged={async () => {}} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Ofrecer plan para aprobación" })).toBeDisabled());
+    expect(screen.getByLabelText("Motivo de recuperación")).toHaveValue(""); expect(recover).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { usePolling } from "./usePolling";
 import type { OverviewModel, RunRecord, ProjectCommands, RunEvent, Inbox, ActivityFeed, DeployHealth, RailwayStatus, TaskDetailModel, TodayModel, WorkSession } from "../../../lib/state/types";
 import type { Note } from "../../../lib/state/notes";
 import type { ProjectProfile } from "../../../lib/portfolio-profile";
@@ -8,7 +8,7 @@ import type { ClientCommitment, ClientContextCategory, ClientContextOptions, Cli
 import type { FeedbackMetrics } from "../../../lib/feedback-metrics";
 import type { CompanyProfile, Objective, OrganizationSnapshot, ProjectObjectiveLinks } from "../../../lib/organization";
 import type { PortfolioProfileMigrationReport } from "../../../lib/state/portfolio-profiles";
-import type { IssueCreateInput, IssueLineage, ReviewCandidate, WorkIssue } from "../../../lib/issues/types";
+import type { IssueCreateInput, IssueEvidenceReference, IssueLineage, RecordDeliveryObservationInput, ReviewCandidate, WorkIssue } from "../../../lib/issues/types";
 import type { ProjectHarnessProfile } from "../../../lib/harness/types";
 import type { AgentRole } from "../../../lib/context/types";
 import type { ContextPreview, ContextPreviewRequest } from "../server/context-service";
@@ -18,14 +18,52 @@ import type { BudgetReadQuery, BudgetReadView, RoutineConfigureInput, RoutineCre
   RoutineOccurrenceSummary, RoutineRevisionInput, RoutineRunResult, RoutineSummary } from "../server/routine-service";
 import { WORKFLOW_TEMPLATES, type GovernedWorkflow } from "../../../lib/workflows/types";
 import { ROUTINE_ACTIONS, ROUTINE_EVIDENCE_KINDS } from "../../../lib/routines/types";
+import type { OperatingView, OperatingViewRequest } from "../../../lib/operating-views";
+import { isSafeIdentifier } from "../../../lib/security/identifiers";
 
 export type { ContextPreview, ContextPreviewRequest };
 export type { WorkflowPreviewRequest };
+export type { OperatingView, OperatingViewRequest };
+export type OperatingPageQuery = Pick<OperatingViewRequest, "page_size" | "cursors">;
 export type { BudgetReadQuery, BudgetReadView, RoutineConfigureInput, RoutineCreateInput, RoutineDetail, RoutineList,
   RoutineOccurrenceSummary, RoutineRevisionInput, RoutineRunResult, RoutineSummary };
 export type WorkflowPreview = ReturnType<WorkflowContextService["preview"]>;
 export type WorkflowDetail = ReturnType<WorkflowService["detail"]>;
 export type ContextRole = Pick<AgentRole, "id" | "display_name" | "responsibility" | "sandbox_ceiling"> & { agents: string[] };
+
+export async function fetchOperatingView(request: OperatingViewRequest): Promise<OperatingView> {
+  const routes = { overview: "overview", objective: "objectives", project: "projects", issue: "issues" } as const;
+  if (!request || !Object.hasOwn(routes, request.kind) || Object.keys(request).some((key) => !["kind", "id", "page_size", "cursors"].includes(key))
+    || (request.kind === "overview" ? request.id !== undefined : !isSafeIdentifier(request.id))
+    || request.page_size !== undefined && (!Number.isInteger(request.page_size) || request.page_size < 1 || request.page_size > 50)) throw new Error("Invalid operating view query.");
+  const contract: typeof import("../../../lib/operating-views") = await import("../../../lib/operating-views");
+  const query = new URLSearchParams();
+  if (request.page_size !== undefined) query.set("page_size", String(request.page_size));
+  if (request.cursors !== undefined) {
+    if (!request.cursors || typeof request.cursors !== "object" || Array.isArray(request.cursors)) throw new Error("Invalid operating view query.");
+    for (const [key, value] of Object.entries(request.cursors)) {
+      if (!contract.OPERATING_SECTIONS.some((section) => section === key) || typeof value !== "string" || !value.length || value.length > 400
+        || /[\u0000-\u0020\u007f]/.test(value)) throw new Error("Invalid operating view query.");
+      query.set(`cursor_${key}`, value);
+    }
+  }
+  const path = `/api/operating/${routes[request.kind]}${request.id === undefined ? "" : `/${encodeURIComponent(request.id)}`}${query.size ? `?${query}` : ""}`;
+  let response: Response;
+  try { response = await fetch(path, { method: "GET", cache: "no-store" }); }
+  catch { throw new Error("Operating view is unavailable."); }
+  if (!response.ok) throw new Error(`Operating view is unavailable (${response.status}).`);
+  try {
+    const value: unknown = await response.json();
+    contract.assertOperatingView(value);
+    if (value.view !== request.kind || value.focus_id !== (request.id ?? null)
+      || value.sections.some((section) => section.rows.length > (request.page_size ?? 50))) throw new Error("Invalid response binding");
+    return value;
+  } catch { throw new Error("Operating view response is invalid or unsupported."); }
+}
+export const getOperatingOverview = (query: OperatingPageQuery = {}) => fetchOperatingView({ ...query, kind: "overview" });
+export const getOperatingObjective = (id: string, query: OperatingPageQuery = {}) => fetchOperatingView({ ...query, kind: "objective", id });
+export const getOperatingProject = (id: string, query: OperatingPageQuery = {}) => fetchOperatingView({ ...query, kind: "project", id });
+export const getOperatingIssue = (id: string, query: OperatingPageQuery = {}) => fetchOperatingView({ ...query, kind: "issue", id });
 
 export async function getContextRoles(project: string): Promise<{ roles: ContextRole[] }> {
   const response = await fetch(`/api/projects/${encodeURIComponent(project)}/context/roles`, { cache: "no-store" });
@@ -83,24 +121,7 @@ export async function fetchOverview(): Promise<OverviewModel> {
 }
 
 export function useOverview(intervalMs = 3000): { data: OverviewModel | null; error: string | null } {
-  const [data, setData] = useState<OverviewModel | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    const tick = async () => {
-      try {
-        const next = await fetchOverview();
-        if (active) { setData(next); setError(null); }
-      } catch (err) {
-        if (active) setError((err as Error).message); // keep last good data
-      }
-    };
-    void tick();
-    const h = setInterval(tick, intervalMs);
-    return () => { active = false; clearInterval(h); };
-  }, [intervalMs]);
-
+  const { data, error } = usePolling(fetchOverview, intervalMs);
   return { data, error };
 }
 
@@ -293,34 +314,7 @@ export function actOnWorkSession(id: string, action:
 }
 
 export function useToday(intervalMs = 3000): { data: TodayModel | null; error: string | null; refresh: () => Promise<TodayModel> } {
-  const [data, setData] = useState<TodayModel | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const refresh = useCallback(async () => {
-    try {
-      const next = await fetchToday();
-      setData(next);
-      setError(null);
-      return next;
-    } catch (reason) {
-      setError((reason as Error).message);
-      throw reason;
-    }
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    const tick = async () => {
-      try {
-        const next = await fetchToday();
-        if (active) { setData(next); setError(null); }
-      } catch (reason) { if (active) setError((reason as Error).message); }
-    };
-    void tick();
-    const handle = setInterval(tick, intervalMs);
-    return () => { active = false; clearInterval(handle); };
-  }, [intervalMs]);
-
-  return { data, error, refresh };
+  return usePolling(fetchToday, intervalMs);
 }
 
 export async function postSignalAction(signalId: string, action: SignalAction): Promise<SignalFeed> {
@@ -677,7 +671,31 @@ export async function getWorkflow(id: string): Promise<WorkflowDetail> {
     || value.lineage !== null && value.lineage?.schema_version !== 1) {
     throw new Error("Unsupported workflow detail; refresh its current authority");
   }
+  if (Object.hasOwn(value.workflow, "planner_recovery")) {
+    const recovery = value.workflow.planner_recovery;
+    if (!recovery || recovery.schema_version !== 1 || recovery.requested_by !== "human" || recovery.workflow_id !== id
+      || !/^[a-f0-9]{64}$/.test(recovery.fingerprint) || !Array.isArray(recovery.questions) || !Array.isArray(recovery.risks)) throw new Error("Unsupported Planner recovery; inspect current records");
+  }
+  if (Object.hasOwn(value, "planner_recovery_offer")) {
+    const offer = value.planner_recovery_offer;
+    if (!offer || typeof offer.eligible !== "boolean" || !Array.isArray(offer.reasons) || !Array.isArray(offer.questions) || !Array.isArray(offer.risks)
+      || offer.questions.length > 20 || offer.risks.length > 20
+      || (offer.eligible ? offer.workflow_revision !== value.workflow.revision || !Number.isSafeInteger(offer.issue_revision) || offer.issue_revision! < 1
+        || typeof offer.source_fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(offer.source_fingerprint)
+        : offer.source_fingerprint !== null || offer.workflow_revision !== null || offer.issue_revision !== null || offer.questions.length > 0 || offer.risks.length > 0)
+      || [...offer.questions, ...offer.risks].some((entry) => !Number.isSafeInteger(entry.index) || typeof entry.text !== "string" || entry.text.length > 500 || !/^[a-f0-9]{64}$/.test(entry.fingerprint))
+      || offer.questions.some((entry, index) => entry.index !== index) || offer.risks.some((entry, index) => entry.index !== index)) throw new Error("Unsupported Planner recovery offer; refresh current records");
+  }
   return value;
+}
+
+export interface PlannerRecoveryInput {
+  expected_revision: number; expected_issue_revision: number; source_fingerprint: string; rationale: string;
+  questions: import("../../../lib/workflows/types").PlannerQuestionDisposition[];
+  risks: import("../../../lib/workflows/types").PlannerRiskAcknowledgement[];
+}
+export function offerPlannerRecovery(id: string, input: PlannerRecoveryInput): Promise<WorkflowDetail> {
+  return workflowResponse(`/api/workflows/${encodeURIComponent(id)}/planner-recovery`, { ...input, confirm: true, approval_id: `local-${crypto.randomUUID()}` });
 }
 
 export function previewWorkflow(request: WorkflowPreviewRequest): Promise<WorkflowPreview> {
@@ -700,10 +718,103 @@ export function controlWorkflow(id: string, action: "cancel" | "recover", workfl
   return workflowResponse(`/api/workflows/${encodeURIComponent(id)}/${action}`, { expected_revision: workflowRevision, expected_issue_revision: issueRevision });
 }
 
+export type ManualIssueCreateInput = IssueCreateInput & { request_id: string };
+
+const manualRequestId = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const localIssueId = /^I-[A-Fa-f0-9-]{36}$/;
+const localIssueStatuses = new Set(["proposed", "authorized", "working", "checking", "needs-decision", "ready-for-review", "done", "blocked", "cancelled"]);
+
+function issueDataRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  return Reflect.ownKeys(descriptors).every((key) => typeof key === "string" && descriptors[key]!.enumerable && Object.hasOwn(descriptors[key]!, "value"));
+}
+
+function validIntakeReceipt(value: unknown): value is NonNullable<WorkIssue["intake_receipt"]> {
+  return issueDataRecord(value) && Object.keys(value).length === 3
+    && Object.hasOwn(value, "schema_version") && value.schema_version === 1
+    && Object.hasOwn(value, "request_id") && typeof value.request_id === "string" && manualRequestId.test(value.request_id)
+    && Object.hasOwn(value, "request_fingerprint") && typeof value.request_fingerprint === "string" && /^[a-f0-9]{64}$/.test(value.request_fingerprint);
+}
+
+function issueText(value: unknown, max: number, required = false): value is string {
+  return typeof value === "string" && value.length <= max && (!required || value.trim().length > 0);
+}
+
+function issueTexts(value: unknown, maxItems: number, maxLength: number, minItems = 0): value is string[] {
+  return Array.isArray(value) && value.length >= minItems && value.length <= maxItems && value.every((entry) => issueText(entry, maxLength));
+}
+
+function issueDate(value: unknown): boolean {
+  return issueText(value, 100, true) && Number.isFinite(Date.parse(value));
+}
+
+function nullableIssueText(value: unknown, max: number): boolean { return value === null || issueText(value, max); }
+
+function validIssueScope(value: unknown): value is WorkIssue["authorized_scope"] {
+  return issueDataRecord(value) && ["expected_outcome", "acceptance_criteria", "allowed_path_patterns", "excluded_path_patterns", "allowed_change_categories", "explicit_exclusions"].every((key) => Object.hasOwn(value, key))
+    && issueText(value.expected_outcome, 4000, true) && issueTexts(value.acceptance_criteria, 30, 1000, 1)
+    && issueTexts(value.allowed_path_patterns, 100, 300, 1) && issueTexts(value.excluded_path_patterns, 100, 300)
+    && issueTexts(value.allowed_change_categories, 30, 100, 1) && issueTexts(value.explicit_exclusions, 100, 300);
+}
+
+function validScopeProposal(value: unknown): boolean {
+  return value === null || issueDataRecord(value)
+    && ["id", "discovered_paths", "proposed_scope", "discovered_at", "evidence_task_id"].every((key) => Object.hasOwn(value, key))
+    && issueText(value.id, 100, true) && issueTexts(value.discovered_paths, 200, 500, 1)
+    && validIssueScope(value.proposed_scope) && issueDate(value.discovered_at) && issueText(value.evidence_task_id, 100, true);
+}
+
+function validIssueReferences(value: unknown): boolean {
+  return Array.isArray(value) && value.length <= 20 && value.every((entry) => issueDataRecord(entry)
+    && ["provider", "url", "reference"].every((key) => Object.hasOwn(entry, key))
+    && issueText(entry.provider, 50, true) && issueText(entry.reference, 200, true)
+    && issueText(entry.url, 2000, true) && /^https?:\/\//.test(entry.url));
+}
+
+/** The server owns business invariants; confirmation also needs a safely renderable v1 record. */
+function validWorkIssueIdentity(value: unknown): value is WorkIssue {
+  if (!issueDataRecord(value) || !["schema_version", "id", "project_id", "objective_id", "parent_issue_id", "title", "expected_outcome", "acceptance_criteria", "status", "work_scale",
+    "classification_inputs", "classification_rationale", "plan", "authorized_scope", "scope_revision", "scope_changed_at", "scope_change_approval_id", "scope_change_proposal", "priority", "criticality",
+    "blocked_by_issue_ids", "assigned_role_id", "related_commitment_ids", "external_references", "next_action", "task_ids", "evidence_ids", "candidate_ids", "created_at", "updated_at", "revision"].every((key) => Object.hasOwn(value, key))
+    || value.schema_version !== 1 || typeof value.id !== "string" || !localIssueId.test(value.id) || !isSafeIdentifier(value.project_id)
+    || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1 || !Number.isSafeInteger(value.scope_revision) || (value.scope_revision as number) < 1
+    || typeof value.status !== "string" || !localIssueStatuses.has(value.status) || !issueText(value.title, 200, true)
+    || !nullableIssueText(value.objective_id, 100) || !nullableIssueText(value.parent_issue_id, 100)
+    || !issueText(value.expected_outcome, 4000, true) || !issueTexts(value.acceptance_criteria, 30, 1000, 1)
+    || !validIssueScope(value.authorized_scope) || !["trivial", "bounded", "substantial"].includes(value.work_scale as string)
+    || !issueDataRecord(value.classification_inputs) || !["affected_domains", "requires_migration", "security_impact"].every((key) => Object.hasOwn(value.classification_inputs as object, key))
+    || !issueTexts(value.classification_inputs.affected_domains, 100, 300) || typeof value.classification_inputs.requires_migration !== "boolean" || typeof value.classification_inputs.security_impact !== "boolean"
+    || !issueTexts(value.classification_rationale, 100, 300) || !issueTexts(value.plan, 100, 300)
+    || value.scope_changed_at !== null && !issueDate(value.scope_changed_at) || !nullableIssueText(value.scope_change_approval_id, 100) || !validScopeProposal(value.scope_change_proposal)
+    || !Number.isSafeInteger(value.priority) || (value.priority as number) < 0 || (value.priority as number) > 100 || !["low", "medium", "high"].includes(value.criticality as string)
+    || !issueTexts(value.blocked_by_issue_ids, 100, 100) || !nullableIssueText(value.assigned_role_id, 100) || !issueTexts(value.related_commitment_ids, 100, 100)
+    || !validIssueReferences(value.external_references) || !nullableIssueText(value.next_action, 1000)
+    || !issueTexts(value.task_ids, 100, 100) || !issueTexts(value.evidence_ids, 500, 100) || !issueTexts(value.candidate_ids, 100, 100)
+    || !issueDate(value.created_at) || !issueDate(value.updated_at)) return false;
+  if ("intake_receipt" in value && !Object.hasOwn(value, "intake_receipt")) return false;
+  return !Object.hasOwn(value, "intake_receipt") || validIntakeReceipt(value.intake_receipt);
+}
+
 export async function getWorkIssues(): Promise<{ issues: WorkIssue[] }> {
   const res = await fetch("/api/work-issues", { cache: "no-store" });
   if (!res.ok) throw new Error(`local issues failed: ${res.status}`);
-  return await res.json() as { issues: WorkIssue[] };
+  try {
+    const value: unknown = await res.json();
+    // This endpoint is a complete, unpaginated aggregate. Extra coverage or
+    // pagination fields cannot silently turn a partial response into evidence.
+    if (!issueDataRecord(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, "issues") || !Array.isArray(value.issues) || value.issues.length > 500) throw new Error("Invalid issue collection");
+    const issueIds = new Set<string>(), requestIds = new Set<string>();
+    for (const issue of value.issues) {
+      if (!validWorkIssueIdentity(issue) || issueIds.has(issue.id)) throw new Error("Invalid issue identity");
+      issueIds.add(issue.id);
+      if (issue.intake_receipt) {
+        if (requestIds.has(issue.intake_receipt.request_id)) throw new Error("Duplicate intake identity");
+        requestIds.add(issue.intake_receipt.request_id);
+      }
+    }
+    return value as { issues: WorkIssue[] };
+  } catch { throw new Error("Local issue collection is invalid or unsupported; the pending request remains unresolved."); }
 }
 
 export async function getWorkIssue(id: string): Promise<IssueLineage> {
@@ -712,8 +823,20 @@ export async function getWorkIssue(id: string): Promise<IssueLineage> {
   return await res.json() as IssueLineage;
 }
 
-export async function createWorkIssue(input: IssueCreateInput): Promise<{ issue: WorkIssue }> {
-  return issueMutation("/api/work-issues", input);
+export async function createWorkIssue(input: ManualIssueCreateInput): Promise<{ issue: WorkIssue }> {
+  if (!issueDataRecord(input) || !Object.hasOwn(input, "request_id") || typeof input.request_id !== "string" || !manualRequestId.test(input.request_id)
+    || typeof input.project_id !== "string" || !isSafeIdentifier(input.project_id.trim())) throw new Error("A valid explicit request identity and project are required.");
+  const requestId = input.request_id, projectId = input.project_id.trim();
+  const value: unknown = await issueMutation("/api/work-issues", input);
+  if (!issueDataRecord(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, "issue") || !validWorkIssueIdentity(value.issue)
+    || value.issue.project_id !== projectId || !value.issue.intake_receipt || value.issue.intake_receipt.request_id !== requestId) {
+    throw new Error("Manual issue response is invalid or mismatched; reconcile the pending request before continuing.");
+  }
+  return value as { issue: WorkIssue };
+}
+
+export async function recordDeliveryObservation(id: string, input: RecordDeliveryObservationInput): Promise<{ issue: WorkIssue; evidence: IssueEvidenceReference }> {
+  return issueMutation(`/api/work-issues/${encodeURIComponent(id)}/delivery-observations`, input);
 }
 
 export async function authorizeWorkIssue(id: string, expectedRevision: number): Promise<{ issue: WorkIssue }> {

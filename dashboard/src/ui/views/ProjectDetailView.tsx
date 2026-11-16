@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Code2, ExternalLink, Folder, RotateCw, Send } from "lucide-react";
 import type { ProjectIntegrationsSnapshot, IntegrationHealth } from "../../../../lib/integrations/types";
 import type { ProjectProfile } from "../../../../lib/portfolio-profile";
@@ -11,6 +11,8 @@ import { ProjectProfileEditor } from "../components/ProjectProfileEditor";
 import { WorkSessionsPanel } from "../components/WorkSessionsPanel";
 import { ProjectHarnessPanel } from "../components/ProjectHarnessPanel";
 import { BudgetSummary } from "../components/BudgetSummary";
+import { ProjectReadinessPanel, type ProjectReadinessNavigationTarget } from "../components/ProjectReadinessPanel";
+import { DeliveryReadinessPanel } from "../components/DeliveryReadinessPanel";
 import { relativeTime } from "../relative-time";
 
 const HEALTH_LABEL: Record<IntegrationHealth, string> = {
@@ -188,6 +190,7 @@ export function ProjectDetailView({
   onOpenTask,
   onPrepareTask,
   onSessionsChanged,
+  onNavigateReadiness,
 }: {
   project: ProjectView;
   overview: OverviewModel;
@@ -201,6 +204,7 @@ export function ProjectDetailView({
   onOpenTask: (id: string) => void;
   onPrepareTask: (projectId: string, instructions: string) => void;
   onSessionsChanged?: () => Promise<unknown>;
+  onNavigateReadiness?: (target: ProjectReadinessNavigationTarget) => void;
 }) {
   const [integrations, setIntegrations] = useState<ProjectIntegrationsSnapshot | null>(null);
   const [integrationsError, setIntegrationsError] = useState<string | null>(null);
@@ -212,32 +216,36 @@ export function ProjectDetailView({
   const [activityError, setActivityError] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const [budgetEpoch, setBudgetEpoch] = useState(0);
+  const integrationSequence = useRef(0);
   const id = project.id;
 
   useEffect(() => {
     let active = true;
+    const request = ++integrationSequence.current;
+    setIntegrations(null); setRefreshing(false);
     setIntegrationsLoading(true);
     setIntegrationsError(null);
     getProjectIntegrations(id)
-      .then((value) => { if (active) setIntegrations(value); })
-      .catch((reason) => { if (active) setIntegrationsError((reason as Error).message); })
-      .finally(() => { if (active) setIntegrationsLoading(false); });
+      .then((value) => { if (active && request === integrationSequence.current) setIntegrations(value); })
+      .catch((reason) => { if (active && request === integrationSequence.current) setIntegrationsError((reason as Error).message); })
+      .finally(() => { if (active && request === integrationSequence.current) setIntegrationsLoading(false); });
     getSignals()
       .then((value) => { if (active) { setSignalFeed(value); setSignalError(null); } })
       .catch((reason) => { if (active) setSignalError((reason as Error).message); });
     getActivity()
       .then((value) => { if (active) { setActivity(value); setActivityError(null); } })
       .catch((reason) => { if (active) setActivityError((reason as Error).message); });
-    return () => { active = false; };
+    return () => { active = false; integrationSequence.current++; };
   }, [id]);
 
   const refreshIntegrations = async () => {
+    const request = ++integrationSequence.current;
     setBudgetEpoch((value) => value + 1);
     setRefreshing(true);
     setIntegrationsError(null);
-    try { setIntegrations(await getProjectIntegrations(id, true)); }
-    catch (reason) { setIntegrationsError((reason as Error).message); }
-    finally { setRefreshing(false); }
+    try { const next = await getProjectIntegrations(id, true); if (request === integrationSequence.current) setIntegrations(next); }
+    catch (reason) { if (request === integrationSequence.current) setIntegrationsError((reason as Error).message); }
+    finally { if (request === integrationSequence.current) setRefreshing(false); }
   };
   const runOpen = async (target: "vscode" | "folder") => {
     setOpenError(null);
@@ -256,6 +264,7 @@ export function ProjectDetailView({
   const instructions = profile?.kind === "client-product"
     ? "Review the project and determine the next safe action. Client context is omitted; choose any categories explicitly in the task form."
     : profile?.next_action ?? profile?.current_goal ?? `Review the current operating state of ${id} and propose a safe next step.`;
+  const ownIntegrations = integrations?.project_id === id ? integrations : null;
 
   return (
     <div className="project-detail">
@@ -264,13 +273,20 @@ export function ProjectDetailView({
         <div className="project-detail-heading">
           <div><span className="b-label">Detalle operativo del proyecto</span><h2>{id}</h2></div>
           <div className="project-detail-actions">
+            <a className="ibtn" href={`#project-harness-${id}`}>Ver Harness y evidencia</a>
             <button type="button" className="ibtn" onClick={() => void runOpen("vscode")}><Code2 size={14} /> Abrir código</button>
             <button type="button" className="ibtn" onClick={() => void runOpen("folder")}><Folder size={14} /> Carpeta</button>
             <button type="button" className="ibtn primary" onClick={() => onPrepareTask(id, instructions)}><Send size={14} /> Preparar tarea</button>
           </div>
         </div>
+        <p className="meta">El Harness es evidencia del proyecto, no autorización de ejecución. Su ausencia por sí sola no bloquea un proyecto personal; las políticas aplicables siguen vigentes.</p>
       </div>
       {openError && <div className="banner banner--warn" role="alert">No pude abrir el proyecto: {openError}</div>}
+
+      <ProjectReadinessPanel key={`readiness-${id}`} project={project} integrations={ownIntegrations} integrationsLoading={integrationsLoading}
+        integrationsUnavailable={!!integrationsError} onNavigate={onNavigateReadiness} onOpenTask={onOpenTask} />
+
+      <DeliveryReadinessPanel key={`delivery-${id}`} projectId={id} />
 
       <section className="project-detail-section panel">
         <div className="section-head"><h2>Perfil y próximo paso</h2><span className="meta">{profile ? PROJECT_CATEGORY_LABEL[profile.kind] : "Sin perfil"}</span></div>
@@ -289,15 +305,17 @@ export function ProjectDetailView({
 
       <section className="project-detail-section">
         <div className="section-head project-integrations-heading">
-          <div><h2>Integraciones</h2><p>{integrations ? `Snapshot ${integrations.schema_version} · observado ${relativeTime(integrations.observed_at)}` : "Estado independiente por proveedor"}</p></div>
+          <div><h2>Integraciones</h2><p>{ownIntegrations ? `Snapshot ${ownIntegrations.schema_version} · observado ${relativeTime(ownIntegrations.observed_at)}` : "Estado independiente por proveedor"}</p></div>
           <button type="button" className="ibtn" disabled={refreshing || integrationsLoading} onClick={() => void refreshIntegrations()}><RotateCw size={14} /> {refreshing ? "Actualizando…" : "Actualizar"}</button>
         </div>
         {integrationsError && <div className="banner banner--warn" role="alert">No pude actualizar las integraciones ({integrationsError}); el resto del detalle sigue disponible.</div>}
-        {integrationsLoading && !integrations && <p className="empty-mini">Leyendo snapshot de integraciones…</p>}
-        {integrations && <IntegrationGrid snapshot={integrations} project={project} />}
+        {integrationsLoading && !ownIntegrations && <p className="empty-mini">Leyendo snapshot de integraciones…</p>}
+        {ownIntegrations && <IntegrationGrid snapshot={ownIntegrations} project={project} />}
       </section>
 
-      <WorkSessionsPanel sessions={sessionState} projects={overview.projects} projectId={id} onChanged={onSessionsChanged ?? (async () => {})} onOpenTask={onOpenTask} />
+      <div id={`project-sessions-${id}`} tabIndex={-1}>
+        <WorkSessionsPanel key={id} sessions={sessionState} projects={overview.projects} projectId={id} onChanged={onSessionsChanged ?? (async () => {})} onOpenTask={onOpenTask} />
+      </div>
       <ProjectHarnessPanel key={id} projectId={id} />
 
       <div className="project-detail-grid">

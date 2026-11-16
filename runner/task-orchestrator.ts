@@ -10,6 +10,7 @@ import { runTask, type TaskRunCompletion, type TaskRunOptions } from "./run-task
 import type { Tracer } from "../lib/observability/tracing";
 import { contextHash, redactContextText } from "../lib/context/assemble";
 import type { WorkflowOrchestrator } from "./workflow-orchestrator";
+import type { UnchargedClaimRecoveryRequest } from "../lib/workflows/uncharged-claim-recovery";
 import { readWorkflowDocument } from "../lib/state/workflows";
 import { canonicalPath } from "../lib/security/paths";
 import { expandHome } from "../lib/expand-home";
@@ -51,6 +52,12 @@ interface BudgetExecutionIdentity {
 }
 const budgetExecutions = new WeakMap<object, BudgetExecutionIdentity>();
 const budgetControllers = new WeakSet<object>();
+const claimRecoveryOwners = new WeakMap<object, { workflows: WorkflowOrchestrator; workerId: string; idle: () => boolean }>();
+export function assertStoppedClaimRecoveryOwner(proof: object, workflows: WorkflowOrchestrator): string {
+  const entry = claimRecoveryOwners.get(proof);
+  if (!entry || entry.workflows !== workflows || !entry.idle()) throw new TaskControlError("Uncharged recovery requires its exact stopped and idle owning worker", 409);
+  return entry.workerId;
+}
 interface BudgetStopFacts { task: TaskRecord; ledger: BudgetLedger; policy: BudgetExecutionPolicy; data: IndependentBudgetStopData }
 interface BudgetStopIdentity { owner: BudgetExecutionScaffold; facts: BudgetStopFacts; reread: () => BudgetStopFacts | null }
 const budgetStops = new WeakMap<object, BudgetStopIdentity>();
@@ -575,6 +582,19 @@ export class TaskOrchestrator implements TaskControl {
 
   enqueue(_taskId: string): void {
     if (!this.stopped) this.requestTick();
+  }
+
+  /** Observation only; this count never grants execution or recovery authority. */
+  get activeCount(): number { return this.active.size; }
+
+  /** Explicit operator-only boundary. Never called by retry, startup or HTTP. */
+  recoverUnchargedWorkflowClaim(input: UnchargedClaimRecoveryRequest) {
+    if (!this.workflows || !this.stopped || this.poller || this.ticking || this.active.size) throw new TaskControlError("Uncharged recovery requires a stopped worker without a poller, active attempt or tick", 409);
+    const proof = Object.freeze({});
+    claimRecoveryOwners.set(proof, { workflows: this.workflows, workerId: this.workerId,
+      idle: () => this.stopped && this.poller === null && !this.ticking && this.active.size === 0 });
+    try { return this.workflows.recoverUnchargedClaim(input, proof); }
+    finally { claimRecoveryOwners.delete(proof); }
   }
 
   cancel(taskId: string): TaskRecord {

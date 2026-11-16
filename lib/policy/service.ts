@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import Ajv2020, { type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
-import { parse } from "yaml";
+import { parseRegistryYaml } from "./registry-yaml";
 import agentsRegistrySchema from "../../schemas/agents-registry.schema.json";
 import projectsRegistrySchema from "../../schemas/projects-registry.schema.json";
 import type { ProjectCommands, SandboxMode } from "../state/types";
@@ -113,7 +113,7 @@ function validationMessage(label: string, errors: ErrorObject[] | null | undefin
 function readYaml<T>(path: string, label: string, validate: ValidateFunction<T>): T {
   let value: unknown;
   try {
-    value = parse(readFileSync(path, "utf8"));
+    value = parseRegistryYaml(readFileSync(path, "utf8"));
   } catch (error) {
     throw new PolicyError(`${label} could not be read: ${(error as Error).message}`, "configuration");
   }

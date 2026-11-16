@@ -7,7 +7,7 @@ import { defaultTaskOrchestration } from "../lib/state/orchestration";
 import { readTask, updateTask, writeTask } from "../lib/state/store";
 import * as taskStore from "../lib/state/store";
 import { readTaskEvents } from "../lib/state/events";
-import { assertTaskOutsideActiveWorkflow, BudgetExecutionScaffold, budgetExecutionOwner, inspectBudgetStopReceipt, TaskControlError, TaskOrchestrator } from "./task-orchestrator";
+import { assertStoppedClaimRecoveryOwner, assertTaskOutsideActiveWorkflow, BudgetExecutionScaffold, budgetExecutionOwner, inspectBudgetStopReceipt, TaskControlError, TaskOrchestrator } from "./task-orchestrator";
 import type { TaskRunCompletion, TaskRunOptions } from "./run-task";
 import type { AgentExecutor } from "./agent-executor";
 import { assembleContext, contextHash } from "../lib/context/assemble";
@@ -79,7 +79,7 @@ function controlledRunner(): {
     pending.push({ id, options, resolve });
   }));
   const finish = (id: string, completion: TaskRunCompletion = { outcome: "completed", retryable: false, stale: false }) => {
-    const item = pending.find((candidate) => candidate.id === id);
+    const item = pending.slice().reverse().find((candidate) => candidate.id === id);
     if (!item) throw new Error(`no pending run: ${id}`);
     updateTask(id, (task) => {
       task.lifecycle = "finished";
@@ -193,6 +193,39 @@ describe("TaskOrchestrator", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("uncharged-claim issues only a temporary stopped-owner proof and never starts work", async () => {
+    const controller = new WorkflowOrchestrator(root), worker = new TaskOrchestrator({ repoRoot: root, workflows: controller });
+    const request = { workflowId: "workflow", expectedRevision: 1, expectedIssueRevision: 1, expectedTaskRevision: 3,
+      packageFingerprint: "a".repeat(64), runtimeRoot: root, archiveRoot: root, approvalId: "synthetic-human", confirm: true as const };
+    let retained: object | undefined;
+    const effect = vi.spyOn(controller, "recoverUnchargedClaim").mockImplementation((_input, proof) => {
+      retained = proof; expect(assertStoppedClaimRecoveryOwner(proof, controller)).toBe(worker.workerId);
+      expect(() => assertStoppedClaimRecoveryOwner({}, controller)).toThrow();
+      return { workflow_id: "workflow", revision: 4, status: "running", recovery_id: "synthetic", phase: "ready", task_id: "task", task_revision: 4, worker_started: false };
+    });
+    try {
+      expect(worker.recoverUnchargedWorkflowClaim(request).worker_started).toBe(false);
+      expect(() => assertStoppedClaimRecoveryOwner(retained!, controller)).toThrow();
+      const tick = vi.spyOn(controller, "reconcile").mockImplementation(() => { expect(() => worker.recoverUnchargedWorkflowClaim(request)).toThrow(/stopped worker/); });
+      expect(await worker.runOnce()).toBe(0); tick.mockRestore();
+      worker.start(); expect(() => worker.recoverUnchargedWorkflowClaim(request)).toThrow(/stopped worker/);
+      expect(effect).toHaveBeenCalledOnce(); expect(worker.activeCount).toBe(0);
+    } finally { await worker.stop(); vi.restoreAllMocks(); }
+  });
+
+  it("uncharged-claim refuses an active attempt even while the poller is stopped", async () => {
+    const controller = new WorkflowOrchestrator(root), controlled = controlledRunner(), worker = new TaskOrchestrator({ repoRoot: root, workflows: controller, runAttempt: controlled.run });
+    writeTask(admittedRecord("owned-pending"));
+    const effect = vi.spyOn(controller, "recoverUnchargedClaim");
+    try {
+      expect(await worker.runOnce()).toBe(1);
+      expect(worker.activeCount).toBe(1);
+      expect(() => worker.recoverUnchargedWorkflowClaim({ workflowId: "workflow", expectedRevision: 1, expectedIssueRevision: 1, expectedTaskRevision: 3,
+        packageFingerprint: "a".repeat(64), runtimeRoot: root, archiveRoot: root, approvalId: "synthetic-human", confirm: true })).toThrow(/stopped worker/);
+      expect(effect).not.toHaveBeenCalled();
+    } finally { controlled.finish("owned-pending"); await worker.stop(); vi.restoreAllMocks(); }
+  });
+
   it("enforces the global concurrency bound", async () => {
     writeTask(record("T-1", "read-only", "p1", 1));
     writeTask(record("T-2", "read-only", "p2", 2));
@@ -298,6 +331,7 @@ describe("TaskOrchestrator", () => {
     expect(await worker.runOnce()).toBe(1);
     expect(readTask("T-1")?.orchestration?.attempts).toBe(2);
     controlled.finish("T-1");
+    await worker.stop();
   });
 
   it("recovers an expired lease without consuming another attempt", () => {

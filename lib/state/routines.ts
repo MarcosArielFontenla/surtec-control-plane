@@ -8,7 +8,8 @@ import { isDeepStrictEqual, types as nodeTypes } from "node:util";
 import { ROUTINE_LIMITS, type RoutineDocument, type RoutineOccurrence, type RoutineReceipt } from "../routines/types";
 import { routineRevisionKey, routineTimestampEpoch } from "../routines/schedule";
 import { assertRoutineDocument, assertRoutineReceipt } from "../routines/validation";
-import { routineStatePath, locksDir } from "./paths";
+import { routineStatePath, locksDir, stateRootForStoreFile } from "./paths";
+import { assertMaintenanceAvailable, assertMaintenanceMutation, assertSynchronousMaintenanceResult, withMaintenanceMutation } from "./maintenance";
 import { StateLockConflictError } from "./store";
 
 export class RoutineStateError extends Error {
@@ -88,7 +89,9 @@ function atomicWrite(path: string, document: RoutineDocument, checkOwnership: ()
   const encoded = encode(document); check(Buffer.byteLength(encoded) <= ROUTINE_LIMITS.documentBytes, "Routine snapshot exceeds byte limit.");
   const staged = `${path}.${randomUUID()}.tmp`; let fd: number | undefined, stat: Stats | undefined, created = false;
   try {
+    checkOwnership();
     safePath(path, true); mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); safePath(path, true);
+    checkOwnership();
     fd = openSync(staged, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600); created = true; stat = fstatSync(fd);
     writeFileSync(fd, encoded, "utf8"); fsyncSync(fd); closeSync(fd); fd = undefined;
     safePath(path, true); safePath(staged, true); check(sameFile(stat, lstatSync(staged)), "Routine staged ownership was lost."); checkOwnership();
@@ -128,6 +131,8 @@ function callbackValid(callback: unknown): asserts callback is (...args: never[]
   check(typeof callback === "function" && !nodeTypes.isProxy(callback) && !nodeTypes.isAsyncFunction(callback) && !nodeTypes.isGeneratorFunction(callback), "Routine mutation must be synchronous and non-proxied.");
 }
 function synchronous(value: unknown): void {
+  try { assertSynchronousMaintenanceResult(value); }
+  catch { throw new RoutineStateError("Routine mutation must be synchronous; uncertain maintenance ownership was preserved."); }
   if (value === null || (typeof value !== "object" && typeof value !== "function")) return;
   const seen = new Set<object>(); let current: object | null = value;
   while (current !== null) {
@@ -316,7 +321,9 @@ export function claimRoutineOccurrence(tx: unknown, id: string, expectedRevision
 /** Read-only liveness fence, not permission to perform an action. No persisted owner is adopted. */
 export function assertRoutineOwnership(proof: unknown, filePath: string = routineStatePath()): Readonly<RoutineOccurrence> {
   check(!mutationActive, "Routine ownership cannot be checked inside a state transaction.");
-  const owner = privateOwnership(proof, resolve(filePath)), document = read(owner.path), occurrence = boundOccurrence(owner, document);
+  const owner = privateOwnership(proof, resolve(filePath));
+  assertMaintenanceAvailable(stateRootForStoreFile(owner.path, "routines"));
+  const document = read(owner.path), occurrence = boundOccurrence(owner, document);
   check(occurrence.cancel_requested_at === null && currentDefinition(document!, occurrence), "Routine execution was cancelled or its configuration changed.");
   return freeze(clone(occurrence));
 }
@@ -351,34 +358,42 @@ export function finishRoutineOccurrence(tx: unknown, proof: unknown, expectedRev
 export function mutateRoutineDocument<T>(callback: (tx: RoutineTransaction) => T, filePath: string = routineStatePath(),
   at: string = new Date().toISOString()): T {
   callbackValid(callback); check(!mutationActive, "Routine mutation is reentrant."); routineTimestampEpoch(at);
-  const path = resolve(filePath); read(path); // Invalid/future/unsafe bytes precede lock/directory creation.
-  mutationActive = true; let committedState: TransactionState | undefined, success = false;
+  const path = resolve(filePath), root = stateRootForStoreFile(path, "routines");
+  read(path); // A discarded preflight refuses invalid/future/unsafe bytes before directory creation.
+  assertMaintenanceAvailable(root);
+  let committedState: TransactionState | undefined, success = false;
   try {
-    const result = withRoutineLock(locksDir(dirname(dirname(path))), (checkLock) => {
-      const originalBytes = readBytes(path, ROUTINE_LIMITS.documentBytes);
-      const persisted = originalBytes === null ? null : decode(originalBytes), before = persisted ?? emptyDocument(at);
-      assertRoutineDocument(before); check(routineTimestampEpoch(before.updated_at) <= routineTimestampEpoch(at), "Routine transaction clock cannot regress.");
-      const checkOwnership = () => {
-        checkLock(); const current = readBytes(path, ROUTINE_LIMITS.documentBytes);
-        check(originalBytes === null ? current === null : current !== null && originalBytes.equals(current), "Routine snapshot changed outside its owned transaction.");
-      };
-      checkOwnership();
-      const tx = Object.freeze({}) as RoutineTransaction;
-      const state: TransactionState = { working: clone(before), persisted, path, at, active: true, updating: false, checkOwnership, issued: [], revoked: [] };
-      committedState = state; transactions.set(tx, state);
+    const result = withMaintenanceMutation(root, () => {
+      mutationActive = true;
       try {
-        const result = callback(tx); synchronous(result); checkOwnership();
-        if (!isDeepStrictEqual(before, state.working)) {
-          check(persisted === null || before.revision < Number.MAX_SAFE_INTEGER, "Routine document revision is exhausted.");
-          const final = clone(state.working); final.revision = persisted === null ? 1 : before.revision + 1; final.updated_at = at;
-          assertRoutineDocument(final); atomicWrite(path, final, checkOwnership);
-        }
-        return result;
-      } finally { state.active = false; transactions.delete(tx); }
+        return withRoutineLock(locksDir(root), (checkLock) => {
+          assertMaintenanceMutation(root);
+          const originalBytes = readBytes(path, ROUTINE_LIMITS.documentBytes);
+          const persisted = originalBytes === null ? null : decode(originalBytes), before = persisted ?? emptyDocument(at);
+          assertRoutineDocument(before); check(routineTimestampEpoch(before.updated_at) <= routineTimestampEpoch(at), "Routine transaction clock cannot regress.");
+          const checkOwnership = () => {
+            assertMaintenanceMutation(root);
+            checkLock(); const current = readBytes(path, ROUTINE_LIMITS.documentBytes);
+            check(originalBytes === null ? current === null : current !== null && originalBytes.equals(current), "Routine snapshot changed outside its owned transaction.");
+          };
+          checkOwnership();
+          const tx = Object.freeze({}) as RoutineTransaction;
+          const state: TransactionState = { working: clone(before), persisted, path, at, active: true, updating: false, checkOwnership, issued: [], revoked: [] };
+          committedState = state; transactions.set(tx, state);
+          try {
+            const result = callback(tx); synchronous(result); checkOwnership();
+            if (!isDeepStrictEqual(before, state.working)) {
+              check(persisted === null || before.revision < Number.MAX_SAFE_INTEGER, "Routine document revision is exhausted.");
+              const final = clone(state.working); final.revision = persisted === null ? 1 : before.revision + 1; final.updated_at = at;
+              assertRoutineDocument(final); atomicWrite(path, final, checkOwnership);
+            }
+            return result;
+          } finally { state.active = false; transactions.delete(tx); }
+        });
+      } finally { mutationActive = false; }
     });
     success = true; return result;
   } finally {
-    mutationActive = false;
     if (committedState) {
       for (const proof of committedState.issued) {
         const owner = ownerships.get(proof)!;

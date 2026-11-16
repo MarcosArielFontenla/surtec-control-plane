@@ -610,3 +610,13 @@ describe("current owned stage context", () => {
     expect(() => service().assembleStage(stageInput())).toThrow(/finite granted template|Planner proposal/);
   });
 });
+
+describe("planner-recovery pure authority inspection", () => {
+  it("does not issue a dispatch preview or rewrite current source state", () => {
+    const input = request("implementation"), preview = service().preview(input); reserve(preview);
+    const before = JSON.stringify({ workflows, issues, records }), current = service();
+    expect(current.inspectPlannerRecoveryAuthority("workflow-1").issue.id).toBe(issue.id);
+    expect(JSON.stringify({ workflows, issues, records })).toBe(before);
+    expect(() => current.revalidatePreview(input, preview.fingerprint)).toThrow(/issued|expired/);
+  });
+});

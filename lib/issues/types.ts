@@ -31,9 +31,17 @@ export interface ScopeChangeProposal {
   evidence_task_id: string;
 }
 
+/** Original manual-intake identity; never an authorization or a mutable issue hash. */
+export interface IssueIntakeReceipt {
+  schema_version: 1;
+  request_id: string;
+  request_fingerprint: string;
+}
+
 export interface WorkIssue {
   schema_version: 1;
   id: string;
+  intake_receipt?: IssueIntakeReceipt;
   project_id: string;
   objective_id: string | null;
   parent_issue_id: string | null;
@@ -83,8 +91,32 @@ export interface ReviewCandidate {
 
 export type IssueEvidenceKind = "task" | "execution" | "commit" | "diff" | "verification" | "review" | "work-session" | "provider" | "usage" | "screenshot" | "work-product";
 
+/** Local operator facts, never technical acceptance or execution authority. */
+export interface DeliveryObservation {
+  schema_version: 1;
+  kind: "readiness-reviewed" | "environment-observed" | "handoff-recorded" | "client-response-recorded" | "follow-up-recorded";
+  origin: "operator-entered";
+  commitment_id: string | null;
+  occurred_at: string;
+  summary: string;
+  source_reference: string;
+  next_action: string;
+}
+
+export interface RecordDeliveryObservationInput {
+  project_id: string;
+  expected_revision: number;
+  scope_revision: number;
+  candidate_id: string | null;
+  candidate_revision: string | null;
+  diff_fingerprint: string | null;
+  delivery_observation: DeliveryObservation;
+  confirm: true;
+}
+
 export interface IssueEvidenceReference {
   testing_evidence_fingerprint?: string;
+  delivery_observation?: DeliveryObservation;
   schema_version: 1;
   id: string;
   issue_id: string;
@@ -119,6 +151,8 @@ export interface IssueDocument {
 }
 
 export interface IssueCreateInput {
+  // The public manual endpoint requires this; identified internal legacy callers may omit it.
+  request_id?: string;
   project_id: string;
   objective_id?: string | null;
   parent_issue_id?: string | null;

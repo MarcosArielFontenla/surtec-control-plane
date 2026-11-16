@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse } from "yaml";
 import type { AgentRoleRegistry } from "../../../lib/context/types";
 import { contextHash } from "../../../lib/context/assemble";
@@ -29,12 +29,31 @@ import { WorkflowOrchestrator } from "../../../runner/workflow-orchestrator";
 
 let root: string, state: string, issueId: string;
 const agents = { "portfolio-analyst": "product-manager", planner: "tech-lead", "software-engineer": "backend-engineer", reviewer: "reality-checker", "qa-evaluator": "qa-reviewer", "operations-observer": "devops-engineer" };
+const materializeWorkflowFixtureInputs = (() => {
+  let inputs: readonly Readonly<{ path: string; bytes: Buffer }>[] | undefined;
+  return (targetRoot: string): readonly string[] => {
+    if (!inputs) {
+      const registries = ["agents.yml", "agent-roles.yml", "context-policy.yml", "workflow-policy.yml"].map((name) => {
+        const path = `registry/${name}`;
+        return { path, bytes: readFileSync(path) };
+      });
+      const registry = parse(registries.find((input) => input.path === "registry/agent-roles.yml")!.bytes.toString("utf8")) as AgentRoleRegistry;
+      const evaluationPaths = [...new Set(registry.roles.flatMap((role) => role.required_evaluation_ids))];
+      inputs = Object.freeze([...registries, ...evaluationPaths.map((path) => ({ path, bytes: readFileSync(path) }))].map((input) => Object.freeze(input)));
+    }
+    // Only private public-source bytes are reused; each case owns fresh files.
+    for (const input of inputs) {
+      const target = join(targetRoot, input.path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, input.bytes, { flag: "wx" });
+    }
+    return Object.freeze(inputs.map((input) => input.path));
+  };
+})();
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "surtec-workflow-service-")); state = join(root, "state");
   mkdirSync(join(root, "projects/alpha/.git"), { recursive: true }); mkdirSync(join(root, "registry"));
-  for (const name of ["agents.yml", "agent-roles.yml", "context-policy.yml", "workflow-policy.yml"]) cpSync(`registry/${name}`, join(root, "registry", name));
-  const roles = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
-  for (const path of new Set(roles.roles.flatMap((role) => role.required_evaluation_ids))) { mkdirSync(join(root, ...path.split("/").slice(0, -1)), { recursive: true }); cpSync(path, join(root, path)); }
+  materializeWorkflowFixtureInputs(root);
   writeFileSync(join(root, "registry/projects.yml"), `projects:\n  alpha:\n    allowed_agents: [${Object.values(agents).join(", ")}]\n    sandbox: { default: workspace-write }\n    verify: ['node verify.mjs']\n`);
   writeFileSync(join(root, "projects/alpha/AGENTS.md"), "Synthetic private source body; never permission.");
   vi.stubEnv("SURTEC_STATE_DIR", state); vi.stubEnv("SURTEC_PROJECTS_ROOT", join(root, "projects"));
@@ -43,6 +62,40 @@ beforeEach(() => {
   issueId = proposed.id; issues.authorize(issueId, proposed.revision, "synthetic-scope-approval");
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false); });
+describe("workflow service fixture input isolation", () => {
+  function inventory(directory: string, prefix = ""): string[] {
+    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      return entry.isDirectory() ? inventory(join(directory, entry.name), path) : [path];
+    }).sort();
+  }
+  it("materializes every public registry and required evaluation as a normal byte-equivalent file", () => {
+    const copyRoot = join(root, "input-isolation-copy"), paths = materializeWorkflowFixtureInputs(copyRoot);
+    const registry = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
+    const expected = ["registry/agents.yml", "registry/agent-roles.yml", "registry/context-policy.yml", "registry/workflow-policy.yml", ...new Set(registry.roles.flatMap((role) => role.required_evaluation_ids))];
+    expect(paths).toEqual(expect.arrayContaining(expected)); expect(paths).toHaveLength(expected.length);
+    expect(inventory(copyRoot)).toEqual([...expected].sort());
+    for (const path of paths) {
+      const info = lstatSync(join(copyRoot, path));
+      expect(info.isFile()).toBe(true); expect(info.isSymbolicLink()).toBe(false);
+      expect(readFileSync(join(copyRoot, path))).toEqual(readFileSync(path));
+      expect(readFileSync(join(root, path))).toEqual(readFileSync(path));
+    }
+  });
+  it("keeps modified copies independent from source files, sibling copies and later materializations", () => {
+    const firstRoot = join(root, "input-isolation-first"), siblingRoot = join(root, "input-isolation-sibling"), laterRoot = join(root, "input-isolation-later");
+    const paths = materializeWorkflowFixtureInputs(firstRoot); materializeWorkflowFixtureInputs(siblingRoot);
+    const changedPath = paths[0]!, original = readFileSync(changedPath);
+    writeFileSync(join(firstRoot, changedPath), "Synthetic case-local input mutation\n");
+    expect(readFileSync(join(firstRoot, changedPath)).equals(original)).toBe(false);
+    expect(materializeWorkflowFixtureInputs(laterRoot)).toEqual(paths);
+    for (const path of paths) {
+      const bytes = readFileSync(path);
+      expect(readFileSync(join(siblingRoot, path)).equals(bytes)).toBe(true); expect(readFileSync(join(laterRoot, path)).equals(bytes)).toBe(true);
+    }
+    expect(readFileSync(changedPath).equals(original)).toBe(true); expect(readFileSync(join(root, changedPath)).equals(original)).toBe(true);
+  });
+});
 function request(template: WorkflowPreviewRequest["template_id"] = "analysis"): WorkflowPreviewRequest {
   const roles = template === "analysis" ? ["portfolio-analyst"] : template === "operations-investigation" ? ["operations-observer"] : template === "implementation" ? ["planner", "software-engineer", "reviewer"] : ["software-engineer", "reviewer"];
   return { template_id: template, template_version: 1, project_id: "alpha", issue_id: issueId, expected_revision: readIssueDocument().issues[issueId]!.revision,
@@ -89,7 +142,7 @@ function plannerGate(exhaustTokens = false) {
     document.decisions[decisionId] = { schema_version: 1, id: decisionId, workflow_id: workflow.id, kind: "plan-approval", status: "pending", expected_workflow_revision: workflow.revision,
       expected_issue_revision: readIssueDocument().issues[issueId]!.revision, resource_fingerprint: stage.output_fingerprint, candidate_id: null, review_receipt_ids: [], summary: "Approve this exact plan", approval_id: null, decided_by: null, rationale: null, created_at: at, decided_at: null };
   });
-  const workflow = readWorkflowDocument().workflows[started.result.workflow.id]!, decision = readWorkflowDocument().decisions[decisionId]!;
+  const document = readWorkflowDocument(), workflow = document.workflows[started.result.workflow.id]!, decision = document.decisions[decisionId]!;
   return { ...started, workflow, decision, stageId, taskId, payload: { expected_revision: workflow.revision, expected_issue_revision: decision.expected_issue_revision, decision_id: decision.id,
     resource_fingerprint: decision.resource_fingerprint, decision: "approve", approval_id: "synthetic-plan-approval", rationale: "Synthetic current exact plan approval", confirm: true } };
 }
@@ -208,7 +261,7 @@ describe("canonical workflow budget exhaustion", () => {
     expect(after.evidence[after.issues[issueId]!.evidence_ids.at(-1)!]).toMatchObject({ candidate_id: fixture.replacement.id, candidate_revision: fixture.replacement.candidate_revision });
     expect(readWorkflowDocument().workflows[fixture.ownerId]!.candidate).toEqual(fixture.candidate);
     expect(readWorkflowDocument().lineages[fixture.result.workflow.lineage_id!]!.candidate_ids).toEqual([fixture.candidate.candidate_id]);
-    expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task); expect(after.issues[issueId]!.candidate_ids).toEqual([fixture.candidate.candidate_id, fixture.replacement.id]);
+    expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`)).equals(task)).toBe(true); expect(after.issues[issueId]!.candidate_ids).toEqual([fixture.candidate.candidate_id, fixture.replacement.id]);
   });
   it.each(["base", "run", "event", "lineage"])("refuses an unsealed correction replacement with stale %s without rewriting retained authority", (change) => {
     const fixture = correctionReplacementBudgetFixture();
@@ -222,7 +275,7 @@ describe("canonical workflow budget exhaustion", () => {
       writeFileSync(join(state, "workflows/workflows.json"), '{"schema_version":99}');
       const invalid = workflowBytes(); expect(() => fixture.service.stopForBudget(fixture.ownerId, "observe")).toThrow(); expect(workflowBytes()).toBe(invalid);
     } else { expect(() => fixture.service.stopForBudget(fixture.ownerId, "observe")).toThrow(/stale|progress/); expect(workflowBytes()).toBe(beforeWorkflow); }
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(beforeIssue)).toBe(true); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`)).equals(task)).toBe(true);
   });
   it.each(["authorized", "working", "checking"] as const)("takes only the existing %s needs-decision edge with exact retained evidence", (status) => {
     const fixture = budgetExhaustionFixture(status), beforeTask = readFileSync(join(state, `tasks/${fixture.taskId}.json`));
@@ -239,25 +292,25 @@ describe("canonical workflow budget exhaustion", () => {
       denials: [{ code: "budget-exhausted", scope: "root", dimension: "total_tokens", cap: fixture.result.workflow.budget.max_total_tokens, remaining: 0 }] } });
     expect(document.evidence[issue.evidence_ids.at(-1)!]).toMatchObject({ task_id: fixture.taskId, execution_id: fixture.runId, status: "gap", candidate_id: fixture.candidate?.candidate_id ?? null });
     expect(readWorkflowDocument().events.at(-1)).toMatchObject({ type: "budget-stopped", stage_id: fixture.stageId, execution_id: fixture.runId, summary: workflowBudgetStopSummary(stop) });
-    expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(beforeTask); expect(listTasks()).toHaveLength(1); expect(existsSync(join(state, "budgets"))).toBe(false);
+    expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`)).equals(beforeTask)).toBe(true); expect(listTasks()).toHaveLength(1); expect(existsSync(join(state, "budgets"))).toBe(false);
   });
   it("retains the one issue transition across repeated calls, later high-water, restart and explicit human resume", () => {
     const fixture = budgetExhaustionFixture(); fixture.service.stopForBudget(fixture.result.workflow.id, "observe");
     const beforeIssue = readFileSync(join(state, "issues/issues.json")), beforeWorkflow = workflowBytes();
     expect(fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toBe(true);
     expect(createIssueService(root).recordWorkflowBudgetExhaustion(fixture.result.workflow.id, "observe")).toBe(false);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(workflowBytes()).toBe(beforeWorkflow);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(beforeIssue)).toBe(true); expect(workflowBytes()).toBe(beforeWorkflow);
     mutateWorkflowDocument((document) => {
       const owner = document.workflows[fixture.result.workflow.id]!; owner.revision++; owner.updated_at = new Date().toISOString();
       document.accounting[fixture.runId]!.active_runtime_ms = 150; owner.counters.runtime_ms = 150;
     });
     const afterHighWater = workflowBytes();
     expect(createWorkflowService(root).stopForBudget(fixture.result.workflow.id, "observe")).toBe(true);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(workflowBytes()).toBe(afterHighWater);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(beforeIssue)).toBe(true); expect(workflowBytes()).toBe(afterHighWater);
     const issue = readIssueDocument().issues[issueId]!; createIssueService(root).resolveDecision(issueId, issue.revision, "synthetic-human-resume", "Inspect retained consumption before any fresh admission.");
     const resumed = readFileSync(join(state, "issues/issues.json"));
     expect(createIssueService(root).recordWorkflowBudgetExhaustion(fixture.result.workflow.id, "observe")).toBe(false);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(resumed); expect(readIssueDocument().issues[issueId]!.status).toBe("authorized");
+    expect(readFileSync(join(state, "issues/issues.json")).equals(resumed)).toBe(true); expect(readIssueDocument().issues[issueId]!.status).toBe("authorized");
   });
   it.each(["expired-lease", "replaced-run", "generation", "scope", "unrelated-progress", "candidate"])("refuses %s stale budget ownership without task, issue or workflow effects", (change) => {
     const fixture = budgetExhaustionFixture(change === "candidate" ? "checking" : "working");
@@ -271,19 +324,19 @@ describe("canonical workflow budget exhaustion", () => {
     if (change === "candidate") mutateIssueDocument((document) => { document.candidates[fixture.candidate!.candidate_id]!.invalidated_at = new Date().toISOString(); });
     const beforeIssue = readFileSync(join(state, "issues/issues.json")), beforeWorkflow = workflowBytes(), beforeTask = readFileSync(join(state, `tasks/${fixture.taskId}.json`));
     expect(() => fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toThrow(/stale|lease|scope|progress/);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(workflowBytes()).toBe(beforeWorkflow);
-    expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(beforeTask); expect(listTasks()).toHaveLength(1);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(beforeIssue)).toBe(true); expect(workflowBytes()).toBe(beforeWorkflow);
+    expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`)).equals(beforeTask)).toBe(true); expect(listTasks()).toHaveLength(1);
   });
   it.each(["ready-for-review", "done", "cancelled", "blocked", "needs-decision"] as const)("preserves protected %s issue state instead of rewriting it through exhaustion", (status) => {
     const fixture = budgetExhaustionFixture(); mutateIssueDocument((document) => { document.issues[issueId]!.status = status; });
     const beforeIssue = readFileSync(join(state, "issues/issues.json")), beforeWorkflow = workflowBytes();
     expect(fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toBe(false);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(workflowBytes()).toBe(beforeWorkflow);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(beforeIssue)).toBe(true); expect(workflowBytes()).toBe(beforeWorkflow);
   });
   it("does not turn a human Planner gate or a correction opt-out into budget exhaustion", () => {
     const gate = plannerGate(), before = workflowBytes(), issue = readFileSync(join(state, "issues/issues.json"));
     expect(gate.service.stopForBudget(gate.workflow.id, "correction")).toBe(false);
-    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue);
+    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json")).equals(issue)).toBe(true);
   });
   it("stops an exact exhausted read-only quality review without rewinding the protected ready-for-review issue", () => {
     const candidate = verifiedLegacyCandidate(), { service, result } = start({}, { ...request("quality-review"),
@@ -304,8 +357,8 @@ describe("canonical workflow budget exhaustion", () => {
     expect(service.stopForBudget(result.workflow.id, "observe")).toBe(true);
     expect(readWorkflowDocument().workflows[result.workflow.id]).toMatchObject({ status: "needs-decision", recovery_state: "awaiting-human" });
     expect(readWorkflowDocument().events.at(-1)).toMatchObject({ type: "budget-stopped", execution_id: runId });
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(before); expect(readIssueDocument().issues[issueId]!.status).toBe("ready-for-review");
-    expect(readFileSync(join(state, `tasks/${stage.task_id}.json`))).toEqual(task); expect(listTasks()).toHaveLength(2);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(before)).toBe(true); expect(readIssueDocument().issues[issueId]!.status).toBe("ready-for-review");
+    expect(readFileSync(join(state, `tasks/${stage.task_id}.json`)).equals(task)).toBe(true); expect(listTasks()).toHaveLength(2);
   });
   it("records authorization-stale before an exhausted successor even after legitimate human Planner approval", () => {
     const gate = plannerGate(true); gate.service.decide(gate.workflow.id, gate.payload);
@@ -314,7 +367,7 @@ describe("canonical workflow budget exhaustion", () => {
     expect(readIssueDocument().issues[issueId]!.status).toBe("needs-decision");
     expect(readIssueDocument().events.at(-1)).toMatchObject({ type: "authorization-stale", payload: { stage_id: gate.stageId, task_id: gate.taskId } });
     expect(readWorkflowDocument().workflows[gate.workflow.id]!.approved_plan).not.toBeNull(); expect(listTasks()).toHaveLength(1);
-    expect(readFileSync(join(state, `tasks/${gate.taskId}.json`))).toEqual(task);
+    expect(readFileSync(join(state, `tasks/${gate.taskId}.json`)).equals(task)).toBe(true);
   });
   it("requires the exact retained budget-stopped event before an issue recorder may mutate", () => {
     const fixture = budgetExhaustionFixture();
@@ -324,7 +377,7 @@ describe("canonical workflow budget exhaustion", () => {
     });
     const before = readFileSync(join(state, "issues/issues.json"));
     expect(createIssueService(root).recordWorkflowBudgetExhaustion(fixture.result.workflow.id, "observe")).toBe(false);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(before); expect(fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toBe(false);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(before)).toBe(true); expect(fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toBe(false);
   });
   it("retains a durable stop through an issue persistence gap and retries only its exact canonical transition", () => {
     const fixture = budgetExhaustionFixture(), beforeIssue = readFileSync(join(state, "issues/issues.json")), beforeTask = readFileSync(join(state, `tasks/${fixture.taskId}.json`));
@@ -332,7 +385,7 @@ describe("canonical workflow budget exhaustion", () => {
     expect(() => fixture.service.stopForBudget(fixture.result.workflow.id, "observe")).toThrow(/persistence failure/);
     const stopped = readWorkflowDocument(); expect(stopped.workflows[fixture.result.workflow.id]).toMatchObject({ status: "needs-decision", recovery_state: "awaiting-human" });
     expect(stopped.events.at(-1)).toMatchObject({ type: "budget-stopped", execution_id: fixture.runId });
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(beforeIssue); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(beforeTask);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(beforeIssue)).toBe(true); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`)).equals(beforeTask)).toBe(true);
     const stoppedBytes = workflowBytes(); mutation.mockRestore();
     expect(createWorkflowService(root).stopForBudget(fixture.result.workflow.id, "observe")).toBe(true);
     expect(workflowBytes()).toBe(stoppedBytes); expect(readIssueDocument().issues[issueId]!.status).toBe("needs-decision");
@@ -343,7 +396,7 @@ describe("canonical workflow budget exhaustion", () => {
     mutateWorkflowDocument((document) => { const owner = document.workflows[fixture.result.workflow.id]!; owner.revision++; owner.updated_at = new Date().toISOString(); owner.next_action = "Current synthetic inspection differs."; });
     const before = workflowBytes(), issue = readFileSync(join(state, "issues/issues.json"));
     expect(() => fixture.service.stopForBudget(fixture.result.workflow.id, "observe", snapshot)).toThrow(/snapshot is stale/);
-    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue);
+    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json")).equals(issue)).toBe(true);
   });
   it("retains proven usage and unavailable totals when exact interrupted accounting requires a decision", () => {
     const fixture = budgetExhaustionFixture(), at = new Date().toISOString();
@@ -368,7 +421,7 @@ describe("canonical workflow budget exhaustion", () => {
     expect(payload.budget_exhaustion).toMatchObject({ denials: expect.arrayContaining([{ code: "budget-accounting-unavailable", scope: "root", dimension: "accounting", cap: null,
       proven_consumed: fixture.result.workflow.budget.max_total_tokens, remaining: null, required: 1 }]) });
     expect(payload.budget_consumption).toMatchObject({ root: { canonical: { total_tokens: fixture.result.workflow.budget.max_total_tokens, accounting_complete: false }, runtime_ms: null, total_tokens: null } });
-    expect(workflowBytes()).toBe(bytes); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task); expect(listTasks()).toHaveLength(1);
+    expect(workflowBytes()).toBe(bytes); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`)).equals(task)).toBe(true); expect(listTasks()).toHaveLength(1);
   });
   it("reports canonical and independent consumption read-only while an active final total remains unknown", () => {
     const fixture = budgetExhaustionFixture(), before = workflowBytes(), issue = readFileSync(join(state, "issues/issues.json")), task = readFileSync(join(state, `tasks/${fixture.taskId}.json`));
@@ -376,7 +429,7 @@ describe("canonical workflow budget exhaustion", () => {
     expect(detail.budget_consumption).toMatchObject({ root: { canonical: { attempts: 1, runtime_ms: 100, total_tokens: fixture.result.workflow.budget.max_total_tokens }, runtime_ms: null, total_tokens: null },
       review: { counters: { tasks: 0, attempts: 0, runtime_ms: 0, total_tokens: 0 } }, correction: { enabled: false, consumed: 0, remaining: 0 } });
     expect(lineage.budget_consumption).toEqual({ availability: "available", workflows: [detail.budget_consumption] });
-    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task);
+    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json")).equals(issue)).toBe(true); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`)).equals(task)).toBe(true);
   });
 });
 
@@ -417,8 +470,8 @@ describe("independent canonical budget evidence", () => {
     writeFileSync(join(state, "workflows/workflows.json"), JSON.stringify(workflows));
     const issue = readFileSync(join(state, "issues/issues.json")), task = readFileSync(join(state, `tasks/${fixture.taskId}.json`)), ledger = readFileSync(join(state, "budgets/budgets.json")), workflow = workflowBytes();
     expect(() => createIssueService(root).recordIndependentWorkflowBudgetExhaustion(fixture.result.workflow.id)).toThrow(/cannot be reconstructed|no longer exact/);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task);
-    expect(readFileSync(join(state, "budgets/budgets.json"))).toEqual(ledger); expect(workflowBytes()).toBe(workflow); expect(listTasks()).toHaveLength(1);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(issue)).toBe(true); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`)).equals(task)).toBe(true);
+    expect(readFileSync(join(state, "budgets/budgets.json")).equals(ledger)).toBe(true); expect(workflowBytes()).toBe(workflow); expect(listTasks()).toHaveLength(1);
   });
   it.each([false, true])("recovers exact static %s evidence after a workflow-to-issue persistence gap without O charges, authority or refunds", async (unknown) => {
     const fixture = await independentStopFixture(unknown), task = readFileSync(join(state, `tasks/${fixture.taskId}.json`)), ledger = readFileSync(join(state, "budgets/budgets.json"));
@@ -426,13 +479,13 @@ describe("independent canonical budget evidence", () => {
     expect(() => fixture.controller.stopForIndependentBudget(fixture.taskId, fixture.receipt)).toThrow(/issue gap/); fault.mockRestore();
     const workflow = workflowBytes(), retained = readWorkflowDocument().events.at(-1)!;
     expect(retained).toMatchObject({ type: "budget-stopped", execution_id: null });
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue); expect(readWorkflowDocument().accounting).toEqual({});
+    expect(readFileSync(join(state, "issues/issues.json")).equals(issue)).toBe(true); expect(readWorkflowDocument().accounting).toEqual({});
     expect(createIssueService(root).recordIndependentWorkflowBudgetExhaustion(fixture.result.workflow.id)).toBe(true);
     expect(readIssueDocument().events.at(-1)).toMatchObject({ type: "authorization-stale", payload: { task_id: fixture.taskId, execution_id: fixture.runId,
       independent_budget_exhaustion: { denials: expect.arrayContaining([expect.objectContaining(unknown ? { code: "budget-accounting-unavailable", dimension: "accounting", cap: null } : { code: "budget-exhausted", dimension: "total_tokens", cap: 20 })]) } } });
-    expect(workflowBytes()).toBe(workflow); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`))).toEqual(task); expect(readFileSync(join(state, "budgets/budgets.json"))).toEqual(ledger);
+    expect(workflowBytes()).toBe(workflow); expect(readFileSync(join(state, `tasks/${fixture.taskId}.json`)).equals(task)).toBe(true); expect(readFileSync(join(state, "budgets/budgets.json")).equals(ledger)).toBe(true);
     const final = readFileSync(join(state, "issues/issues.json")); expect(createIssueService(root).recordIndependentWorkflowBudgetExhaustion(fixture.result.workflow.id)).toBe(false);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(final); expect(Object.values(readBudgetLedger()!.charges)).toHaveLength(1);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(final)).toBe(true); expect(Object.values(readBudgetLedger()!.charges)).toHaveLength(1);
   });
   it("strictly parses retained evidence and rejects changed bindings, malformed tuples and caller receipt copies", async () => {
     const fixture = await independentStopFixture(); fixture.controller.stopForIndependentBudget(fixture.taskId, fixture.receipt);
@@ -445,7 +498,7 @@ describe("independent canonical budget evidence", () => {
     const issue = readIssueDocument().issues[issueId]!; createIssueService(root).resolveDecision(issueId, issue.revision, "synthetic-independent-human", "Inspect exact consumption before any future admission.");
     await fixture.budgets.observe(fixture.proof, 25, 2);
     const resumed = readFileSync(join(state, "issues/issues.json")); expect(createIssueService(root).recordIndependentWorkflowBudgetExhaustion(fixture.result.workflow.id)).toBe(false);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(resumed); expect(readIssueDocument().issues[issueId]!.status).toBe("authorized");
+    expect(readFileSync(join(state, "issues/issues.json")).equals(resumed)).toBe(true); expect(readIssueDocument().issues[issueId]!.status).toBe("authorized");
   });
 });
 
@@ -457,8 +510,8 @@ describe("durable explicit workflow admission", () => {
     const expected = [{ stage_id: stage.id, task_id: stage.task_id, availability: "available", readiness: { phase: "scaffold", executable: false, status: "historical", reason: "budget-admission-required", next_action: expect.any(String) } }];
     expect(result.budget_readiness).toEqual(expected); expect(service.detail(result.workflow.id).budget_readiness).toEqual(expected);
     expect(result.execution_enabled).toBe(available); expect(notify).toHaveBeenCalledExactlyOnceWith(stage.task_id);
-    expect(readTask(stage.task_id!)!.envelope).not.toHaveProperty("budget_admission"); expect(readFileSync(taskPath)).toEqual(bytes);
-    expect(workflowBytes()).toBe(workflowBefore); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBefore);
+    expect(readTask(stage.task_id!)!.envelope).not.toHaveProperty("budget_admission"); expect(readFileSync(taskPath).equals(bytes)).toBe(true);
+    expect(workflowBytes()).toBe(workflowBefore); expect(readFileSync(join(state, "issues/issues.json")).equals(issueBefore)).toBe(true);
     expect(readdirSync(state, { recursive: true })).toEqual(inventory); expect(existsSync(join(state, "budgets"))).toBe(false);
   });
   it("shows valid retained synthetic BudgetAdmission v1 on context v2 as blocked P data, not O controller proof", () => {
@@ -468,7 +521,7 @@ describe("durable explicit workflow admission", () => {
     const prepared = prepareTaskBudgetAdmission(task, { source, attribution: { company_id: "surtec", objective_ids: [], project_ids: ["alpha"], issue_id: issueId, role_id: stage.role_id, execution_id: task.envelope.id } });
     writeTask(prepared.task); const bytes = readFileSync(join(state, `tasks/${task.envelope.id}.json`)), before = workflowBytes();
     const detail = service.detail(result.workflow.id); expect(detail.budget_readiness![0]!.readiness).toMatchObject({ phase: "scaffold", executable: false, status: "bound", reason: "budget-cutover-unavailable" });
-    expect(detail.execution_enabled).toBe(false); expect(readFileSync(join(state, `tasks/${task.envelope.id}.json`))).toEqual(bytes);
+    expect(detail.execution_enabled).toBe(false); expect(readFileSync(join(state, `tasks/${task.envelope.id}.json`)).equals(bytes)).toBe(true);
     expect(workflowBytes()).toBe(before); expect(existsSync(join(state, "budgets"))).toBe(false);
   });
   it.each(["missing", "malformed", "future-budget"])("reports %s retained task readiness as unavailable without changing workflow/history", (kind) => {
@@ -479,7 +532,7 @@ describe("durable explicit workflow admission", () => {
     const bytes = existsSync(path) ? readFileSync(path) : null, before = workflowBytes(), issueBefore = readFileSync(join(state, "issues/issues.json"));
     expect(service.detail(result.workflow.id).budget_readiness).toEqual([{ stage_id: stage.id, task_id: stage.task_id, availability: "unavailable", readiness: null }]);
     expect(existsSync(path) ? readFileSync(path) : null).toEqual(bytes); expect(workflowBytes()).toBe(before);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBefore); expect(existsSync(join(state, "budgets"))).toBe(false);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(issueBefore)).toBe(true); expect(existsSync(join(state, "budgets"))).toBe(false);
   });
   it.each(["budget_admission", "reservation_id", "reservation", "intent_id", "budget_cutover", "cutover", "execution_enabled"])("rejects injected %s before workflow preview/revalidation/writes", (key) => {
     const context = createWorkflowContextService(root), previewCall = vi.spyOn(context, "preview"), revalidate = vi.spyOn(context, "revalidatePreview"), service = createWorkflowService(root, { context });
@@ -488,7 +541,7 @@ describe("durable explicit workflow admission", () => {
     expect(() => service.start({ request: { ...input, [key]: {} }, preview_fingerprint: "a".repeat(64), confirm: true, approval_id: "synthetic-human" })).toThrow(/request fields/);
     expect(() => service.start({ request: input, preview_fingerprint: "a".repeat(64), confirm: true, approval_id: "synthetic-human", [key]: {} })).toThrow(/request fields/);
     expect(previewCall).not.toHaveBeenCalled(); expect(revalidate).not.toHaveBeenCalled(); expect(listTasks()).toEqual([]);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(bytes); expect(readdirSync(state, { recursive: true })).toEqual(inventory);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(bytes)).toBe(true); expect(readdirSync(state, { recursive: true })).toEqual(inventory);
   });
   it("rejects hooked/hidden root and preview fields without invoking accessors", () => {
     const context = createWorkflowContextService(root), previewCall = vi.spyOn(context, "preview"), revalidate = vi.spyOn(context, "revalidatePreview"), service = createWorkflowService(root, { context }), getter = vi.fn();
@@ -509,7 +562,7 @@ describe("durable explicit workflow admission", () => {
   it("cannot infer correction authority from an unrelated queued root", () => {
     const { service, result } = start(), workflowBytes = readFileSync(join(state, "workflows/workflows.json")), issueBytes = readFileSync(join(state, "issues/issues.json"));
     expect(() => service.admitCorrection(result.workflow.id)).toThrow(/Correction review gate/);
-    expect(readFileSync(join(state, "workflows/workflows.json"))).toEqual(workflowBytes); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issueBytes);
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true); expect(readFileSync(join(state, "issues/issues.json")).equals(issueBytes)).toBe(true);
     expect(listTasks()).toHaveLength(1); expect(readTask(result.stages[0]!.task_id!)!.orchestration!.attempts).toBe(0);
   });
   it("notifies the shared worker only after the exact intent is committed", () => {
@@ -581,7 +634,7 @@ describe("durable explicit workflow admission", () => {
     const { result } = start(); updateTask(result.stages[0]!.task_id!, (task) => { task.lifecycle = "finished"; task.outcome = "needs-review"; task.finished_at = new Date().toISOString(); });
     const issue = readIssueDocument().issues[issueId]!, before = readFileSync(join(state, "issues/issues.json"));
     expect(() => createIssueService(root).dispatch(issueId, issue.revision, "backend-engineer")).toThrow(/active workflow/);
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(before); expect(listTasks()).toHaveLength(1);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(before)).toBe(true); expect(listTasks()).toHaveLength(1);
   });
   it("the trusted v1 dispatch helper cannot bypass ownership with a valid current issue preview", () => {
     const { result } = start(); updateTask(result.stages[0]!.task_id!, (task) => { task.lifecycle = "finished"; task.outcome = "needs-review"; task.finished_at = new Date().toISOString(); });
@@ -592,20 +645,20 @@ describe("durable explicit workflow admission", () => {
     expect(listTasks()).toHaveLength(1);
   });
   it("duplicate linkage before task creation preserves issue bytes and exact task identity", () => {
-    start({ issues: { linkWorkflowTask: (stageId) => { const issues = createIssueService(root), first = issues.linkWorkflowTask(stageId), bytes = readFileSync(join(state, "issues/issues.json")); expect(issues.linkWorkflowTask(stageId)).toEqual(first); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(bytes); return first; } } });
+    start({ issues: { linkWorkflowTask: (stageId) => { const issues = createIssueService(root), first = issues.linkWorkflowTask(stageId), bytes = readFileSync(join(state, "issues/issues.json")); expect(issues.linkWorkflowTask(stageId)).toEqual(first); expect(readFileSync(join(state, "issues/issues.json")).equals(bytes)).toBe(true); return first; } } });
     expect(listTasks()).toHaveLength(1); expect(readIssueDocument().issues[issueId]!.task_ids).toHaveLength(1);
   });
   it("duplicate root approval cannot change or replace an owned identity", () => {
     const { service, input, preview } = start(), before = workflowBytes(), issue = readFileSync(join(state, "issues/issues.json"));
     expect(() => service.start({ request: input, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "second-approval" })).toThrow(/changed|workflow/);
-    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue); expect(listTasks()).toHaveLength(1);
+    expect(workflowBytes()).toBe(before); expect(readFileSync(join(state, "issues/issues.json")).equals(issue)).toBe(true); expect(listTasks()).toHaveLength(1);
   });
   it.each([null, [], { confirm: true }, { confirm: false }, { confirm: "true" }, { approval_id: "" }, { approval_id: "x".repeat(101) }, { approval_id: "C:\\private\\auth.json" }, { grant: {} }, { task_id: "caller-task" }, { context_manifest: {} }, { instructions: "Injected permission" }])("rejects unconfirmed/injected root fields %# before writes", (delta) => {
     const service = createWorkflowService(root), input = request(), preview = service.preview(input), before = readFileSync(join(state, "issues/issues.json"));
     const payload = delta === null || Array.isArray(delta) ? delta : { request: input, preview_fingerprint: preview.fingerprint, confirm: true, approval_id: "synthetic-root", ...delta };
     // An empty delta is not tested here: every valid-looking case is a denial.
     if (delta && !Array.isArray(delta) && Object.keys(delta).length === 1 && delta.confirm === true) (payload as Record<string, unknown>).request = undefined;
-    expect(() => service.start(payload)).toThrow(); expect(listTasks()).toEqual([]); expect(existsSync(join(state, "workflows"))).toBe(false); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(before);
+    expect(() => service.start(payload)).toThrow(); expect(listTasks()).toEqual([]); expect(existsSync(join(state, "workflows"))).toBe(false); expect(readFileSync(join(state, "issues/issues.json")).equals(before)).toBe(true);
   });
   it.each(["source", "issue", "scope", "policy"])("rejects %s drift between preview and confirmation without authority", (kind) => {
     const service = createWorkflowService(root), input = request(), preview = service.preview(input);
@@ -623,7 +676,7 @@ describe("durable explicit workflow admission", () => {
   it("repeated trusted task persistence uses the reserved id and never rewrites bytes/events", () => {
     start({ createTask: (input, repo, options) => {
       const first = createWorkflowTask(input, repo, options), bytes = readFileSync(join(state, `tasks/${first.id}.json`)), events = readTaskEvents(first.id);
-      expect(createWorkflowTask(input, repo, options)).toEqual(first); expect(readFileSync(join(state, `tasks/${first.id}.json`))).toEqual(bytes); expect(readTaskEvents(first.id)).toEqual(events); return first;
+      expect(createWorkflowTask(input, repo, options)).toEqual(first); expect(readFileSync(join(state, `tasks/${first.id}.json`)).equals(bytes)).toBe(true); expect(readTaskEvents(first.id)).toEqual(events); return first;
     } }); expect(listTasks()).toHaveLength(1);
   });
   it.each(["before-task", "after-task", "issue-drift", "commit-drift"])("retains exact identities and denies continuation at %s failure", (point) => {
@@ -662,7 +715,7 @@ describe("exact human plan decisions and body-free projections", () => {
     const result = gate.service.decide(gate.workflow.id, { ...gate.payload, decision });
     expect(result.decisions[0]).toMatchObject({ status: decision === "approve" ? "approved" : "rejected", decided_by: "human" });
     expect(result.workflow.status).toBe(decision === "approve" ? "running" : "needs-decision"); expect(result.workflow.approved_plan !== null).toBe(decision === "approve");
-    expect(readFileSync(join(state, "issues/issues.json"))).toEqual(before); expect(listTasks()).toHaveLength(count);
+    expect(readFileSync(join(state, "issues/issues.json")).equals(before)).toBe(true); expect(listTasks()).toHaveLength(count);
     const bytes = workflowBytes(); expect(() => gate.service.decide(gate.workflow.id, gate.payload)).toThrow(/resolved|stale/); expect(workflowBytes()).toBe(bytes);
   });
   it.each(["source", "scope", "issue-revision", "workflow-revision", "output", "task", "usage", "decision-kind"])("rejects %s drift/replay without successor effects", (kind) => {
@@ -689,7 +742,7 @@ describe("exact human plan decisions and body-free projections", () => {
   it.each(["cancel", "recover", "candidate-acceptance", "replacement", "correction"])("keeps unsupported %s mutations denied", () => {
     const { service, result } = start(), bytes = workflowBytes(), issue = readFileSync(join(state, "issues/issues.json"));
     expect(() => service.unsupported(result.workflow.id, { expected_revision: result.workflow.revision, expected_issue_revision: readIssueDocument().issues[issueId]!.revision })).toThrow(/not implemented/);
-    expect(workflowBytes()).toBe(bytes); expect(readFileSync(join(state, "issues/issues.json"))).toEqual(issue); expect(listTasks()).toHaveLength(1);
+    expect(workflowBytes()).toBe(bytes); expect(readFileSync(join(state, "issues/issues.json")).equals(issue)).toBe(true); expect(listTasks()).toHaveLength(1);
   });
   it("rejects inherited, oversized and unknown decision authority fields", () => {
     const gate = plannerGate(), before = workflowBytes();
@@ -711,5 +764,19 @@ describe("exact human plan decisions and body-free projections", () => {
   it("strict filters and safe not-found lookup do not become path parameters", () => {
     const { service, result } = start(); expect(service.list({ issue_id: issueId })).toEqual([result.workflow]); expect(service.list({ project_id: "other" })).toEqual([]);
     expect(() => service.list({ path: "private" })).toThrow(); expect(() => service.detail("../private")).toThrow(); expect(() => service.detail("missing")).toThrow(/not found/);
+  });
+});
+
+describe("planner-recovery protected service", () => {
+  it("reads an ineligible unstarted owner without mutating facts or fabricating a decision", async () => {
+    const f = start({ execution: { available: () => true, notify: vi.fn(), cancelTask: vi.fn() } }, request("implementation"));
+    const path = join(state, "workflows/workflows.json"), before = readFileSync(path);
+    const sourceReads = vi.spyOn(await import("../../../lib/state/issues"), "readIssueDocument");
+    expect(f.service.detail(f.result.workflow.id).planner_recovery_offer?.eligible).toBe(false);
+    expect(sourceReads).not.toHaveBeenCalled();
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(() => f.service.offerPlannerRecovery(f.result.workflow.id, { expected_revision: f.result.workflow.revision, expected_issue_revision: readIssueDocument().issues[issueId]!.revision,
+      source_fingerprint: "a".repeat(64), confirm: true, approval_id: "synthetic-offer", rationale: "Do not infer completion", questions: [], risks: [] })).toThrow();
+    expect(readFileSync(path).equals(before)).toBe(true); expect(f.service.detail(f.result.workflow.id).decisions).toEqual([]);
   });
 });

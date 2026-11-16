@@ -1,17 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+import { parse } from "yaml";
 import { readTask, updateTask, writeTask } from "../../../lib/state/store";
 import { assembleContext, contextHash } from "../../../lib/context/assemble";
 import { createTestingEvidence, sealTestingEvidence } from "../../../lib/context/testing-evidence";
 import type { ReviewCandidate } from "../../../lib/issues/types";
 import { defaultTaskOrchestration } from "../../../lib/state/orchestration";
-import { readIssueDocument } from "../../../lib/state/issues";
+import { mutateIssueDocument, readIssueDocument } from "../../../lib/state/issues";
+import * as issueStore from "../../../lib/state/issues";
+import { validateIssueDocument } from "../../../lib/state/validation";
 import type { TaskRecord } from "../../../lib/state/types";
-import type { IssueCreateInput } from "../../../lib/issues/types";
+import type { DeliveryObservation, IssueCreateInput, IssueDocument, RecordDeliveryObservationInput, WorkIssue } from "../../../lib/issues/types";
+import { mutateClientPortfolio } from "../../../lib/state/client-portfolio";
+import { setProjectObjectives, upsertObjective } from "../../../lib/state/organization";
+import * as workflowStore from "../../../lib/state/workflows";
+import type { AgentRoleRegistry } from "../../../lib/context/types";
+import { createContextService } from "./context-service";
 import type { WorkflowDocument } from "../../../lib/workflows/types";
-import { createIssueService, createRoutineIssueProposer, IssueScopeViolationError, pathsOutsideScope, projectWorkflowIssueLink } from "./issue-service";
+import { createIssueService, createRoutineIssueProposer, IssueServiceError, IssueScopeViolationError, pathsOutsideScope, projectWorkflowIssueLink } from "./issue-service";
 import { createTask, prepareTaskBudgetAdmission } from "./dispatch";
 import type { CreateTaskInput, TrustedIssueTaskContext } from "./dispatch";
 import { BUDGET_DIMENSIONS, type BudgetLimits } from "../../../lib/budgets/types";
@@ -622,5 +631,477 @@ describe("local issue service", () => {
     const blocked = issues.get(proposed.id).issue;
     expect(blocked.status).toBe("blocked");
     expect(issues.resumeBlocked(proposed.id, blocked.revision, "Verifier has been restored.").status).toBe("authorized");
+  });
+});
+
+describe("operator-entered delivery observations", () => {
+  const recordedAt = "2026-10-16T12:00:00.000Z";
+  const observation = (overrides: Partial<DeliveryObservation> = {}): DeliveryObservation => ({
+    schema_version: 1, kind: "readiness-reviewed", origin: "operator-entered", commitment_id: null,
+    occurred_at: "2026-10-15T10:00:00.000Z", summary: "Synthetic private delivery fact",
+    source_reference: "delivery-note-1", next_action: "Synthetic private follow-up", ...overrides,
+  });
+  function deliveryService() {
+    return createIssueService(root, { projectIds: () => ["alpha", "beta"], createTask: fakeCreateTask, now: () => new Date(recordedAt) });
+  }
+  const request = (issue: WorkIssue, overrides: Partial<RecordDeliveryObservationInput> = {}): RecordDeliveryObservationInput => ({
+    project_id: issue.project_id, expected_revision: issue.revision, scope_revision: issue.scope_revision,
+    candidate_id: null, candidate_revision: null, diff_fingerprint: null, delivery_observation: observation(), confirm: true, ...overrides,
+  });
+  const issueBytes = () => readFileSync(join(state, "issues/issues.json"));
+  function seedCommitment(projectId = "alpha", id = "commitment-1") {
+    mutateClientPortfolio((document) => { document.commitments[id] = { id, project_id: projectId, client_id: null,
+      title: "Synthetic commitment", expected_outcome: "Inspect a fictional delivery", due_date: null, priority: 1,
+      criticality: "low", state: "planned", issue_numbers: [], pull_request_numbers: [], task_ids: [], session_ids: [],
+      next_action: "Review independently", created_at: recordedAt, updated_at: recordedAt }; });
+  }
+  function candidateFixture() {
+    const issues = deliveryService(), issue = issues.create(input());
+    const authorized = issues.authorize(issue.id, issue.revision, "synthetic-human");
+    const taskId = issues.dispatch(issue.id, authorized.revision, "frontend-engineer").taskId;
+    activateTask(taskId, "delivery-run");
+    updateTask(taskId, (task) => { task.orchestration!.lease!.expires_at = new Date(Math.max(Date.now(), Date.parse(recordedAt)) + 60_000).toISOString(); });
+    const candidate = issues.recordCandidate({ issueId: issue.id, taskId, executionId: "delivery-run", repositoryId: "alpha",
+      baseRevision: "a".repeat(40), candidateRevision: "b".repeat(40), changedPaths: ["dashboard/src/value.ts"], scopeRevision: 1 });
+    finishTask(taskId);
+    return { issues, issue: readIssueDocument().issues[issue.id]!, taskId, candidate };
+  }
+
+  it.each<DeliveryObservation["kind"]>(["readiness-reviewed", "environment-observed", "handoff-recorded", "client-response-recorded", "follow-up-recorded"])("records %s as private informational evidence only", (kind) => {
+    const issues = deliveryService(), issue = issues.create(input()), before = readIssueDocument();
+    const result = issues.recordDeliveryObservation(issue.id, request(issue, { delivery_observation: observation({ kind, source_reference: "https://delivery.example.test/release/1" }) }));
+    const document = readIssueDocument(), { delivery_observation: facet, ...outer } = result.evidence;
+    expect(facet).toEqual(observation({ kind, source_reference: "https://delivery.example.test/release/1" }));
+    expect(outer).toMatchObject({ kind: "work-product", status: "informational", task_id: null, execution_id: null, candidate_id: null,
+      candidate_revision: null, diff_fingerprint: null, scope_revision: 1, label: "Operator-entered delivery observation",
+      reference: `/api/work-issues/${issue.id}`, created_at: recordedAt });
+    expect(outer).not.toHaveProperty("testing_evidence_fingerprint");
+    expect(JSON.stringify(outer)).not.toContain("Synthetic private");
+    expect(document.events.at(-1)).toMatchObject({ type: "delivery-observation-recorded", payload: {
+      evidence_id: result.evidence.id, kind, candidate_id: null, commitment_id: null } });
+    expect(JSON.stringify(document.events)).not.toContain("Synthetic private");
+    expect(result.issue).toEqual({ ...before.issues[issue.id], evidence_ids: [result.evidence.id], revision: issue.revision + 1, updated_at: recordedAt });
+    expect(document.candidates).toEqual(before.candidates); expect(fakeCreateTask).not.toHaveBeenCalled();
+    expect(existsSync(join(state, "tasks"))).toBe(false); expect(existsSync(join(state, "workflows"))).toBe(false);
+    expect(existsSync(join(state, "portfolio"))).toBe(false); expect(existsSync(join(state, "budgets"))).toBe(false);
+    const bytes = issueBytes(); expect(deliveryService().get(issue.id).evidence.at(-1)).toEqual(result.evidence); expect(issueBytes()).toEqual(bytes);
+    expect(issues.get(issue.id).evidence_gaps.join(" ")).toMatch(/verification|review/i);
+  });
+
+  it("preserves absent legacy facets and refuses stale or repeated revisions without another append", () => {
+    const { issues, issue, candidate } = candidateFixture(), bytes = issueBytes();
+    expect(issues.get(issue.id).evidence.every((entry) => !Object.hasOwn(entry, "delivery_observation"))).toBe(true);
+    expect(issueBytes()).toEqual(bytes);
+    const body = request(issue, { candidate_id: candidate.id, candidate_revision: candidate.candidate_revision, diff_fingerprint: candidate.diff_fingerprint });
+    const result = issues.recordDeliveryObservation(issue.id, body), recorded = issueBytes();
+    expect(result.evidence).toMatchObject({ candidate_id: candidate.id, candidate_revision: candidate.candidate_revision,
+      diff_fingerprint: candidate.diff_fingerprint, task_id: null, execution_id: null });
+    expect(() => issues.recordDeliveryObservation(issue.id, body)).toThrow(/revision|scope changed/);
+    expect(issueBytes()).toEqual(recorded); expect(readIssueDocument().issues[issue.id]!.evidence_ids).toHaveLength(issue.evidence_ids.length + 1);
+  });
+
+  it("cannot turn manual readiness into verification, local acceptance or dispatched instructions", () => {
+    const issues = deliveryService(), issue = issues.create(input());
+    const recorded = issues.recordDeliveryObservation(issue.id, request(issue));
+    expect(recorded.issue.status).toBe("proposed"); expect(recorded.issue.authorized_scope).toEqual(issue.authorized_scope);
+    expect(() => issues.dispatch(issue.id, recorded.issue.revision, "frontend-engineer")).toThrow(/authorization/);
+    const authorized = issues.authorize(issue.id, recorded.issue.revision, "synthetic-human");
+    issues.dispatch(issue.id, authorized.revision, "frontend-engineer");
+    expect(vi.mocked(fakeCreateTask).mock.calls[0]![0].instructions).not.toContain("Synthetic private");
+    expect(recorded.evidence.status).toBe("informational"); expect(recorded.evidence.kind).not.toBe("verification");
+  });
+
+  it("excludes every private response field from actual issue and workflow context assembly without effects", () => {
+    const projectRoot = join(root, "projects"), project = join(projectRoot, "alpha");
+    mkdirSync(join(project, ".git"), { recursive: true }); mkdirSync(join(root, "registry"));
+    for (const name of ["agents.yml", "agent-roles.yml", "context-policy.yml", "budget-policy.yml"]) cpSync(join("registry", name), join(root, "registry", name));
+    const roles = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
+    for (const path of new Set(roles.roles.flatMap((role) => role.required_evaluation_ids))) {
+      mkdirSync(join(root, ...path.split("/").slice(0, -1)), { recursive: true }); cpSync(path, join(root, path));
+    }
+    writeFileSync(join(root, "registry/projects.yml"), JSON.stringify({ projects: { alpha: {
+      allowed_agents: ["tech-lead", "backend-engineer"], sandbox: { default: "workspace-write" }, verify: ["node verify.mjs"],
+    } } }));
+    const previousProjectsRoot = process.env.SURTEC_PROJECTS_ROOT; process.env.SURTEC_PROJECTS_ROOT = projectRoot;
+    try {
+      const issues = deliveryService(), proposed = issues.create(input({ assigned_role_id: "backend-engineer" }));
+      const privateFields = { summary: "Synthetic confidential response marker", source_reference: "private-response-source-732",
+        next_action: "Synthetic confidential next-action marker" };
+      const recorded = issues.recordDeliveryObservation(proposed.id, request(proposed, { delivery_observation: observation({
+        kind: "client-response-recorded", ...privateFields,
+      }) }));
+      const issue = issues.authorize(proposed.id, recorded.issue.revision, "synthetic-human"), bytes = issueBytes(), inventory = readdirSync(state, { recursive: true });
+      const context = createContextService(root), body = { kind: "issue", project: "alpha", agent: "backend-engineer",
+        role_id: "software-engineer", issue_id: issue.id, expected_revision: issue.revision };
+      const preview = context.preview(body), admitted = context.admit(body, preview.fingerprint);
+      const planning = context.assembleWorkflowRole({ ...body, agent: "tech-lead", role_id: "planner" }, "planning");
+      expect(preview.allowed).toBe(true); expect(planning.preview.allowed).toBe(true);
+      expect(admitted.issue!.evidence_ids).toContain(recorded.evidence.id);
+      expect(preview.manifest.sources.some((entry) => entry.id === "issue/authorized-work")).toBe(true);
+      expect(preview.manifest.selected_categories).toEqual([]); expect(planning.preview.manifest.selected_categories).toEqual([]);
+      for (const marker of Object.values(privateFields)) {
+        expect(JSON.stringify(preview)).not.toContain(marker); expect(admitted.rendered).not.toContain(marker);
+        expect(JSON.stringify(planning.preview)).not.toContain(marker); expect(planning.rendered).not.toContain(marker);
+      }
+      expect(issueBytes()).toEqual(bytes); expect(readdirSync(state, { recursive: true })).toEqual(inventory);
+      expect(fakeCreateTask).not.toHaveBeenCalled(); expect(existsSync(join(state, "tasks"))).toBe(false);
+      expect(existsSync(join(state, "workflows"))).toBe(false); expect(existsSync(join(state, "budgets"))).toBe(false);
+    } finally {
+      if (previousProjectsRoot === undefined) delete process.env.SURTEC_PROJECTS_ROOT; else process.env.SURTEC_PROJECTS_ROOT = previousProjectsRoot;
+    }
+  });
+
+  it.each([
+    ["future facet", { schema_version: 2 }], ["wrong origin", { origin: "runtime-generated" }], ["unknown kind", { kind: "verification-passed" }],
+    ["future time", { occurred_at: "2026-10-16T12:00:00.001Z" }], ["invalid calendar", { occurred_at: "2026-02-30T10:00:00.000Z" }],
+    ["blank summary", { summary: " " }], ["long summary", { summary: "s".repeat(501) }], ["padded summary", { summary: " padded " }],
+    ["long next action", { next_action: "n".repeat(501) }], ["empty next action", { next_action: "" }], ["control text", { next_action: "next\u0000action" }],
+    ["credential summary", { summary: "password=synthetic-value" }], ["credential next action", { next_action: "api_key=synthetic-value" }],
+    ["credential source", { source_reference: "sk-synthetic0123456789" }], ["unknown property", { approval: true }],
+    ["file source", { source_reference: "file:///C:/private/note.txt" }], ["absolute source", { source_reference: "C:\\private\\note.txt" }],
+    ["relative source", { source_reference: "../private.txt" }], ["command source", { source_reference: "node verify.mjs" }],
+    ["userinfo source", { source_reference: "https://user:pass@example.test/fact" }], ["query source", { source_reference: "https://example.test/fact?secret=x" }],
+    ["fragment source", { source_reference: "https://example.test/fact#value" }], ["encoded source", { source_reference: "https://example.test/%2e%2e" }],
+    ["long source", { source_reference: "s".repeat(301) }], ["invalid commitment", { commitment_id: "../other" }],
+  ])("rejects %s without mutating bytes", (_name, fields) => {
+    const issues = deliveryService(), issue = issues.create(input()), bytes = issueBytes();
+    const body = request(issue, { delivery_observation: { ...observation(), ...fields } as DeliveryObservation });
+    expect(() => issues.recordDeliveryObservation(issue.id, body)).toThrow(); expect(issueBytes()).toEqual(bytes); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects unconfirmed, unknown, inherited, hidden, symbolic, accessor and proxy request data before getters or persistence", () => {
+    const issues = deliveryService(), issue = issues.create(input()), bytes = issueBytes(), getter = vi.fn();
+    const body = request(issue), malformed = [null, [], { ...body, confirm: false }, { ...body, expected_revision: 1.5 },
+      { ...body, scope_revision: 0 }, { ...body, runtime: true }, { ...body, delivery_observation: null },
+      Object.assign(Object.create({ confirm: true }), body), { ...body, [Symbol("authority")]: true },
+      Object.defineProperty({ ...body }, "confirm", { enumerable: false, value: true }),
+      Object.defineProperty({ ...body }, "confirm", { enumerable: true, get: getter }),
+      new Proxy(body, { getPrototypeOf: getter }), { ...body, delivery_observation: new Proxy(observation(), { getPrototypeOf: getter }) },
+      { ...body, delivery_observation: Object.defineProperty(observation(), "summary", { enumerable: true, get: getter }) }];
+    for (const value of malformed) expect(() => issues.recordDeliveryObservation(issue.id, value as never)).toThrow();
+    expect(getter).not.toHaveBeenCalled(); expect(issueBytes()).toEqual(bytes); expect(fakeCreateTask).not.toHaveBeenCalled();
+    expect(readdirSync(join(state, "issues"))).toEqual(["issues.json"]);
+  });
+
+  it.each(["project", "scope", "missing-candidate", "cross-issue", "revision", "fingerprint", "invalidated", "not-latest", "partial-binding"])("refuses %s binding without rewriting evidence", (change) => {
+    const { issues, issue, candidate } = candidateFixture();
+    const other = issues.create(input({ project_id: "beta" }));
+    const body = request(issue, { candidate_id: candidate.id, candidate_revision: candidate.candidate_revision, diff_fingerprint: candidate.diff_fingerprint });
+    if (change === "project") body.project_id = "beta";
+    if (change === "scope") body.scope_revision++;
+    if (change === "missing-candidate") body.candidate_id = `C-${randomUUID()}`;
+    if (change === "revision") body.candidate_revision = "c".repeat(40);
+    if (change === "fingerprint") body.diff_fingerprint = "d".repeat(64);
+    if (change === "partial-binding") body.candidate_revision = null;
+    if (["cross-issue", "invalidated", "not-latest"].includes(change)) mutateIssueDocument((document) => {
+      if (change === "cross-issue") {
+        const id = `C-${randomUUID()}`; document.candidates[id] = { ...candidate, id, issue_id: other.id, repository_id: "beta" };
+        document.issues[other.id]!.candidate_ids.push(id); body.candidate_id = id;
+      }
+      if (change === "invalidated") document.candidates[candidate.id]!.invalidated_at = recordedAt;
+      if (change === "not-latest") {
+        const id = `C-${randomUUID()}`; document.candidates[id] = { ...candidate, id }; document.issues[issue.id]!.candidate_ids.push(id);
+      }
+    });
+    const bytes = issueBytes(); expect(() => issues.recordDeliveryObservation(issue.id, body)).toThrow(); expect(issueBytes()).toEqual(bytes);
+  });
+
+  it("retains historical candidate and scope facts after later invalidation without rewriting them", () => {
+    const { issues, issue, candidate } = candidateFixture();
+    const saved = issues.recordDeliveryObservation(issue.id, request(issue, { candidate_id: candidate.id,
+      candidate_revision: candidate.candidate_revision, diff_fingerprint: candidate.diff_fingerprint }));
+    mutateIssueDocument((document) => { document.candidates[candidate.id]!.invalidated_at = recordedAt; document.issues[issue.id]!.scope_revision++; });
+    const bytes = issueBytes(); expect(deliveryService().get(issue.id).evidence.find((entry) => entry.id === saved.evidence.id)).toEqual(saved.evidence);
+    expect(issueBytes()).toEqual(bytes); expect(saved.evidence.scope_revision).toBe(1);
+  });
+
+  it("validates an existing same-project commitment without changing its bytes or state", () => {
+    const issues = deliveryService(), issue = issues.create(input({ related_commitment_ids: ["commitment-1"] })); seedCommitment();
+    const path = join(state, "portfolio/clients.json"), before = readFileSync(path);
+    const result = issues.recordDeliveryObservation(issue.id, request(issue, { delivery_observation: observation({ kind: "client-response-recorded", commitment_id: "commitment-1" }) }));
+    expect(result.evidence.delivery_observation!.commitment_id).toBe("commitment-1"); expect(readFileSync(path)).toEqual(before);
+    expect(JSON.parse(readFileSync(path, "utf8")).commitments["commitment-1"].state).toBe("planned");
+    expect(existsSync(join(state, "locks/client-portfolio.lock"))).toBe(false);
+  });
+
+  it.each(["unlinked", "missing", "cross-project", "malformed", "future", "hard-linked", "oversized"])("refuses %s commitment source without changing issue or source bytes", (change) => {
+    const issues = deliveryService(), issue = issues.create(input({ related_commitment_ids: change === "unlinked" ? [] : ["commitment-1"] }));
+    const path = join(state, "portfolio/clients.json");
+    if (change !== "missing") seedCommitment(change === "cross-project" ? "beta" : "alpha");
+    if (change === "malformed") writeFileSync(path, "{");
+    if (change === "future") writeFileSync(path, '{"schema_version":99}');
+    if (change === "hard-linked") linkSync(path, join(state, "portfolio/copy.json"));
+    if (change === "oversized") writeFileSync(path, " ".repeat(10 * 1024 * 1024 + 1));
+    const before = issueBytes(), source = existsSync(path) ? readFileSync(path) : null;
+    expect(() => issues.recordDeliveryObservation(issue.id, request(issue, { delivery_observation: observation({ commitment_id: "commitment-1" }) }))).toThrow();
+    expect(issueBytes()).toEqual(before);
+    const retained = existsSync(path) ? readFileSync(path) : null;
+    expect(source === null ? retained === null : retained !== null && retained.equals(source)).toBe(true);
+  });
+
+  it.each(["queued", "running", "missing", "malformed"])("refuses %s task ownership without changing task or issue", (change) => {
+    const issues = deliveryService(), issue = issues.create(input()), authorized = issues.authorize(issue.id, issue.revision, "synthetic-human");
+    const admitted = issues.dispatch(issue.id, authorized.revision, "frontend-engineer"), path = join(state, `tasks/${admitted.taskId}.json`);
+    if (change === "running") activateTask(admitted.taskId, "delivery-running");
+    if (change === "missing") rmSync(path);
+    if (change === "malformed") writeFileSync(path, "{");
+    const before = issueBytes(), task = existsSync(path) ? readFileSync(path) : null;
+    expect(() => issues.recordDeliveryObservation(issue.id, request(admitted.issue))).toThrow(/owner/);
+    expect(issueBytes()).toEqual(before); expect(existsSync(path) ? readFileSync(path) : null).toEqual(task);
+  });
+
+  it.each(["proposed", "running", "awaiting-decision", "stopped"])("keeps %s workflow ownership fenced without changing grants or issue", (status) => {
+    const issues = deliveryService(), issue = issues.create(input()), before = issueBytes(), document = workflowStore.readWorkflowDocument();
+    document.workflows["WF-synthetic"] = { id: "WF-synthetic", issue_id: issue.id, status } as never;
+    const snapshot = structuredClone(document); vi.spyOn(workflowStore, "readWorkflowDocument").mockReturnValue(document);
+    expect(() => issues.recordDeliveryObservation(issue.id, request(issue))).toThrow(/workflow owner/);
+    expect(issueBytes()).toEqual(before); expect(document).toEqual(snapshot); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+
+  it.each(["malformed", "future"])("refuses %s workflow source without repairing it", (change) => {
+    const issues = deliveryService(), issue = issues.create(input()), before = issueBytes(), path = join(state, "workflows/workflows.json");
+    mkdirSync(join(state, "workflows")); const bytes = change === "malformed" ? "{" : '{"schema_version":99}'; writeFileSync(path, bytes);
+    expect(() => issues.recordDeliveryObservation(issue.id, request(issue))).toThrow(/ownership is unavailable/);
+    expect(issueBytes()).toEqual(before); expect(readFileSync(path, "utf8")).toBe(bytes);
+  });
+
+  it.each(["manual", "issue-evidence", "global-evidence", "events"])("refuses %s overflow without evicting history", (limit) => {
+    const issues = deliveryService(), issue = issues.create(input());
+    const seed = (document: IssueDocument) => {
+      const owners = [document.issues[issue.id]!];
+      if (limit === "global-evidence") for (let index = 0; index < 10; index++) {
+        const id = `I-${randomUUID()}`; document.issues[id] = { ...structuredClone(issue), id, evidence_ids: [] }; owners.push(document.issues[id]!);
+      }
+      if (limit === "events") while (document.events.length < 20_000) document.events.push({ id: randomUUID(), issue_id: issue.id, type: "synthetic-history", at: recordedAt, scope_revision: 1, payload: {} });
+      const count = limit === "manual" ? 64 : limit === "issue-evidence" ? 500 : limit === "global-evidence" ? 5000 : 0;
+      for (let index = 0; index < count; index++) {
+        const owner = owners[limit === "global-evidence" ? Math.floor((index + 1) / 500) : Math.floor(index / 500)]!, id = `E-${randomUUID()}`;
+        document.evidence[id] = { schema_version: 1, id, issue_id: owner.id, task_id: null, execution_id: null, candidate_id: null,
+          candidate_revision: null, diff_fingerprint: null, scope_revision: 1, kind: "work-product", label: "Synthetic history", reference: "history",
+          status: "informational", created_at: recordedAt, ...(limit === "manual" ? { delivery_observation: observation() } : {}) };
+        owner.evidence_ids.push(id);
+      }
+    };
+    let retained: IssueDocument | undefined, snapshot: IssueDocument | undefined;
+    if (limit === "manual" || limit === "issue-evidence") mutateIssueDocument(seed);
+    else {
+      // Exercise the service's aggregate-capacity refusal at its mutation boundary,
+      // without repeated filesystem round trips for a maximal synthetic store.
+      retained = readIssueDocument(); seed(retained); expect(validateIssueDocument(retained)).toBe(true); snapshot = structuredClone(retained);
+      vi.spyOn(issueStore, "mutateIssueDocument").mockImplementationOnce((mutate) => mutate(retained!));
+    }
+    const bytes = issueBytes(); expect(() => issues.recordDeliveryObservation(issue.id, request(issue))).toThrow(/capacity/); expect(issueBytes()).toEqual(bytes);
+    if (retained) expect(retained).toEqual(snapshot);
+  });
+
+  it("preserves original bytes and removes only its temporary file after atomic replacement fails", () => {
+    const issues = deliveryService(), issue = issues.create(input()), bytes = issueBytes();
+    vi.mocked(renameSync).mockImplementationOnce(() => { throw new Error("synthetic delivery replacement failure"); });
+    expect(() => issues.recordDeliveryObservation(issue.id, request(issue))).toThrow(/replacement failure/);
+    expect(issueBytes()).toEqual(bytes); expect(readdirSync(join(state, "issues"))).toEqual(["issues.json"]);
+    expect(readIssueDocument().events.filter((event) => event.type === "delivery-observation-recorded")).toHaveLength(0);
+  });
+});
+
+describe("durable manual intake identity in the issue service", () => {
+  const issuePath = () => join(state, "issues/issues.json");
+  const bytes = () => readFileSync(issuePath());
+  const keyedInput = (overrides: Partial<IssueCreateInput> = {}) => input({ request_id: randomUUID(), ...overrides });
+  const richInput = () => keyedInput({ plan: ["Inspect the bounded change.", "Implement and verify it."], next_action: "Inspect the existing view.",
+    external_references: [{ provider: "github", url: "https://example.invalid/issues/1", reference: "request-1" },
+      { provider: "github", url: "https://example.invalid/issues/2", reference: "request-2" }] });
+  function expectStatus(action: () => unknown, status: number): void {
+    let failure: unknown;
+    try { action(); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(IssueServiceError);
+    expect(failure).toMatchObject({ status });
+  }
+
+  it("creates one server receipt and proposal event without authorizing or dispatching work", () => {
+    const payload = keyedInput(), created = service().create(payload), document = readIssueDocument();
+    expect(created.intake_receipt).toEqual({ schema_version: 1, request_id: payload.request_id, request_fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(Object.keys(document.issues)).toEqual([created.id]);
+    expect(document.events.map((event) => event.type)).toEqual(["issue-proposed"]);
+    expect(created.status).toBe("proposed"); expect(created.task_ids).toEqual([]); expect(created.candidate_ids).toEqual([]);
+    expect(document.evidence).toEqual({}); expect(fakeCreateTask).not.toHaveBeenCalled();
+    expect(existsSync(join(state, "tasks"))).toBe(false); expect(existsSync(join(state, "workflows"))).toBe(false);
+  });
+
+  it("retains the unkeyed internal legacy path without adding retrospective receipts", () => {
+    const issues = service(), first = issues.create(input()), second = issues.create(input());
+    expect(first.id).not.toBe(second.id);
+    expect(Object.hasOwn(first, "intake_receipt")).toBe(false); expect(Object.hasOwn(second, "intake_receipt")).toBe(false);
+    expect(Object.values(readIssueDocument().issues).every((issue) => !Object.hasOwn(issue, "intake_receipt"))).toBe(true);
+  });
+
+  it("treats validated defaults, trimmed text and object-key order as the same original request", () => {
+    const payload = keyedInput(), issues = service(), created = issues.create(payload), before = bytes();
+    const explicit = { ...payload, title: ` ${payload.title} `, objective_id: null, parent_issue_id: null,
+      classification_inputs: { security_impact: false, requires_migration: false, affected_domains: [] }, plan: [], priority: 50, criticality: "low" as const,
+      blocked_by_issue_ids: [], related_commitment_ids: [], external_references: [], next_action: null,
+      authorized_scope: Object.fromEntries(Object.entries(payload.authorized_scope).reverse()) as unknown as IssueCreateInput["authorized_scope"] };
+    const reordered = Object.fromEntries(Object.entries(explicit).reverse()) as unknown as IssueCreateInput;
+    vi.mocked(renameSync).mockClear();
+    expect(issues.create(reordered)).toEqual(created); expect(bytes()).toEqual(before);
+    expect(vi.mocked(renameSync)).not.toHaveBeenCalled(); expect(readIssueDocument().events).toHaveLength(1);
+  });
+
+  it("normalizes reference object keys while preserving their array order", () => {
+    const payload = richInput(), issues = service(), created = issues.create(payload), before = bytes();
+    const reordered = { ...payload, external_references: payload.external_references!.map(({ provider, url, reference }) => ({ reference, url, provider })) };
+    vi.mocked(renameSync).mockClear();
+    expect(issues.create(reordered).id).toBe(created.id); expect(bytes()).toEqual(before); expect(vi.mocked(renameSync)).not.toHaveBeenCalled();
+  });
+
+  it("returns current progress after service restart without resetting state or rewriting original bytes", () => {
+    const payload = keyedInput(), issues = service(), created = issues.create(payload);
+    issues.authorize(created.id, created.revision, "synthetic-intake-scope-review");
+    mutateIssueDocument((document) => {
+      document.issues[created.id]!.next_action = "Follow the current reviewed action.";
+      document.issues[created.id]!.plan = ["Current stored plan note."];
+      document.issues[created.id]!.revision++;
+    });
+    const current = readIssueDocument();
+    writeFileSync(issuePath(), `\n${JSON.stringify(current, null, 1)}\n`, "utf8");
+    const before = bytes(), restarted = createIssueService(root, { projectIds: () => ["alpha"], createTask: fakeCreateTask, now: () => new Date("2030-01-01T00:00:00Z") });
+    vi.mocked(renameSync).mockClear();
+    const replay = restarted.create(structuredClone(payload));
+    expect(replay).toEqual(current.issues[created.id]); expect(replay.status).toBe("authorized");
+    expect(replay.intake_receipt).toEqual(created.intake_receipt); expect(bytes()).toEqual(before);
+    expect(vi.mocked(renameSync)).not.toHaveBeenCalled(); expect(readIssueDocument().events).toEqual(current.events); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+
+  const changedFields: [string, (payload: IssueCreateInput) => void][] = [
+    ["title", (payload) => { payload.title = "A different requested result"; }],
+    ["outcome", (payload) => { payload.expected_outcome = "A different expected outcome."; payload.authorized_scope.expected_outcome = payload.expected_outcome; }],
+    ["acceptance criteria", (payload) => { payload.acceptance_criteria.push("Another required result."); payload.authorized_scope.acceptance_criteria = [...payload.acceptance_criteria]; }],
+    ["allowed paths", (payload) => { payload.authorized_scope.allowed_path_patterns.push("docs/**"); }],
+    ["excluded paths", (payload) => { payload.authorized_scope.excluded_path_patterns.push("docs/private/**"); }],
+    ["change categories", (payload) => { payload.authorized_scope.allowed_change_categories.push("docs"); }],
+    ["explicit exclusions", (payload) => { payload.authorized_scope.explicit_exclusions.push("Keep the existing navigation."); }],
+    ["affected domains", (payload) => { payload.classification_inputs = { affected_domains: ["ui"] }; }],
+    ["migration classification", (payload) => { payload.classification_inputs = { requires_migration: true }; }],
+    ["security classification", (payload) => { payload.classification_inputs = { security_impact: true }; }],
+    ["plan", (payload) => { payload.plan = ["A different bounded plan."]; }],
+    ["priority", (payload) => { payload.priority = 51; }],
+    ["criticality", (payload) => { payload.criticality = "high"; }],
+    ["parent", (payload) => { payload.parent_issue_id = `I-${randomUUID()}`; }],
+    ["blockers", (payload) => { payload.blocked_by_issue_ids = [`I-${randomUUID()}`]; }],
+    ["assignment", (payload) => { payload.assigned_role_id = "backend-engineer"; }],
+    ["commitments", (payload) => { payload.related_commitment_ids = ["commitment-other"]; }],
+    ["external references", (payload) => { payload.external_references![0]!.reference = "request-other"; }],
+    ["next action", (payload) => { payload.next_action = "Review a different next action."; }],
+    ["project", (payload) => { payload.project_id = "beta"; }],
+    ["objective", (payload) => { payload.objective_id = "objective-not-linked"; }],
+  ];
+  it.each(changedFields)("rejects the same request identity with changed %s without new state", (_field, change) => {
+    const payload = richInput(), issues = createIssueService(root, { projectIds: () => ["alpha", "beta"], createTask: fakeCreateTask });
+    const created = issues.create(payload), before = bytes(), changed = structuredClone(payload); change(changed);
+    vi.mocked(renameSync).mockClear();
+    expectStatus(() => issues.create(changed), 409);
+    expect(bytes()).toEqual(before); expect(vi.mocked(renameSync)).not.toHaveBeenCalled();
+    expect(Object.keys(readIssueDocument().issues)).toEqual([created.id]); expect(readIssueDocument().events).toHaveLength(1); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+
+  it.each(["criticality", "migration", "security"])("resolves changed identity before the new-create %s plan requirement", (kind) => {
+    const payload = keyedInput(), issues = service(); issues.create(payload); const before = bytes(), changed = structuredClone(payload);
+    if (kind === "criticality") changed.criticality = "high";
+    if (kind === "migration") changed.classification_inputs = { requires_migration: true };
+    if (kind === "security") changed.classification_inputs = { security_impact: true };
+    expectStatus(() => issues.create(changed), 409); expect(bytes()).toEqual(before);
+  });
+
+  it.each(["criteria", "plan", "categories", "references"])("keeps %s array order significant to the original request", (kind) => {
+    const payload = richInput(), issues = service(); issues.create(payload); const before = bytes(), changed = structuredClone(payload);
+    if (kind === "criteria") { changed.acceptance_criteria.reverse(); changed.authorized_scope.acceptance_criteria = [...changed.acceptance_criteria]; }
+    if (kind === "plan") changed.plan!.reverse();
+    if (kind === "categories") changed.authorized_scope.allowed_change_categories.reverse();
+    if (kind === "references") changed.external_references!.reverse();
+    expectStatus(() => issues.create(changed), 409); expect(bytes()).toEqual(before);
+  });
+
+  it("allows distinct request identities for equivalent content", () => {
+    const payload = keyedInput(), issues = service(), first = issues.create(payload), second = issues.create({ ...payload, request_id: randomUUID() });
+    expect(second.id).not.toBe(first.id); expect(second.intake_receipt!.request_id).not.toBe(first.intake_receipt!.request_id);
+    expect(second.intake_receipt!.request_fingerprint).toBe(first.intake_receipt!.request_fingerprint);
+    expect(Object.keys(readIssueDocument().issues)).toHaveLength(2); expect(readIssueDocument().events).toHaveLength(2);
+  });
+
+  it.each([null, 1, [], "", "not-a-uuid", "A1111111-B222-4333-8444-E55555555555", " a1111111-b222-4333-8444-e55555555555 "])("refuses an invalid supplied request identity before creating state (%#)", (requestId) => {
+    expectStatus(() => service().create(input({ request_id: requestId as string })), 400);
+    expect(existsSync(issuePath())).toBe(false); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects a caller-owned intake receipt instead of trusting or overwriting it", () => {
+    const payload = { ...keyedInput(), intake_receipt: { schema_version: 1, request_id: randomUUID(), request_fingerprint: "f".repeat(64) } };
+    expectStatus(() => service().create(payload), 400); expect(existsSync(issuePath())).toBe(false); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+
+  it("resolves replay before the issue capacity check while preserving all retained records", () => {
+    const payload = keyedInput(), issues = service(), created = issues.create(payload), legacy = structuredClone(created); delete legacy.intake_receipt;
+    const document = readIssueDocument();
+    const prefix = created.id.startsWith("I-00000000-0000-4000-8000-") ? "I-11111111-0000-4000-8000-" : "I-00000000-0000-4000-8000-";
+    for (let index = 0; index < 499; index++) {
+      const id = `${prefix}${index.toString(16).padStart(12, "0")}`;
+      document.issues[id] = { ...legacy, id, title: `Synthetic capacity record ${index}` };
+    }
+    // Seed only the synthetic fixture compactly; both exercised create paths
+    // below still use the real locked store and validate all 500 records.
+    writeFileSync(issuePath(), JSON.stringify(document), "utf8");
+    const before = bytes(); vi.mocked(renameSync).mockClear();
+    expect(issues.create(payload).id).toBe(created.id);
+    expect(bytes().equals(before), "replay preserves exact state bytes").toBe(true);
+    expect(vi.mocked(renameSync)).not.toHaveBeenCalled();
+    expectStatus(() => issues.create({ ...payload, request_id: randomUUID() }), 409);
+    expect(Object.keys(readIssueDocument().issues)).toHaveLength(500);
+    expect(bytes().equals(before), "capacity rejection preserves exact state bytes").toBe(true);
+  });
+
+  it("recovers an original receipt after its objective is legitimately unlinked", () => {
+    const objectiveId = "intake-objective";
+    upsertObjective({ schema_version: 1, id: objectiveId, company_id: "surtec", title: "Synthetic intake goal", desired_outcome: "Verify request identity.",
+      success_criteria: ["Keep one original request."], status: "draft", horizon: "now", priority: 1, target_date: null, parent_objective_id: null,
+      project_ids: [], owner: "marcos", last_reviewed_at: null });
+    setProjectObjectives("alpha", [objectiveId], objectiveId);
+    const payload = keyedInput({ objective_id: objectiveId }), issues = service(), created = issues.create(payload);
+    setProjectObjectives("alpha", [], null);
+    const before = bytes(); vi.mocked(renameSync).mockClear();
+    expect(service().create(payload)).toEqual(created); expect(bytes()).toEqual(before); expect(vi.mocked(renameSync)).not.toHaveBeenCalled();
+    expectStatus(() => issues.create({ ...payload, request_id: randomUUID() }), 409); expect(bytes()).toEqual(before);
+  });
+
+  it("returns the current issue before rechecking removed original parent and blocker references", () => {
+    const issues = service(), originalParent = issues.create(input({ title: "Synthetic original dependency" }));
+    const payload = keyedInput({ parent_issue_id: originalParent.id, blocked_by_issue_ids: [originalParent.id] }), created = issues.create(payload);
+    mutateIssueDocument((document) => {
+      const current = document.issues[created.id]!; current.parent_issue_id = null; current.blocked_by_issue_ids = []; current.revision++;
+      delete document.issues[originalParent.id];
+    });
+    const expected = readIssueDocument().issues[created.id], before = bytes(); vi.mocked(renameSync).mockClear();
+    expect(service().create(payload)).toEqual(expected); expect(bytes()).toEqual(before); expect(vi.mocked(renameSync)).not.toHaveBeenCalled();
+  });
+
+  it("retains current project access requirements when a request is replayed", () => {
+    const payload = keyedInput(); service().create(payload); const before = bytes();
+    const unavailable = createIssueService(root, { projectIds: () => [], createTask: fakeCreateTask });
+    expectStatus(() => unavailable.create(payload), 404); expect(bytes()).toEqual(before); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+
+  it("refuses a competing locked replay before any issue or task effect", () => {
+    const payload = keyedInput(), issues = service(); issues.create(payload); const before = bytes();
+    mkdirSync(join(state, "locks"), { recursive: true }); const lockPath = join(state, "locks/issues.lock"), owner = "synthetic-intake-lock-owner\n";
+    writeFileSync(lockPath, owner, "utf8");
+    expect(() => service().create(payload)).toThrow(/lock is busy/); expect(bytes()).toEqual(before); expect(readFileSync(lockPath, "utf8")).toBe(owner);
+    expect(readIssueDocument().events).toHaveLength(1); expect(fakeCreateTask).not.toHaveBeenCalled();
+  });
+
+  it("preserves the aggregate after failed replacement and permits one later explicit same-identity retry", () => {
+    const issues = service(); issues.create(input({ title: "Retained legacy baseline" })); const payload = keyedInput(), before = bytes();
+    vi.mocked(renameSync).mockImplementationOnce(() => { throw new Error("Synthetic manual intake replacement failure"); });
+    expect(() => issues.create(payload)).toThrow("Synthetic manual intake replacement failure"); expect(bytes()).toEqual(before);
+    expect(readdirSync(join(state, "issues"))).toEqual(["issues.json"]);
+    const retried = service().create(payload), after = bytes(); vi.mocked(renameSync).mockClear();
+    expect(service().create(payload)).toEqual(retried); expect(bytes()).toEqual(after); expect(vi.mocked(renameSync)).not.toHaveBeenCalled();
+    expect(Object.keys(readIssueDocument().issues)).toHaveLength(2); expect(readIssueDocument().events).toHaveLength(2); expect(fakeCreateTask).not.toHaveBeenCalled();
   });
 });

@@ -9,6 +9,8 @@ import outputSchema from "../../schemas/workflow-role-output.schema.json";
 import policySchema from "../../schemas/workflow-policy.schema.json";
 import documentSchema from "../../schemas/workflow-document.schema.json";
 import issueSchema from "../../schemas/work-issue.schema.json";
+import { approvedPlannerRecovery, assertPlannerRecoveryPlainData, offeredPlannerRecovery } from "./planner-recovery";
+import { assertUnchargedClaimRecovery, assertUnchargedClaimRecoveryMutation } from "./uncharged-claim-recovery";
 import {
   WORKFLOW_LIMITS, type GovernedWorkflow, type RoleHandoff, type ReviewReceipt,
   type WorkflowAdmissionIntent, type WorkflowCandidateBinding, type WorkflowCandidateLineage,
@@ -106,7 +108,21 @@ export function assertWorkflowGrant(value: unknown): asserts value is WorkflowGr
     for (const key of ["max_tasks", "max_attempts", "max_runtime_ms", "max_total_tokens"] as const) invariant(grant.correction.budget![key] <= grant.budget[key], "Correction exceeds root budget");
   }
 }
+function assertOwnClaimRecovery(value: unknown): void {
+  if (value && typeof value === "object" && "uncharged_claim_recovery" in value) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, "uncharged_claim_recovery");
+    invariant(!!descriptor && "value" in descriptor, "Uncharged recovery must be an own data facet");
+    try { assertPlannerRecoveryPlainData(descriptor.value); }
+    catch { throw new WorkflowContractError("Uncharged recovery must contain plain JSON data"); }
+  }
+}
 export function assertWorkflowRecord(value: unknown): asserts value is GovernedWorkflow {
+  assertOwnClaimRecovery(value);
+  if (value && typeof value === "object" && "planner_recovery" in value) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, "planner_recovery");
+    invariant(!!descriptor && "value" in descriptor, "Recovery must be an own data facet");
+    try { assertPlannerRecoveryPlainData(descriptor.value); } catch { throw new WorkflowContractError("Recovery must contain plain JSON data"); }
+  }
   const workflow = shape<GovernedWorkflow>(validators.record, value, "workflow record");
   ordered(workflow.created_at, workflow.updated_at);
   if (workflow.candidate) candidateBinding(workflow.candidate, workflow.issue_id, workflow.scope_revision, workflow.project_id);
@@ -171,6 +187,12 @@ export function assertWorkflowPolicy(value: unknown): asserts value is WorkflowP
   for (const key of ["max_tasks", "max_attempts", "max_runtime_ms", "max_total_tokens"] as const) invariant(policy.correction_budget[key] <= policy.default_budget[key], "Correction exceeds default root budget");
 }
 export function assertWorkflowDocument(value: unknown): asserts value is WorkflowDocument {
+  if (value && typeof value === "object") {
+    const maps = Object.getOwnPropertyDescriptor(value, "workflows");
+    if (maps && "value" in maps && maps.value && typeof maps.value === "object") {
+      for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(maps.value))) if ("value" in descriptor) assertOwnClaimRecovery(descriptor.value);
+    }
+  }
   const document = shape<WorkflowDocument>(validators.document, value, "workflow document");
   const maps = [document.workflows, document.stages, document.grants, document.decisions, document.handoffs, document.review_receipts, document.admission_intents, document.accounting, document.lineages];
   for (const records of maps) for (const [key, record] of Object.entries(records)) invariant(key === record.id, "Workflow map key differs from record identity");
@@ -218,6 +240,14 @@ function relationships(d: WorkflowDocument): void {
   for (const w of Object.values(d.workflows)) {
     const grant = own(d.grants, w.current_grant_id, "current grant");
     invariant(grant.workflow_id === w.id && grant.authority_revision === w.authority_revision && grant.scope_revision === w.scope_revision && same(grant.budget, w.budget), "Current grant binding differs");
+    if (w.planner_recovery) {
+      try { invariant(!!offeredPlannerRecovery(d, own(d.stages, w.planner_recovery.stage_id, "recovery stage")), "Recovery binding differs"); }
+      catch { throw new WorkflowContractError("Planner recovery provenance is invalid"); }
+    }
+    if (w.uncharged_claim_recovery) {
+      try { assertUnchargedClaimRecovery(d, w); }
+      catch { throw new WorkflowContractError("Uncharged claim recovery provenance is invalid"); }
+    }
     if (w.candidate) indexCandidate(w.candidate, w, w.scope_revision);
     const slots = w.stage_ids.map((id) => own(d.stages, id, "workflow stage"));
     invariant(slots.every((s) => s.workflow_id === w.id), "Workflow stage ownership differs");
@@ -236,8 +266,9 @@ function relationships(d: WorkflowDocument): void {
     if (w.approved_plan) {
       const s = own(d.stages, w.approved_plan.stage_id, "approved plan stage");
       const decision = own(d.decisions, w.approved_plan.decision_id, "approved plan decision");
-      invariant(s.workflow_id === w.id && s.kind === "planning" && s.status === "completed" && s.output_fingerprint === w.approved_plan.output_fingerprint && s.output?.kind === "plan" && !s.output.scope_change_required
-        && decision.workflow_id === w.id && decision.kind === "plan-approval" && decision.status === "approved" && decision.resource_fingerprint === s.output_fingerprint, "Approved plan binding differs");
+      const human = approvedPlannerRecovery(d, s);
+      invariant(s.workflow_id === w.id && s.kind === "planning" && (s.status === "completed" || !!human) && s.output_fingerprint === w.approved_plan.output_fingerprint && s.output?.kind === "plan" && !s.output.scope_change_required
+        && decision.workflow_id === w.id && decision.kind === "plan-approval" && decision.status === "approved" && (decision.resource_fingerprint === s.output_fingerprint || !!human), "Approved plan binding differs");
     }
     // stage_ids indexes the current <=7 slots. Superseded generations remain
     // in the aggregate and must be reachable, not deleted to reset counters.
@@ -258,7 +289,7 @@ function relationships(d: WorkflowDocument): void {
     // A currently running record may still be receiving usage. Interrupted or
     // finished incomplete runs cannot be represented as complete/zero usage.
     invariant(!accounts.some((a) => !a.usage_complete && !(d.stages[a.stage_id]?.status === "running" && d.stages[a.stage_id]?.execution_id === a.execution_id)) || !w.counters.accounting_complete, "Unknown run usage is not complete accounting");
-    invariant(w.status !== "completed" || (w.pending_decision_id === null && w.current_stage_id === null && slots.every((s) => s.status === "completed")), "Completed workflow retains an unfinished stage or decision");
+    invariant(w.status !== "completed" || (w.pending_decision_id === null && w.current_stage_id === null && slots.every((s) => s.status === "completed" || !!approvedPlannerRecovery(d, s))), "Completed workflow retains an unfinished stage or decision");
   }
   for (const s of Object.values(d.stages)) {
     const w = own(d.workflows, s.workflow_id, "stage owner"), grant = own(d.grants, s.grant_id, "stage grant");
@@ -417,7 +448,7 @@ export function assertWorkflowDocumentMutation(before: WorkflowDocument, after: 
   }
   for (const [id, w] of Object.entries(after.workflows)) {
     const old = before.workflows[id];
-    if (!old) { invariant(w.revision === 1, "New workflow must start at revision one"); continue; }
+    if (!old) { invariant(w.revision === 1 && !w.planner_recovery && !w.uncharged_claim_recovery, "New workflow must start at revision one without recovery"); continue; }
     const changed = !same(old, w) || changedOwners.has(id);
     invariant(w.revision === old.revision + Number(changed), "Workflow mutation has a stale or skipped revision");
     invariant(!terminalWorkflow(old) || !changed, "Terminal workflow cannot be reopened or rewritten");
@@ -427,6 +458,17 @@ export function assertWorkflowDocumentMutation(before: WorkflowDocument, after: 
     invariant(old.current_grant_id === w.current_grant_id || w.authority_revision > old.authority_revision, "New grant requires a new authority revision");
     invariant(old.scope_revision === w.scope_revision || w.current_grant_id !== old.current_grant_id, "New scope requires a new grant");
     invariant(!old.stop_requested_at || old.stop_requested_at === w.stop_requested_at, "Durable stop cannot be cleared or rewritten");
+    try { assertUnchargedClaimRecoveryMutation(before, after, w); }
+    catch { throw new WorkflowContractError("Uncharged claim recovery mutation is invalid"); }
+    if (old.planner_recovery) invariant(same(old.planner_recovery, w.planner_recovery), "Planner recovery is immutable");
+    else if (w.planner_recovery) {
+      const stage = before.stages[w.planner_recovery.stage_id];
+      invariant(old.status === "needs-decision" && old.recovery_state === "awaiting-human" && !old.stop_requested_at && !old.pending_decision_id && !old.approved_plan && !old.candidate
+        && old.stage_ids.length === 1 && old.current_stage_id === stage?.id && stage?.kind === "planning" && ["running", "needs-review"].includes(stage.status)
+        && same(old.counters, w.counters) && same(old.counters, w.planner_recovery.original_counters)
+        && old.current_grant_id === w.current_grant_id && old.authority_revision === w.authority_revision && w.status === "waiting-human"
+        && w.pending_decision_id === w.planner_recovery.decision_id && w.recovery_state === "none", "Invalid Planner recovery insertion");
+    }
     for (const key of ["tasks", "attempts", "runtime_ms", "total_tokens"] as const) invariant(w.counters[key] >= old.counters[key], "Workflow counters cannot regress");
   }
   for (const [id, old] of Object.entries(before.stages)) {

@@ -48,6 +48,10 @@ export interface AgentRunInput {
   threadId?: string;
   /** Internal context contract; never forwarded as an experimental protocol field. */
   contextFingerprint?: string;
+  /** Code-owned execution profile; never a public config map or grant. */
+  runtimeContextProfile?: import("./runtime-context-profile").RuntimeContextProfileId;
+  /** Trusted runner identity; never protocol input or model-owned authority. */
+  executionIdentity?: import("./terminal-usage-evidence").ExecutionIdentity;
   resumeContextFingerprint?: string;
   verifyCommands?: string[];
   outputSchema: Record<string, unknown>;
@@ -59,8 +63,9 @@ export interface AgentRunResult {
   threadId: string;
   turnId: string;
   usage: AgentUsage | null;
-  /** Explicitly false when the adapter cannot prove a final total. Omitted by historical fakes. */
+  /** Operational reported completeness, not provider billing finality. Omitted by historical fakes. */
   usageComplete?: boolean;
+  terminalUsageEvidence?: import("./terminal-usage-evidence").TerminalUsageEvidence;
   /** Monotonic proven observations, independent of final-total completeness. */
   usageHighWater?: AgentUsage | null;
 }

@@ -58,6 +58,9 @@ requirements:
   - id: req-acceptance
     description: Prove hierarchy/concurrency/unknown accounting, routine heartbeat/restart/denials, real isolated HTTP/browser flow, raw-byte round-trip and every restore interruption/refusal/cleanup using fictional temporary state, fake runtime/providers and no normal user state.
 constraints:
+  - Owner-approved delivery amendment on 2026-10-16 closes only the historical T001-T014 checkpoint set as a partial Phase P delivery; the complete Phase P contract and its done gate are not satisfied or waived.
+  - T015-T026 are deferred with existing code, unchecked tasks, dependencies and failure evidence preserved; production P budget admission cutover and unaccepted routine/continuity effects stay disabled until separately authorized, implemented and verified.
+  - Further profiling campaigns are not a prerequisite for planning Phase Q; the two observed workflow failures remain unresolved baseline defects and no partial delivery or Q projection may turn them into passing acceptance.
   - Implement only the exact human-approved Phase P design and task delta; proposed metadata, roadmap text and structural validation do not grant execution authority.
   - Preserve the single-user local-first modular monolith, current worker loop, sandbox/capability ceilings and issue lifecycle v1; no new service, database, plugin framework or persistent terminal backend.
   - Split routed context into sequential slices within current 500-line limits; read required skills/documents completely and leave skill hashes, snapshots, command catalog and timeout defaults unchanged.
@@ -97,4 +100,8 @@ designContract:
       command: pnpm build
       expectedExitCode: 0
   checksWaiver: null
-clarifications: []
+clarifications:
+  - date: "2026-10-16"
+    question: Approve a partial Phase P delivery retaining T001-T014, defer T015-T026 without activation or fabricated acceptance, update the design/spec/tasks and then prepare the Phase Q design?
+    answer: The repository owner explicitly approved this scope amendment in the task conversation; prepare Q for review only, preserve all unfinished work and known failures, and do not run more profiling campaigns or enable deferred capabilities.
+    affects: constraints; req-compatibility; req-quiescence; req-acceptance

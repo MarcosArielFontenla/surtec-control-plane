@@ -2,6 +2,12 @@
 
 Surtec Control Plane is a local dashboard for discovering, observing, and safely operating a portfolio of sibling Git repositories. Product code stays in its own repositories; this repository contains only the control plane.
 
+## Active direction
+
+The [Factory Local PoC roadmap](docs/roadmap/factory-local-poc.md) is the active evolution plan: demonstrate one real local delivery through the existing request, authorized plan, execution, candidate, evidence, review, and human acceptance flow.
+
+The roadmap separates the PoC from retained P/Q acceptance debt and future capabilities. Its adoption is documentation-only; it does not certify the current checkout, enable deferred features, or authorize later phases. The [historical evolution roadmap](docs/roadmap/control-plane-evolution.md) retains its original results and planning entries.
+
 ## Stack
 
 - React 18 and Vite in `dashboard/src/ui`
@@ -96,7 +102,8 @@ See `docs/runbooks/codex-runtime.md` and `docs/security/threat-model.md` for the
 - Repository instructions: `AGENTS.md`
 - Current architecture: `docs/architecture/current-architecture.md`
 - Runtime decision: `docs/decisions/ADR-0001-codex-app-server-runtime.md`
-- Evolution roadmap: `docs/roadmap/control-plane-evolution.md`
+- Active roadmap: [Factory Local PoC](docs/roadmap/factory-local-poc.md)
+- Historical roadmap: [Control plane evolution](docs/roadmap/control-plane-evolution.md)
 - Historical implementation records: `docs/superpowers/`
 
 Work is delivered in reviewable slices with tests, type checking, a production build, and no push, merge, or deployment without explicit authorization.

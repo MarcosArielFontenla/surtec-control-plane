@@ -1,9 +1,6 @@
 # Current architecture
-
 ## Product boundary
-
 Surtec Control Plane is a local modular monolith. It discovers sibling Git repositories, overlays trusted project configuration, records local task state, and exposes safe operational actions through one dashboard.
-
 ## Modules
 
 - `dashboard/src/ui`: React views and project controls.
@@ -18,9 +15,7 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 - `runner`: durable task scheduling, agent execution, worktrees, verification, process management, review publication, and startup reconciliation.
 - `registry`: trusted project, agent, logical-role, context-policy and Harness-source configuration.
 - `schemas`: persisted and structured-output contracts.
-
 ## Data flows
-
 ### Portfolio overview
 
 1. Discover depth-one Git repositories under `SURTEC_PROJECTS_ROOT` or the control plane's parent directory.
@@ -28,7 +23,6 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 3. Overlay matching registry metadata.
 4. Combine task state and project overrides into the overview model.
 5. Poll the API from the dashboard.
-
 ### Agent task
 
 1. Explicitly preview an analysis, authorized issue or finite workflow; reassemble its issued request/source/consent/policy binding before task persistence. Workflow approval reserves server-owned stages/intents; implementation additionally needs exact plan/scope approval. API and CLI cannot supply their own manifest or grant.
@@ -41,7 +35,6 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 8. Commit edits and capture exact configured verification while the lease remains owned. Acceptance requires a functional or ordered strict-TDD receipt bound to candidate/scope/policy; workflow writers stay `checking` through required candidate-tree Reviewer/QA receipts, not model-authored success claims.
 9. Validate bounded structured output and finish the task. Supported non-workflow transient failures may retry within budgets; v2 never uses generic retry/requeue. Unknown interrupted usage stops its workflow for human review, not a replacement attempt.
 10. Independently authorized publication/reject cleanup is available only outside active workflow ownership. Workflow acceptance never publishes, and stopping retains candidate trees/evidence. The publication state machine persists effect checkpoints for idempotent resumption.
-
 ### Durable orchestration
 
 - Task JSON is the authoritative current snapshot; `state/events/<task-id>.jsonl` is append-only operational history.
@@ -50,7 +43,6 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 - A stale run id cannot publish progress or a terminal result after its lease was replaced.
 - Startup leaves current leases alone; eligible non-workflow expired leases requeue within budgets. V2 recovery retains identities and finishes expired runs as `needs-review`; unknown usage blocks progression. Unknown worktrees remain report-only.
 - See [ADR-0002](../decisions/ADR-0002-file-first-durable-orchestration.md) for the persistence boundary and migration threshold.
-
 ### Review publication
 
 1. Revalidate current policy and retained workflow task/tree ownership before any decision, Git or cleanup effect; missing/unavailable ownership fails closed.
@@ -58,17 +50,11 @@ Surtec Control Plane is a local modular monolith. It discovers sibling Git repos
 3. Approval pushes once, records that checkpoint, finds an existing open PR before creating one, and then records `approved`.
 4. Rejection removes only a contained managed worktree and `agent/` branch, tolerates already-completed cleanup, and then records `rejected`.
 5. Startup recovers expired task leases and writes an orphan-worktree report. Unknown worktrees are reported, never automatically deleted.
-
 ### Project processes
-
 Configured `dev`, `build`, `test`, `lint`, and `install` commands run through the in-memory process manager. Output is held in a bounded server buffer and streamed over SSE. Process history does not yet survive a server restart.
-
 ### Resumable work sessions
-
 `GET /api/today` composes the active, paused, and five most recent completed work sessions from `state/sessions/work-sessions.json`. Protected `POST /api/sessions` and `POST /api/sessions/:id/action` mutations start, annotate, associate, pause, resume, and complete sessions. The persisted document is schema-validated, globally locked, and atomically replaced; the lock makes the single-active-session rule consistent across cooperating local processes. Project IDs are resolved from discovered sibling repositories, task/process links must belong to the same project, and the current Git branch is captured on start.
-
 Resume evidence is a deterministic read model over stored notes and existing task/process state. It omits event payloads, task instructions/results, raw process commands, absolute paths, and invalid PR URLs. Manual active intervals are accumulated as focused time without collecting user-activity telemetry. Pausing and completing update only session state.
-
 ### Project integrations
 
 1. `GET /api/projects/:id/integrations` resolves the project through `PolicyService`.
@@ -77,13 +63,9 @@ Resume evidence is a deterministic read model over stored notes and existing tas
 4. Provider output is normalized, redacted, URL-filtered, and validated against `project-integrations.schema.json`.
 5. A short in-memory cache avoids multiplying GitHub and deployment reads. Successful Git and branch mutations invalidate the affected aggregate snapshot.
 6. The optional tracer records aggregate and per-deployment-provider spans; the API exposes only a validated trace identifier.
-
 The deployment provider contract exists because HTTP health and Railway are two real implementations. Source control and CI remain concrete integrations until another implementation creates a demonstrated shared abstraction. Provider registration is static code, not dynamic plugin loading.
-
 ### Local HTTP boundary
-
 The production API binds to `127.0.0.1`. API middleware rejects non-loopback `Host` values, cross-origin requests, and cross-site fetch metadata. Mutations additionally require a random in-memory session token obtained by the same-origin dashboard from a no-store endpoint.
-
 ## Current trust boundaries
 
 - Registry YAML is privileged configuration but is untrusted data until it passes its JSON Schema and cross-reference checks.
@@ -93,21 +75,9 @@ The production API binds to `127.0.0.1`. API middleware rejects non-loopback `Ho
 - App Server owns model authentication and sandbox enforcement.
 - External project repositories are outside this repository's ownership boundary.
 
-## Phase J organization design boundary
+## Domain notes by phase
 
-The Phase J design baseline is defined in [ADR-0003](../decisions/ADR-0003-organization-domain-boundary.md), [Issue lifecycle v1](issue-lifecycle-v1.md) and the [migration contract](organization-state-migration.md). Phase K subsequently implemented organization/objective links and the portfolio-profile migration; Phase L adds local issues, authorized scope, task/attempt/session lineage, immutable candidates and evidence-bound local acceptance. The durable task runtime retains its owner and publication gates; local issue acceptance never publishes. See [Local work issues](../runbooks/local-work-issues.md) and [Phase L acceptance](../runbooks/phase-l-acceptance.md) for the current implementation and evidence, rather than interpreting the historical Phase J exclusions as current readiness.
-
-## Phase M Harness observations
-
-`lib/harness` inspects registered local checkouts without executing their instructions or writing their files. The trusted `registry/harness-sources.yml` pins a curated 25-entry H1-H4 manifest; a changed baseline becomes unknown, not automatically adopted. Version detection requires an exact reviewed baseline match; primer/skill versions are not Harness release versions. Protected explicit refresh persists bounded profiles under `state/harness/profiles.json`; GET inventory and Doctor never write observations. Signals consume saved observations, retain their evidence timestamps, and do not authorize repair. Ownership and validation require explicit trusted metadata; script presence and matching hashes are not proof. See [Phase M acceptance](../runbooks/phase-m-acceptance.md) for limits and verification.
-
-## Governed context and Phase O workflows
-
-Six logical Codex profiles intersect existing project/agent permissions; an issue's stored agent assignment remains unchanged. Explicit protected preview exposes attributed source metadata, exclusions and effective requirements, never a rendered private prompt. Application-selected project files are contained and bounded; defaults are 500 physical lines / 60000 UTF-8 bytes, separate from runtime token limits. Client categories start empty. Trusted Harness routes select complete applicable instructions/skills without recursive Markdown inclusion or canonical repinning.
-
-Manifest/testing receipts remain v1; admission explicitly dispatches legacy, v1 analysis/issue or v2 server-owned workflow stages without historical backfill. Preview issuance is bounded, process-local and expires after five minutes; restart requires fresh issuance, not automatic replay. Persisted tasks retain evidence and reassemble current authority independently of that ledger. See [Phase N](phase-n-context-design.md) and [compatibility](organization-state-migration.md#phase-o-additive-workflow-compatibility).
-
-Phase O provides analysis, implementation, quality-review, operations-investigation and trivial-change under exact root/per-role consent and finite aggregate caps. The existing worker runs sequential roles; Reviewer/QA have separate read-only task/thread contracts over the inactive implementer's exact managed candidate, checked before/after. Plan, risk acknowledgement and final criterion acceptance remain human gates. One correction is off by default, consumed before admission, uses the original Engineer/scope and exact prior candidate base, then fresh verification/reviews; replacement/restart cannot refund it. Workflow v1 stores immutable handoffs/receipts, intents, run charges and lineage; recovery reconciles only provable unstarted gaps. See [design](phase-o-workflow-design.md) and [acceptance](../runbooks/phase-o-acceptance.md); neither product role chaining nor development helpers activate Harness multi-agent orchestration.
+Read the [architecture domain notes](architecture-domain-notes.md) for the applicable organization, Harness, governed workflow, recovery or operating-view details. Count those additional reads in the task route.
 
 ## Known limitations
 

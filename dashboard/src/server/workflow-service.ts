@@ -16,6 +16,10 @@ import { resolveWorkflowTemplate } from "../../../lib/workflows/templates";
 import { evaluateCorrectionEligibility, evaluateWorkflowBudgetStop, hasConcreteCorrectionFinding, projectWorkflowConsumption, readWorkflowPolicy, type WorkflowBudgetStopOperation, type WorkflowConsumptionView } from "../../../lib/workflows/policy";
 import { readContextConfig } from "../../../lib/policy/roles";
 import { PolicyService } from "../../../lib/policy/service";
+import type { PlannerRecovery, PlannerQuestionDisposition, PlannerRiskAcknowledgement } from "../../../lib/workflows/types";
+import { approvedPlannerRecovery, assertPlannerDispositions, assertRetainedPlannerTask, offeredPlannerRecovery, plannerRecoveryDecisionFingerprint, plannerRecoveryFingerprint } from "../../../lib/workflows/planner-recovery";
+import { validateTerminalUsageEvidence } from "../../../runner/terminal-usage-evidence";
+import { roleOutputResult } from "../../../lib/workflows/role-output";
 
 export class WorkflowServiceError extends Error {
   constructor(message: string, readonly status: 400 | 404 | 409 = 409, readonly workflowId?: string) { super(message); }
@@ -70,6 +74,43 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
   const issues = options.issues ?? createIssueService(repoRoot, { now });
   const evidenceIssues = createIssueService(repoRoot, { now });
   const makeTask = options.createTask ?? createWorkflowTask;
+  function recoveryFacts(id: string) {
+    const document = readWorkflowDocument(), workflow = findWorkflow(document, id), issueDocument = readIssueDocument();
+    const issue = issueDocument.issues[workflow.issue_id], stage = document.stages[workflow.current_stage_id!];
+    requireCurrent(options.execution?.available() === true && workflow.status === "needs-decision" && workflow.recovery_state === "awaiting-human"
+      && !workflow.planner_recovery && !workflow.pending_decision_id && !workflow.approved_plan && !workflow.candidate && !workflow.lineage_id && !workflow.stop_requested_at
+      && workflow.stage_ids.length === 1 && Object.values(document.stages).filter((entry) => entry.workflow_id === id).length === 1
+      && issue && ["authorized", "working"].includes(issue.status) && !issue.scope_change_proposal && stage, "No eligible retained Planner proposal");
+    const task = stage!.task_id ? readTask(stage!.task_id) : null;
+    requireCurrent(task && validateTaskRecord(task), "Retained Planner task is unavailable");
+    try { assertRetainedPlannerTask(document, stage!, task, validateTerminalUsageEvidence); } catch { throw new WorkflowServiceError("Retained Planner terminal evidence is incomplete or ineligible"); }
+    const grant = document.grants[workflow.current_grant_id]!;
+    requireCurrent(grant.role_assignments.length === 4 && ["planner", "software-engineer", "reviewer", "qa-evaluator"].every((role) => grant.role_assignments.some((a) => a.role_id === role))
+      && workflow.budget.max_tasks - workflow.counters.tasks >= 3 && workflow.budget.max_attempts - workflow.counters.attempts >= 3
+      && workflow.counters.runtime_ms < workflow.budget.max_runtime_ms && workflow.counters.total_tokens < workflow.budget.max_total_tokens, "Remaining grant cannot cover the existing three roles");
+    const normalized = roleOutputResult(task!.envelope, stage!.output, { kind: "planning", issue: issue!, evidence: issueDocument.evidence, candidate: null }, task!.result!.logs_path);
+    requireCurrent(normalized.output && isDeepStrictEqual(normalized.output, stage!.output) && isDeepStrictEqual(normalized.result, task!.result), "Retained Planner result differs from its exact normalization");
+    assertOwnedWorkflowIssueProgress(document, workflow, issueDocument, task!.envelope.context_admission!.issue_revision!);
+    const current = context.inspectPlannerRecoveryAuthority(id);
+    requireCurrent(isDeepStrictEqual(current.issue, issue), "Issue changed during recovery inspection");
+    return { document, workflow, issueDocument, issue: issue!, stage: stage!, task: task!, grant,
+      source_fingerprint: hash({ workflow, stage, task, issue, grant, authority: current.source_fingerprint }) };
+  }
+  function recoveryOffer(id: string, observed: GovernedWorkflow) {
+    const unavailable = { eligible: false as const, reasons: ["Current retained Planner facts do not permit offering recovery; no authority is inferred."], source_fingerprint: null, workflow_revision: null, issue_revision: null, questions: [], risks: [] };
+    // A conservative read projection can refuse from its already validated
+    // owner snapshot. Confirmed recovery still rereads every authority fact.
+    if (observed.template_id !== "implementation" || observed.status !== "needs-decision" || observed.recovery_state !== "awaiting-human"
+      || observed.planner_recovery || observed.pending_decision_id || observed.approved_plan || observed.candidate || observed.lineage_id || observed.stop_requested_at
+      || observed.stage_ids.length !== 1 || !observed.counters.accounting_complete) return unavailable;
+    try {
+      const f = recoveryFacts(id), output = f.stage.output!;
+      return { eligible: true as const, reasons: [] as string[], source_fingerprint: f.source_fingerprint,
+        workflow_revision: f.workflow.revision, issue_revision: f.issue.revision,
+        questions: output.unresolved_questions.map((text, index) => ({ index, text, fingerprint: hash(text) })),
+        risks: output.risks.map((text, index) => ({ index, text, fingerprint: hash(text) })) };
+    } catch { return unavailable; }
+  }
   function detail(id: string) {
     const document = readWorkflowDocument(), workflow = findWorkflow(document, id);
     const grant = document.grants[workflow.current_grant_id]!;
@@ -88,8 +129,9 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
     const budgetProjection: { budget_readiness?: typeof budget_readiness; budget_consumption?: WorkflowConsumptionView } = {
       budget_readiness, budget_consumption: projectWorkflowConsumption(document, id),
     };
+    const recoveryProjection: { planner_recovery_offer?: ReturnType<typeof recoveryOffer> } = { planner_recovery_offer: recoveryOffer(id, workflow) };
     return safeProjection({ schema_version: 1 as const, workflow, grant: publicGrant,
-      stages, ...budgetProjection,
+      stages, ...budgetProjection, ...recoveryProjection,
       decisions: Object.values(document.decisions).filter((entry) => entry.workflow_id === id),
       handoffs: Object.values(document.handoffs).filter((entry) => Object.values(document.stages).some((stage) => stage.workflow_id === id && stage.handoff_id === entry.id)),
       review_receipts: Object.values(document.review_receipts).filter((entry) => entry.workflow_id === id),
@@ -210,11 +252,13 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
   function admitSuccessor(id: string) {
     const snapshot = readWorkflowDocument(), workflow = findWorkflow(snapshot, id), issueDocument = readIssueDocument();
     const predecessor = snapshot.stages[workflow.current_stage_id!]!, task = predecessor?.task_id ? readTask(predecessor.task_id) : null;
-    if (predecessor?.status === "completed" && stopForBudget(id, "admit", snapshot)) throw new WorkflowServiceError("Workflow budget exhaustion requires a human decision");
+    const humanPlanner = predecessor && approvedPlannerRecovery(snapshot, predecessor);
+    if ((predecessor?.status === "completed" || humanPlanner) && stopForBudget(id, "admit", snapshot)) throw new WorkflowServiceError("Workflow budget exhaustion requires a human decision");
     requireCurrent(workflow.status === "running" && !workflow.stop_requested_at && workflow.recovery_state === "none" && !workflow.pending_decision_id
-      && predecessor?.status === "completed" && workflow.counters.tasks < workflow.budget.max_tasks && workflow.counters.attempts < workflow.budget.max_attempts
+      && (predecessor?.status === "completed" || humanPlanner) && workflow.counters.tasks < workflow.budget.max_tasks && workflow.counters.attempts < workflow.budget.max_attempts
       && workflow.counters.runtime_ms < workflow.budget.max_runtime_ms && workflow.counters.total_tokens < workflow.budget.max_total_tokens, "No bounded successor admission is available");
-    assertTerminalWorkflowTask(snapshot, predecessor, task);
+    if (humanPlanner) assertRetainedPlannerTask(snapshot, predecessor, task, validateTerminalUsageEvidence);
+    else assertTerminalWorkflowTask(snapshot, predecessor, task);
     assertOwnedWorkflowIssueProgress(snapshot, workflow, issueDocument, task!.envelope.context_admission!.issue_revision!);
     requireCurrent(!predecessor.output?.requested_decision || predecessor.kind === "planning", "Predecessor requested a human decision");
     const grant = snapshot.grants[workflow.current_grant_id]!, plan = resolveWorkflowTemplate({ template_id: workflow.template_id, template_version: 1, work_scale: workflow.work_scale,
@@ -224,7 +268,7 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
     const completingCorrectionReviews = predecessor.ordinal < plan.stages.length && predecessor.kind === "review" && next?.kind === "qa" && hasConcreteCorrectionFinding(predecessor.output);
     requireCurrent(predecessor.kind !== "review" && predecessor.kind !== "qa" || workflowReviewAllowsContinuation(predecessor.output) || completingCorrectionReviews,
       "Predecessor review evidence requires a human decision");
-    requireCurrent(!predecessor.output?.unresolved_questions.length, "Predecessor evidence requires a decision");
+    requireCurrent(!predecessor.output?.unresolved_questions.length || humanPlanner, "Predecessor evidence requires a decision");
     requireCurrent(next, "No ordinary successor exists; correction admission is evaluated separately");
     if (next.before_human_gates.includes("plan-approval")) requireCurrent(workflow.approved_plan?.stage_id === predecessor.id, "Exact current Planner approval is required");
     if (workflow.candidate) evidenceIssues.inspectWorkflowCandidate(id);
@@ -412,9 +456,46 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
     list(value: unknown = {}) {
       const input = object(value, ["issue_id", "project_id"], []);
       if (input.issue_id !== undefined) identifier(input.issue_id); if (input.project_id !== undefined) identifier(input.project_id);
-      return safeProjection(Object.values(readWorkflowDocument().workflows).filter((entry) => (!input.issue_id || entry.issue_id === input.issue_id) && (!input.project_id || entry.project_id === input.project_id)));
+      return safeProjection(Object.values(readWorkflowDocument().workflows).filter((entry) => (!input.issue_id || entry.issue_id === input.issue_id) && (!input.project_id || entry.project_id === input.project_id))
+        .map(({ planner_recovery: _privateRecovery, ...summary }) => summary));
     },
     detail,
+    offerPlannerRecovery(id: string, value: unknown) {
+      const input = object(value, ["expected_revision", "expected_issue_revision", "source_fingerprint", "confirm", "approval_id", "rationale", "questions", "risks"]);
+      revision(input.expected_revision); revision(input.expected_issue_revision); fingerprint(input.source_fingerprint); humanText(input.approval_id, 100); humanText(input.rationale, 1000);
+      requireCurrent(input.confirm === true, "Explicit human recovery confirmation is required");
+      requireCurrent(Array.isArray(input.questions) && Array.isArray(input.risks), "Complete question and risk acknowledgements are required");
+      for (const q of input.questions as unknown[]) { const question = object(q, ["index", "fingerprint", "kind", "answer"]); fingerprint(question.fingerprint); humanText(question.answer, 500); }
+      for (const r of input.risks as unknown[]) { const risk = object(r, ["index", "fingerprint"]); fingerprint(risk.fingerprint); }
+      const f = recoveryFacts(id);
+      requireCurrent(f.workflow.revision === input.expected_revision && f.issue.revision === input.expected_issue_revision && f.source_fingerprint === input.source_fingerprint, "Recovery offer is stale");
+      const questions = input.questions as PlannerQuestionDisposition[], risks = input.risks as PlannerRiskAcknowledgement[];
+      try { assertPlannerDispositions(f.stage.output!, { questions, risks }); } catch { throw new WorkflowServiceError("Every exact question and risk must be acknowledged", 400); }
+      const at = now().toISOString(), decisionId = `WD-${randomUUID()}`, run = f.task.envelope.metadata.run as Record<string, unknown>;
+      const receipt: PlannerRecovery = { schema_version: 1, id: `WR-${randomUUID()}`, workflow_id: id, project_id: f.workflow.project_id, issue_id: f.issue.id,
+        issue_revision: f.issue.revision, scope_revision: f.issue.scope_revision, stage_id: f.stage.id, generation: f.stage.generation, task_id: f.task.envelope.id,
+        execution_id: f.stage.execution_id!, task_revision: f.task.revision!, context_fingerprint: f.stage.context_fingerprint!, task_fingerprint: hash(f.task),
+        output_fingerprint: f.stage.output_fingerprint!, terminal_receipt_fingerprint: hash(run.terminal_usage_evidence), accounting_fingerprint: hash(f.document.accounting[f.stage.execution_id!]),
+        grant_id: f.grant.id, authority_revision: f.grant.authority_revision, grant_fingerprint: hash(f.grant), original_counters: structuredClone(f.workflow.counters),
+        decision_id: decisionId, requested_by: "human", approval_id: input.approval_id as string, rationale: input.rationale as string,
+        questions: structuredClone(questions), risks: structuredClone(risks), created_at: at, fingerprint: "" };
+      receipt.fingerprint = plannerRecoveryFingerprint(receipt);
+      mutateWorkflowDocument((document) => {
+        requireCurrent(isDeepStrictEqual(document, f.document) && isDeepStrictEqual(readIssueDocument(), f.issueDocument) && isDeepStrictEqual(readTask(f.task.envelope.id), f.task), "Recovery facts changed before persistence");
+        const owner = document.workflows[id]!, stage = document.stages[f.stage.id]!;
+        if (stage.status === "running") { stage.status = "needs-review"; stage.updated_at = at; }
+        owner.planner_recovery = receipt; owner.status = "waiting-human"; owner.recovery_state = "none"; owner.blocked_reason = null;
+        owner.pending_decision_id = decisionId; owner.revision++; owner.updated_at = at;
+        owner.next_action = "Human offered the unchanged incomplete Planner proposal; exact plan approval remains required.";
+        document.decisions[decisionId] = { schema_version: 1, id: decisionId, workflow_id: id, kind: "plan-approval", status: "pending",
+          expected_workflow_revision: owner.revision, expected_issue_revision: f.issue.revision, resource_fingerprint: plannerRecoveryDecisionFingerprint(receipt),
+          candidate_id: null, review_receipt_ids: [], summary: "Approve or reject the exact retained plan and human recovery; Planner remains needs-review.",
+          approval_id: null, decided_by: null, rationale: null, created_at: at, decided_at: null };
+        event(document, owner, "reconciled", at, "Retained incomplete Planner proposal offered by human without redispatch or refund.", stage.id, stage.execution_id);
+        event(document, owner, "decision-requested", at, "Separate exact-plan approval required.", stage.id, stage.execution_id);
+      });
+      return detail(id);
+    },
     stopForBudget,
     reconcileAdmission,
     admitSuccessor,
@@ -537,15 +618,20 @@ export function createWorkflowService(repoRoot = process.cwd(), options: Workflo
         });
         return detail(id);
       }
-      const planner = workflow.stage_ids.map((stageId) => snapshot.stages[stageId]!).find((stage) => stage.kind === "planning" && stage.output_fingerprint === decision.resource_fingerprint);
+      const recovery = workflow.planner_recovery?.decision_id === decision.id ? workflow.planner_recovery : null;
+      const planner = workflow.stage_ids.map((stageId) => snapshot.stages[stageId]!).find((stage) => stage.kind === "planning"
+        && (recovery ? stage.id === recovery.stage_id && decision.resource_fingerprint === plannerRecoveryDecisionFingerprint(recovery) : stage.output_fingerprint === decision.resource_fingerprint));
       const task = planner?.task_id ? readTask(planner.task_id) : null;
-      requireCurrent(planner?.status === "completed" && planner.grant_id === grant.id && planner.output?.kind === "plan" && planner.output.status === "completed" && !planner.output.scope_change_required
+      if (recovery) {
+        requireCurrent(planner && task && validateTaskRecord(task) && offeredPlannerRecovery(snapshot, planner)?.decision_id === decision.id, "Exact recovered Planner proposal is unavailable");
+        assertRetainedPlannerTask(snapshot, planner!, task, validateTerminalUsageEvidence);
+      } else requireCurrent(planner?.status === "completed" && planner.grant_id === grant.id && planner.output?.kind === "plan" && planner.output.status === "completed" && !planner.output.scope_change_required
         && hash(planner.output) === planner.output_fingerprint && isDeepStrictEqual(safeProjection(planner.output), planner.output) && task && validateTaskRecord(task) && task.lifecycle === "finished" && task.outcome === "completed" && !task.orchestration?.lease && !task.orchestration?.cancel_requested_at
         && task.envelope.context_admission?.schema_version === 2 && task.envelope.context_admission.workflow_id === id && task.envelope.context_admission.stage_id === planner.id
         && task.envelope.context_admission.grant_id === grant.id && task.envelope.context_admission.authority_revision === grant.authority_revision && task.envelope.context_admission.stage_generation === planner.generation
         && task.envelope.context_manifest?.fingerprint === planner.context_fingerprint && issue.task_ids.includes(task.envelope.id) && task.orchestration?.last_failure === null, "Exact terminal Planner proposal is not available under current authority");
       const issueFacts = readIssueDocument();
-      requireCurrent(planner.output.evidence_ids.every((id) => { const entry = issueFacts.evidence[id]; return issue.evidence_ids.includes(id) && entry?.issue_id === issue.id && entry.task_id === task.envelope.id && entry.execution_id === planner.execution_id; }), "Planner evidence references are unrelated or missing");
+      requireCurrent(planner.output && planner.output.evidence_ids.every((id) => { const entry = issueFacts.evidence[id]; return issue.evidence_ids.includes(id) && entry?.issue_id === issue.id && entry.task_id === task.envelope.id && entry.execution_id === planner.execution_id; }), "Planner evidence references are unrelated or missing");
       const charge = Object.values(snapshot.accounting).find((entry) => entry.stage_id === planner.id && entry.execution_id === planner.execution_id);
       requireCurrent(charge?.usage_complete && charge.attempt === task.orchestration!.attempts && workflow.counters.accounting_complete, "Planner accounting is incomplete");
       const current = context.preview({ template_id: grant.template_id, template_version: 1, project_id: grant.project_id, issue_id: grant.issue_id, expected_revision: issue.revision,

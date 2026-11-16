@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile, unlink, readdir, lstat, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer as createNetServer, type AddressInfo } from "node:net";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type ViteDevServer } from "vite";
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page, type Request, type Route } from "playwright";
 import { parse, stringify } from "yaml";
-import type { HarnessResponse, WorkflowDetail, WorkflowPreview } from "../dashboard/src/ui/api";
+import { hash as harnessHash, loadHarnessSource, readContained, safeRelative } from "../lib/harness/source";
+import type { HarnessResponse, ManualIssueCreateInput, WorkflowDetail, WorkflowPreview } from "../dashboard/src/ui/api";
 import type { ContextPreview, ContextPreviewRequest } from "../dashboard/src/server/context-service";
 import type { TaskRecord } from "../lib/state/types";
 import type { IssueLineage, WorkIssue } from "../lib/issues/types";
@@ -24,6 +25,270 @@ export async function observeResponse(page: Pick<Page, "waitForResponse">, path:
     Promise.resolve().then(action),
   ]);
   return response;
+}
+
+export const ISSUE_REFRESH_PATHS = ["/api/work-issues", "/api/inbox", "/api/dispatch-options", "/api/organization", "/api/workflows"] as const;
+
+// All five response/body handlers are installed before the real refresh click.
+// Query-bearing workflow polls cannot stand in for the parent list refresh.
+export async function observeIssueRefresh(page: Pick<Page, "waitForResponse">, action: () => Promise<unknown>, timeoutMs = 30_000): Promise<Record<string, unknown>> {
+  let timer!: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("Issues refresh did not complete within its observation deadline")), timeoutMs);
+  });
+  const observation = Promise.all([
+    Promise.all(ISSUE_REFRESH_PATHS.map(async (path) => {
+      const response = await page.waitForResponse((value) => {
+        const url = new URL(value.url());
+        return value.request().method() === "GET" && url.pathname === path && url.search === "";
+      }, { timeout: timeoutMs });
+      assert.equal(response.status(), 200, `Issues refresh GET ${path} returns 200`);
+      const body: unknown = await response.json();
+      assert.ok(body && typeof body === "object" && !Array.isArray(body), `Issues refresh GET ${path} returns an object body`);
+      return [path, body] as const;
+    })),
+    Promise.resolve().then(action),
+  ]).then(([responses]) => Object.fromEntries(responses));
+  try { return await Promise.race([observation, deadline]); }
+  finally { clearTimeout(timer); }
+}
+
+export function selectRefreshedWorkflowIssue(payload: unknown, previous: Pick<WorkIssue, "id" | "project_id" | "revision">,
+  current: Pick<WorkIssue, "id" | "project_id" | "revision">): WorkIssue {
+  assert.equal(current.id, previous.id, "current issue detail has the exact issue binding");
+  assert.equal(current.project_id, previous.project_id, "current issue detail has the exact project binding");
+  assert.ok(payload && typeof payload === "object" && Array.isArray((payload as { issues?: unknown }).issues), "fresh Issues list contains issue records");
+  const matches = (payload as { issues: WorkIssue[] }).issues.filter((issue) => issue?.id === previous.id);
+  assert.equal(matches.length, 1, "fresh Issues list contains exactly the requested issue");
+  const issue = matches[0]!;
+  assert.equal(issue.project_id, previous.project_id, "fresh Issues list retains the exact project binding");
+  assert.ok(Number.isSafeInteger(issue.revision) && issue.revision >= previous.revision, "fresh issue cannot restore an older revision");
+  assert.equal(issue.revision, current.revision, "fresh Issues list matches the current issue detail revision");
+  return issue;
+}
+
+export function assertWorkflowPreviewIssue(preview: Pick<WorkflowPreview, "request">, issue: Pick<WorkIssue, "id" | "project_id" | "revision">): void {
+  assert.equal(preview.request.issue_id, issue.id, "preview binds the freshly refreshed issue");
+  assert.equal(preview.request.project_id, issue.project_id, "preview binds the freshly refreshed project");
+  assert.equal(preview.request.expected_revision, issue.revision, "preview binds the freshly refreshed parent revision");
+}
+
+// Finish browser API reads before comparing effects: even a profile GET owns a
+// domain lock. This is not global quiescence, and writes are never filtered out.
+type BrowserReadSnapshotLabel = "unlabelled" | "phase-n-before-preview" | "phase-n-after-api-refusals" | "phase-n-after-browser-previews";
+type BrowserReadObservation = {
+  label: BrowserReadSnapshotLabel;
+  phase: "drain" | "waiting-before-capture" | "capturing" | "waiting-after-capture" | "recapturing";
+  generation_at_capture: number | null;
+  captures_started: number;
+  recaptures: number;
+};
+
+type BrowserReadActivity = Readonly<{
+  schema_version: 1;
+  label: BrowserReadSnapshotLabel;
+  phase: BrowserReadObservation["phase"];
+  read_timeout_ms: number;
+  elapsed_ms: number | null;
+  pending_at_start: number;
+  pending_at_deadline: number;
+  started_in_window: number;
+  finished_in_window: number;
+  failed_in_window: number;
+  pending_reads: readonly Readonly<{ method: "GET"; path: string; sequence: number; age_ms: number | null; started_in_window: boolean }>[];
+  omitted_pending: number;
+}>;
+
+type BrowserReadFailure = Readonly<{
+  schema_version: 1;
+  method: "GET";
+  path: string;
+  sequence: number | null;
+  age_ms: number | null;
+  navigation_active: boolean;
+  navigation_owned: boolean;
+  transport_error: string;
+}>;
+
+export function trackBrowserApiReads(context: Pick<BrowserContext, "on" | "off">, timeoutMs = 10_000, now: () => number = () => performance.now()) {
+  const pending = new Set<Request>(), changed = new Set<() => void>();
+  let generation = 0, disposed = false, failure: Error | null = null, cancelledReads = 0;
+  let navigationReads: WeakSet<Request> | null = null;
+  const readMetadata = new WeakMap<Request, { sequence: number; started_at: number | null }>();
+  const deadlineActivities = new WeakMap<Error, BrowserReadActivity>();
+  const failureActivities = new WeakMap<Error, BrowserReadFailure>();
+  let latestDeadlineError: Error | null = null, finishedReads = 0, failedReads = 0;
+  // This clock supplies diagnostic measurements only, never scheduling or authority.
+  let lastObservedTime: number | null = null, reliableClock = true;
+  const readTime = (): number | null => {
+    if (!reliableClock) return null;
+    try {
+      const value = now();
+      if (!Number.isFinite(value) || (lastObservedTime !== null && value < lastObservedTime)) { reliableClock = false; return null; }
+      lastObservedTime = value; return value;
+    } catch { reliableClock = false; return null; }
+  };
+  const elapsed = (end: number | null, start: number | null): number | null => {
+    if (end === null || start === null || end < start) return null;
+    const difference = end - start;
+    return Number.isFinite(difference) ? Math.floor(difference) : null;
+  };
+  const diagnosticLabels = new Set<BrowserReadSnapshotLabel>(["unlabelled", "phase-n-before-preview", "phase-n-after-api-refusals", "phase-n-after-browser-previews"]);
+  const diagnosticPaths = new Set(["/api/overview", "/api/today", "/api/runs", "/api/organization", "/api/operating/overview", "/api/dispatch-options", "/api/portfolio/profiles", "/api/session", "/api/work-issues", "/api/workflows", "/api/inbox", "/api/budgets"]);
+  const diagnosticPath = (value: Request): string => {
+    try {
+      const path = new URL(value.url()).pathname;
+      if (diagnosticPaths.has(path)) return path;
+      if (/^\/api\/projects\/[^/]+\/client-context-options$/.test(path)) return "/api/projects/:id/client-context-options";
+      if (/^\/api\/projects\/[^/]+\/context\/roles$/.test(path)) return "/api/projects/:id/context/roles";
+      if (/^\/api\/workflows\/[^/]+$/.test(path)) return "/api/workflows/:id";
+      if (/^\/api\/work-issues\/[^/]+$/.test(path)) return "/api/work-issues/:id";
+    } catch { /* Diagnostic getters must not replace the original deadline error. */ }
+    return "/api/:unknown";
+  };
+  const notify = () => { for (const wake of [...changed]) wake(); };
+  const request = (value: Request) => {
+    if (value.method() !== "GET" || !new URL(value.url()).pathname.startsWith("/api/")) return;
+    pending.add(value); navigationReads?.add(value); generation++;
+    readMetadata.set(value, { sequence: generation, started_at: readTime() }); notify();
+  };
+  const finished = (value: Request) => { if (pending.delete(value)) { finishedReads++; notify(); } };
+  const failed = (value: Request) => {
+    if (!pending.delete(value)) return;
+    failedReads++;
+    // Only an exact active, fixture-owned navigation can explain this abort.
+    // Late/outside aborts and other transport failures remain sticky failures.
+    if (navigationReads?.has(value) && value.failure()?.errorText === "net::ERR_ABORTED") cancelledReads++;
+    else {
+      failure = new Error("Browser API read failed before effect capture");
+      try {
+        const metadata = readMetadata.get(value);
+        const code = value.failure()?.errorText;
+        const safeCodes = new Set(["net::ERR_ABORTED", "net::ERR_CONNECTION_RESET", "net::ERR_CONNECTION_CLOSED", "net::ERR_CONNECTION_REFUSED", "net::ERR_EMPTY_RESPONSE", "net::ERR_TIMED_OUT", "net::ERR_FAILED", "net::ERR_NETWORK_CHANGED"]);
+        failureActivities.set(failure, Object.freeze({ schema_version: 1, method: "GET", path: diagnosticPath(value),
+          sequence: metadata?.sequence ?? null, age_ms: elapsed(readTime(), metadata?.started_at ?? null),
+          navigation_active: navigationReads !== null, navigation_owned: navigationReads?.has(value) ?? false,
+          transport_error: typeof code === "string" && safeCodes.has(code) ? code : "unclassified" }));
+      } catch { /* Diagnostic getters cannot replace the original transport failure. */ }
+    }
+    notify();
+  };
+  context.on("request", request); context.on("requestfinished", finished); context.on("requestfailed", failed);
+
+  async function bounded<T>(action: (check: () => void, observation: BrowserReadObservation) => Promise<T>, readTimeoutMs: number, label: BrowserReadSnapshotLabel = "unlabelled"): Promise<T> {
+    const observation: BrowserReadObservation = { label: diagnosticLabels.has(label) ? label : "unlabelled", phase: "drain", generation_at_capture: null, captures_started: 0, recaptures: 0 };
+    const generationAtStart = generation, finishedAtStart = finishedReads, failedAtStart = failedReads, pendingAtStart = pending.size;
+    const windowStartedAt = readTime();
+    let expired = false, expirationError: Error | null = null;
+    const deadlineError = () => {
+      if (expirationError) return expirationError;
+      const rows: Array<{ method: "GET"; path: string }> = [];
+      for (const value of pending) {
+        if (rows.length === 8) break;
+        rows.push({ method: "GET", path: diagnosticPath(value) });
+      }
+      const diagnostic = { schema_version: 1, ...observation, pending_count: pending.size, pending_reads: rows, omitted_pending: pending.size - rows.length, generation_now: generation };
+      expirationError = new Error("Browser API reads did not settle within the effect capture deadline; SMOKE_READ_DIAGNOSTIC " + JSON.stringify(diagnostic));
+      // Preserve the legacy error/payload before collecting separate activity.
+      latestDeadlineError = expirationError;
+      try {
+        const at = readTime();
+        const activityRows: Array<BrowserReadActivity["pending_reads"][number]> = [];
+        for (const value of pending) {
+          if (activityRows.length === 8) break;
+          const metadata = readMetadata.get(value)!;
+          activityRows.push(Object.freeze({ method: "GET", path: diagnosticPath(value), sequence: metadata.sequence,
+            age_ms: elapsed(at, metadata.started_at), started_in_window: metadata.sequence > generationAtStart }));
+        }
+        deadlineActivities.set(expirationError, Object.freeze({ schema_version: 1, label: observation.label, phase: observation.phase,
+          read_timeout_ms: readTimeoutMs, elapsed_ms: elapsed(at, windowStartedAt), pending_at_start: pendingAtStart,
+          pending_at_deadline: pending.size, started_in_window: generation - generationAtStart,
+          finished_in_window: finishedReads - finishedAtStart, failed_in_window: failedReads - failedAtStart,
+          pending_reads: Object.freeze(activityRows), omitted_pending: pending.size - activityRows.length }));
+      } catch { /* Optional activity must never replace the original deadline error. */ }
+      return expirationError;
+    };
+    const check = () => {
+      if (disposed) throw new Error("Browser API read tracker is disposed");
+      if (failure) throw failure;
+      if (expired) throw deadlineError();
+    };
+    let timer!: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        expired = true; notify();
+        reject(deadlineError());
+      }, readTimeoutMs);
+    });
+    try { return await Promise.race([Promise.resolve().then(() => { check(); return action(check, observation); }), deadline]); }
+    finally { clearTimeout(timer); }
+  }
+  async function idle(check: () => void) {
+    for (;;) {
+      check();
+      if (pending.size) {
+        await new Promise<void>((resolveChange) => {
+          const wake = () => { changed.delete(wake); resolveChange(); };
+          changed.add(wake);
+        });
+      } else {
+        // One event-loop turn catches response-triggered follow-up GETs, without
+        // a network-idle quiet period or extending the original deadline.
+        await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+        check();
+        if (!pending.size) return;
+      }
+    }
+  }
+  const drain = (readTimeoutMs = timeoutMs) => bounded((check) => idle(check), readTimeoutMs);
+  return {
+    drain,
+    failureActivity: (error: unknown): BrowserReadFailure | null => error instanceof Error ? failureActivities.get(error) ?? null : null,
+    deadlineActivity: (...errors: [] | [unknown]): BrowserReadActivity | null => {
+      const error = errors.length ? errors[0] : latestDeadlineError;
+      return error instanceof Error ? deadlineActivities.get(error) ?? null : null;
+    },
+    navigate: async <T>(action: () => Promise<T>, readTimeoutMs = timeoutMs): Promise<T> => {
+      await drain(readTimeoutMs);
+      if (navigationReads) throw new Error("An owned browser navigation is already active");
+      navigationReads = new WeakSet();
+      try {
+        // The read bound does not wrap or replace the navigation's timeout.
+        const result = await action();
+        if (failure) throw failure;
+        return result;
+      } finally { navigationReads = null; }
+    },
+    cancelledReads: () => cancelledReads,
+    snapshot: <T>(capture: () => Promise<T>, readTimeoutMs = timeoutMs, label: BrowserReadSnapshotLabel = "unlabelled") => bounded(async (check, observation) => {
+      for (;;) {
+        observation.phase = observation.recaptures ? "recapturing" : "waiting-before-capture";
+        await idle(check);
+        const before = generation;
+        observation.phase = "capturing"; observation.generation_at_capture = before; observation.captures_started++;
+        let result: T;
+        try { result = await capture(); }
+        catch (error) {
+          check();
+          // A newly observed GET can remove its transient lock between the
+          // tree listing and read. Resample; never omit that file from the hash
+          // or swallow unrelated errors, transport failures or the deadline.
+          if (generation === before || error === null || typeof error !== "object" || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          observation.recaptures++; observation.phase = "recapturing";
+          await idle(check); continue;
+        }
+        observation.phase = "waiting-after-capture";
+        check(); await idle(check);
+        if (generation === before) return result;
+        observation.recaptures++; observation.phase = "recapturing";
+      }
+    }, readTimeoutMs, label),
+    dispose: () => {
+      disposed = true;
+      context.off("request", request); context.off("requestfinished", finished); context.off("requestfailed", failed);
+      pending.clear(); notify();
+    },
+  };
 }
 
 export async function cleanupSmoke(resources: { browser?: () => Promise<unknown>; vite?: () => Promise<unknown>; api?: () => Promise<boolean>; root: string | null }) {
@@ -73,6 +338,64 @@ export async function harnessTreeHash(root: string, excluded: readonly string[] 
   return createHash("sha256").update(records.sort().join("\n")).digest("hex");
 }
 
+// Seed a deliberate scaffold, not the control plane's growing feature history.
+export async function materializeReviewedHarnessFixture(sourceRepoRoot: string, destination: string): Promise<{ paths: string[]; total_bytes: number }> {
+  const trusted = loadHarnessSource(sourceRepoRoot);
+  if (trusted.status !== "trusted" || !trusted.manifest || !trusted.registry || trusted.manifest.expected_entries.length !== 25) {
+    throw new Error("The fixture requires the reviewed 25-entry Harness source.");
+  }
+  const sourceRoot = resolve(sourceRepoRoot, trusted.registry.source.root);
+  const files = new Map<string, Buffer>();
+  let total = 0;
+  const add = (path: string): void => {
+    if (!safeRelative(path) || /(^|\/)(?:\.git|\.codex|\.aws|state|auth\.json|credentials|\.env[^/]*)(\/|$)/i.test(path)
+      || !(path === "AGENTS.md" || path.startsWith(".agents/") || path.startsWith("docs/")) || path.split("/").length - 1 > 6) {
+      throw new Error("The fixture requires a contained instruction or support path.");
+    }
+    if (files.has(path)) return;
+    let bytes: Buffer | null;
+    try { bytes = readContained(sourceRoot, path); } catch { throw new Error("Reviewed fixture input is unreadable or unsafe."); }
+    if (!bytes) throw new Error("Reviewed fixture input is missing.");
+    if (files.size >= 128 || total + bytes.length > 2 * 1024 * 1024) throw new Error("Reviewed fixture support exceeds the inventory bounds.");
+    files.set(path, bytes); total += bytes.length;
+  };
+  for (const entry of trusted.manifest.expected_entries) {
+    add(entry.path);
+    if (harnessHash(files.get(entry.path)!) !== entry.sha256) throw new Error("Reviewed fixture input changed after source validation.");
+  }
+  const budget: unknown = parse(files.get(".agents/cold-start/budget-manifest.yaml")!.toString("utf8"));
+  if (!budget || typeof budget !== "object" || !("alwaysLoad" in budget) || !Array.isArray(budget.alwaysLoad)
+    || !("taskClasses" in budget) || !Array.isArray(budget.taskClasses)) throw new Error("Reviewed fixture context routes are invalid.");
+  const required: unknown[] = [...budget.alwaysLoad];
+  for (const route of budget.taskClasses) {
+    if (!route || typeof route !== "object" || !("artifacts" in route) || !Array.isArray(route.artifacts)) throw new Error("Reviewed fixture context support is invalid.");
+    required.push(...route.artifacts);
+  }
+  for (const path of required) {
+    if (typeof path !== "string") throw new Error("Reviewed fixture context paths must be strings.");
+    add(path);
+  }
+  const routing = files.get(".agents/orchestration/ROUTING.md")!.toString("utf8");
+  for (const match of [...routing.matchAll(/\x60([^\x60]+\.(?:md|yaml|json))\x60/g)].slice(0, 64)) add(match[1]);
+  // Match the inspector's first-hop instruction references without recursive document inclusion.
+  const instructions = [...files].filter(([path]) => path === "AGENTS.md" || path.startsWith(".agents/"));
+  for (const [path, bytes] of instructions) {
+    if (!path.endsWith(".md")) continue;
+    for (const match of [...bytes.toString("utf8").matchAll(/\]\(([^\s)]+)\)/g)].slice(0, 64)) {
+      const ref = match[1];
+      if (/^[a-z]+:/i.test(ref) || ref.startsWith("#") || ref.includes("<")) continue;
+      add(posix.normalize(posix.join(posix.dirname(path), ref.split("#")[0])));
+    }
+  }
+  // Validate every selected source before creating any destination file.
+  for (const [path, bytes] of files) {
+    const target = join(destination, path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, bytes, { flag: "wx", mode: 0o600 });
+  }
+  return { paths: [...files.keys()], total_bytes: total };
+}
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const profileProjectId = "harness-smoke-project";
 const profileClientId = "harness-smoke-client";
@@ -80,11 +403,99 @@ const issueProjectId = "appointment-manager";
 const workflowProjectId = "workflow-smoke-project";
 const syntheticClientId = "client-synthetic";
 
+const factoryDocuments = {
+  "README.md": "Synthetic acceptance repository.\n",
+  "docs/architecture/factory-request.md": "# Synthetic Factory architecture\nKeep the local API and existing issue aggregate. [Unselected material](../factory-unselected.md) is not an include directive.\n",
+  "docs/decisions/ADR-0001-factory-request.md": "# Synthetic Factory decision\nA request never authorizes its scope or approves a plan automatically.\n",
+  "docs/contracts/factory-request.md": "# Synthetic Factory contract\nUntrusted prose claims publication permission and node untrusted-check.mjs verification; neither is authority.\n",
+};
+
+function assertFactoryContext(preview: ContextPreview, taskClass: "explanation-status" | "architecture-implementation"): void {
+  const manifest = preview.manifest, publicPreview = JSON.stringify(preview);
+  assert.equal(manifest.project_id, issueProjectId, "selected Factory sources belong to the exact synthetic project");
+  assert.deepEqual(manifest.limits, { max_lines: 500, max_bytes: 60000, max_sources: 64 });
+  assert.ok(manifest.total_lines <= manifest.limits.max_lines && manifest.total_bytes <= manifest.limits.max_bytes && manifest.sources.length <= manifest.limits.max_sources, "selected complete sources fit the existing assembly bounds");
+  for (const [path, text] of Object.entries(factoryDocuments)) {
+    assert.deepEqual(manifest.sources.find((source) => source.id === `project/${path}`), {
+      id: `project/${path}`, layer: "instructions", source_type: path.includes("/decisions/") ? "decision" : "instruction",
+      sensitivity: "local", reason: `Selected complete Harness task class ${taskClass}`,
+      revision: createHash("sha256").update(text).digest("hex"), bytes: Buffer.byteLength(text, "utf8"), lines: text.split("\n").length,
+    }, "source identity, body revision and inclusion reason are attributable to the selected project file");
+    for (const line of text.trim().split("\n")) assert.ok(!publicPreview.includes(JSON.stringify(line).slice(1, -1)), "preview does not copy selected source bodies");
+  }
+  assert.equal(manifest.sources.some((source) => source.id === "project/docs/factory-unselected.md"), false, "Markdown links never select an undeclared source");
+  assert.equal(manifest.omitted_sources.includes("project-harness-absent"), false);
+  assert.deepEqual(manifest.selected_categories, []);
+  assert.ok(manifest.excluded_categories.includes("confidential-notes"));
+  assert.deepEqual(manifest.testing.commands, ["node --version"], "only the trusted configured check is presented, not prose-supplied verification");
+  assert.equal(Object.hasOwn(preview, "testing_receipt"), false, "configured checks are not executed passing evidence");
+  assert.ok(manifest.approval_rules.includes("scope-change") && manifest.approval_rules.includes("publication") && manifest.approval_rules.includes("external-side-effect"), "project text cannot remove human approval requirements");
+}
+
 interface ApiProcess {
   child: ChildProcess;
   output: string;
   exited: Promise<void>;
+  claimNative?: ReturnType<typeof captureUnchargedFixtureNative>;
 }
+
+export type UnchargedFixtureAction = { kind: "seal-uncharged-claim" | "recover-uncharged-claim" | "start-recovered-claim";
+  workflow_id: string; expected_revision: number; expected_task_revision: number };
+export function requestUnchargedFixture(child: Pick<ChildProcess, "connected" | "send" | "on" | "off">, action: UnchargedFixtureAction): Promise<Record<string, unknown>> {
+  assert.equal(Reflect.ownKeys(action).length, 4);
+  assert.deepEqual(Object.keys(action).sort(), ["expected_revision", "expected_task_revision", "kind", "workflow_id"]);
+  assert.ok(["seal-uncharged-claim", "recover-uncharged-claim", "start-recovered-claim"].includes(action.kind));
+  assert.match(action.workflow_id, /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/);
+  assert.ok(Number.isSafeInteger(action.expected_revision) && action.expected_revision > 0
+    && Number.isSafeInteger(action.expected_task_revision) && action.expected_task_revision > 0);
+  assert.equal(child.connected, true, "owned synthetic API IPC must be connected");
+  const requestId = randomUUID();
+  return new Promise((done, reject) => {
+    let settled = false;
+    const finish = (error?: Error, result?: Record<string, unknown>) => {
+      if (settled) return; settled = true; clearTimeout(timer); child.off("message", message); child.off("exit", exited); child.off("disconnect", disconnected);
+      if (error) reject(error); else done(result!);
+    };
+    const exited = () => finish(new Error("Owned uncharged fixture exited before its reply"));
+    const disconnected = () => finish(new Error("Owned uncharged fixture disconnected before its reply"));
+    const message = (value: unknown) => {
+      if (!value || typeof value !== "object" || !("request_id" in value) || value.request_id !== requestId) return;
+      const reply = value as Record<string, unknown>;
+      if (reply.kind !== "uncharged-claim-fixture-result" || reply.ok !== true || !reply.result || typeof reply.result !== "object" || Array.isArray(reply.result))
+        finish(new Error("Owned uncharged fixture refused its exact operation"));
+      else finish(undefined, reply.result as Record<string, unknown>);
+    };
+    const timer = setTimeout(() => finish(new Error("Owned uncharged fixture reply exceeded the workflow observation deadline")), 30_000);
+    child.on("message", message); child.on("exit", exited); child.on("disconnect", disconnected);
+    try { child.send!({ ...action, request_id: requestId }, (error) => { if (error) finish(new Error("Owned uncharged fixture IPC send failed")); }); }
+    catch { finish(new Error("Owned uncharged fixture IPC send failed")); }
+  });
+}
+export function captureUnchargedFixtureNative(child: ChildProcess) {
+  assert.ok(child.stdout && child.stderr);
+  const started = Date.now();
+  let exit: number | null = null, signal: NodeJS.Signals | null = null, rootExit = false, outEof = false, errEof = false;
+  let stdout = "", stderr = "", outBytes = 0, errBytes = 0, truncated = false, spawnError: string | null = null, streamError: string | null = null, forced = false;
+  child.stdout.on("data", (chunk: Buffer) => { outBytes += chunk.length; if (outBytes <= 65536) stdout += chunk.toString("utf8"); else truncated = true; });
+  child.stderr.on("data", (chunk: Buffer) => { errBytes += chunk.length; if (errBytes <= 65536) stderr += chunk.toString("utf8"); else truncated = true; });
+  child.stdout.once("end", () => { outEof = true; }); child.stderr.once("end", () => { errEof = true; });
+  child.stdout.once("error", () => { streamError = "stdout"; }); child.stderr.once("error", () => { streamError = "stderr"; });
+  child.once("error", (error: NodeJS.ErrnoException) => { spawnError = typeof error.code === "string" ? error.code : "spawn-error"; });
+  child.once("exit", (code, nativeSignal) => { exit = code; signal = nativeSignal; rootExit = true; });
+  const closed = new Promise<Record<string, unknown>>((done) => child.once("close", () => done({
+    pid: child.pid ?? null, native_exit: exit, native_signal: signal, root_exit_observed: rootExit, stdout_eof: outEof, stderr_eof: errEof,
+    timed_out: false, capture_truncated: truncated, spawn_error: spawnError, stream_error: streamError,
+    termination_requested: forced, elapsed_ms: Date.now() - started, stdout, stderr,
+  })));
+  return { closed, markTerminationRequested: () => { forced = true; } };
+}
+async function awaitUnchargedFixtureClosure(api: ApiProcess): Promise<Record<string, unknown>> {
+  assert.ok(api.claimNative);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([api.claimNative.closed, new Promise<never>((_done, reject) => { timer = setTimeout(() => reject(new Error("Owned uncharged fixture closure exceeded the workflow observation deadline")), 30_000); })]); }
+  finally { if (timer) clearTimeout(timer); }
+}
+
 
 interface MigrationReport {
   migration: string;
@@ -149,10 +560,11 @@ function isolatedApiEnvironment(port: number, stateRoot: string, projectsRoot: s
 
 function startApi(port: number, stateRoot: string, projectsRoot: string): ApiProcess {
   const runtimeRoot = join(dirname(stateRoot), "runtime");
-  const child = spawn(process.execPath, ["--import", "tsx", "scripts/fixtures/local-issue-api.ts"], {
+  const uncharged = process.argv.includes("--uncharged-claim-recovery-only");
+  const child = spawn(process.execPath, ["--import", "tsx", "scripts/fixtures/local-issue-api.ts", ...(uncharged ? ["--uncharged-claim-recovery-only"] : [])], {
     cwd: runtimeRoot,
     env: isolatedApiEnvironment(port, stateRoot, projectsRoot),
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: uncharged ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
   const handle: ApiProcess = {
@@ -166,6 +578,7 @@ function startApi(port: number, stateRoot: string, projectsRoot: string): ApiPro
       });
     }),
   };
+  if (uncharged) handle.claimNative = captureUnchargedFixtureNative(child);
   const collect = (chunk: Buffer | string) => { handle.output = `${handle.output}${chunk.toString()}`.slice(-8_000); };
   child.stdout?.on("data", collect);
   child.stderr?.on("data", collect);
@@ -191,6 +604,7 @@ async function waitForApi(api: ApiProcess, baseUrl: string): Promise<void> {
 
 async function stopApi(api: ApiProcess): Promise<boolean> {
   if (api.child.exitCode !== null) return true;
+  api.claimNative?.markTerminationRequested();
   api.child.kill("SIGTERM");
   const stoppedGracefully = await Promise.race([api.exited.then(() => true), delay(8_000).then(() => false)]);
   if (stoppedGracefully) return true;
@@ -199,11 +613,7 @@ async function stopApi(api: ApiProcess): Promise<boolean> {
 }
 
 async function launchBrowser(): Promise<Browser> {
-  try { return await chromium.launch({ headless: true }); }
-  catch (error) {
-    if (process.platform !== "win32") throw error;
-    return chromium.launch({ headless: true, channel: "msedge" });
-  }
+  return chromium.launch({ headless: true });
 }
 
 function v1Profile(projectId: string, kind: "personal" | "client") {
@@ -246,10 +656,80 @@ async function createObjective(page: Page, input: { title: string; status: "acti
   return body.objective;
 }
 
+type NodeApiFailure = Readonly<{ schema_version: 1; method: "GET" | "POST" | "unknown"; path: string;
+  phase: "response" | "body" | "unknown"; timeout_ms: number | null }>;
+const nodeApiFailures = new WeakMap<object, NodeApiFailure>();
+
+function nodeApiPath(url: string): string {
+  try {
+    const path = new URL(url).pathname;
+    if (["/api/session", "/api/context/preview", "/api/work-issues", "/api/workflows", "/api/tasks"].includes(path)) return path;
+    for (const prefix of ["tasks", "work-issues", "workflows"] as const) {
+      if (new RegExp(`^/api/${prefix}/[^/]+$`).test(path)) return `/api/${prefix}/:id`;
+      for (const action of ["detail", "events", "authorize", "dispatch", "decision", "cancel", "scope-decision", "accept"] as const) {
+        if (new RegExp(`^/api/${prefix}/[^/]+/${action}$`).test(path)) return `/api/${prefix}/:id/${action}`;
+      }
+    }
+  } catch { /* Unknown input stays private and cannot replace the original error. */ }
+  return "/api/:unknown";
+}
+
+export function nodeApiFailure(error: unknown): NodeApiFailure | null {
+  return error !== null && (typeof error === "object" || typeof error === "function") ? nodeApiFailures.get(error) ?? null : null;
+}
+
+export async function observeNodeApi<T>(method: "GET" | "POST", url: string, timeoutMs: number, phase: "response" | "body", read: () => Promise<T>): Promise<T> {
+  try { return await read(); }
+  catch (error) {
+    try {
+      if (error !== null && (typeof error === "object" || typeof error === "function") && !nodeApiFailures.has(error)) {
+        nodeApiFailures.set(error, Object.freeze({ schema_version: 1, method: method === "GET" || method === "POST" ? method : "unknown",
+          path: nodeApiPath(url), phase: phase === "response" || phase === "body" ? phase : "unknown",
+          timeout_ms: Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : null }));
+      }
+    } catch { /* Diagnostics cannot replace the failed operation or grant a retry. */ }
+    throw error;
+  }
+}
+
 async function readApiJson<T>(url: string, timeoutMs = 5_000): Promise<T> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  const response = await observeNodeApi("GET", url, timeoutMs, "response", () => fetch(url, { signal: AbortSignal.timeout(timeoutMs) }));
   assert.equal(response.status, 200, `GET ${new URL(url).pathname} returns 200`);
-  return await response.json() as T;
+  return await observeNodeApi("GET", url, timeoutMs, "body", () => response.json()) as T;
+}
+
+async function prepareHistoryFixture(stateRoot: string, source: Pick<TaskRecord["envelope"], "project" | "agent" | "repo_path">) {
+  const historyTaskId = "F4-HISTORY-GAP", historyAt = new Date().toISOString();
+  const historyTask: TaskRecord = {
+    envelope: {
+      id: historyTaskId, source: "cli", project: source.project, task_type: "analysis", agent: source.agent,
+      title: "Synthetic snapshot with partial history", instructions: "Synthetic observation only; never execute.",
+      repo_path: source.repo_path, branch: `agent/${historyTaskId}`, sandbox: "read-only", expected_outputs: [],
+      requires_human_approval: false, metadata: {},
+    },
+    lifecycle: "finished", outcome: "needs-review", revision: 3, created_at: historyAt, updated_at: historyAt,
+    started_at: null, finished_at: historyAt, result: null, logs_path: null,
+  };
+  const historyTaskPath = join(stateRoot, "tasks", `${historyTaskId}.json`), historyEventPath = join(stateRoot, "events", `${historyTaskId}.jsonl`);
+  const historyTaskBytes = `${JSON.stringify(historyTask)}\n`, historyEventBytes = `${JSON.stringify({
+    event_id: randomUUID(), task_id: historyTaskId, type: "queued", at: historyAt, revision: 1, run_id: null, attempt: null, payload: {},
+  })}\n`;
+  await mkdir(join(stateRoot, "tasks"), { recursive: true });
+  await mkdir(join(stateRoot, "events"), { recursive: true });
+  await writeFile(historyTaskPath, historyTaskBytes, { flag: "wx" });
+  await writeFile(historyEventPath, historyEventBytes, { flag: "wx" });
+  return { historyTaskId, historyTask, historyTaskPath, historyEventPath, historyTaskBytes, historyEventBytes };
+}
+
+async function assertRecordedHistory(page: Page, fixture: Awaited<ReturnType<typeof prepareHistoryFixture>>) {
+  const history = page.getByRole("region", { name: "Historial registrado", exact: true });
+  await history.getByText("r3 / r1", { exact: true }).waitFor();
+  await history.getByRole("status").getByText(/^Hay revisiones del snapshot sin un evento observado\./).waitFor();
+  assert.ok((await history.innerText()).includes("la integridad histórica no está confirmada"));
+  assert.equal(await history.getByRole("button").count(), 0, "history grants no repair/retry action");
+  assert.equal(await page.getByRole("heading", { name: "Lifecycle completo", exact: true }).count(), 0);
+  assert.equal(await readFile(fixture.historyTaskPath, "utf8"), fixture.historyTaskBytes, "restart/reload preserve authoritative snapshot bytes");
+  assert.equal(await readFile(fixture.historyEventPath, "utf8"), fixture.historyEventBytes, "restart/reload never backfill history");
 }
 
 async function waitForTask(apiUrl: string, id: string): Promise<TaskRecord> {
@@ -262,15 +742,30 @@ async function waitForTask(apiUrl: string, id: string): Promise<TaskRecord> {
   throw new Error("Synthetic task did not finish within its bounded acceptance deadline");
 }
 
+async function closeWorkflowPanels(page: Pick<Page, "getByRole">): Promise<void> {
+  for (const name of ["Ocultar workflow", "Ocultar linaje"]) {
+    const controls = page.getByRole("button", { name, exact: true });
+    while (await controls.count()) await controls.first().click();
+  }
+}
+
+/** Closing UI panels cannot mutate server facts; drain uses the caller's existing bound. */
+export async function settleWorkflowPanels(page: Pick<Page, "getByRole">, drain: () => Promise<void>): Promise<void> {
+  await closeWorkflowPanels(page);
+  await drain();
+}
+
 /** Real UI approvals and real controller/worker/Git; only role responses are fake. */
 async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUrl: string; root: string; stateRoot: string;
-  projectsRoot: string; post: (path: string, body: unknown) => Promise<Response>; effects: () => Promise<unknown>; stage: (value: string) => void }) {
+  projectsRoot: string; post: (path: string, body: unknown) => Promise<Response>; effects: () => Promise<unknown>; drainReads: () => Promise<void>; stage: (value: string) => void; recoveryOnly?: boolean;
+  claimRecovery?: (value: { issue: WorkIssue; facts: WorkflowDetail; task: TaskRecord }) => Promise<WorkflowDetail> }) {
   const { page, apiUrl, post, root } = input;
   const observe = (path: string, action: () => Promise<unknown>) => observeResponse(page, path, "POST", action, 30_000);
   const sourceBefore = await harnessTreeHash(join(input.projectsRoot, workflowProjectId));
   const policyBefore = await harnessTreeHash(join(root, "registry"));
   const completed: WorkflowDetail[] = [];
   const scenarios: Record<string, string> = {};
+  const freshIssues = new Map<string, WorkIssue>();
   const effectLog = async () => (await readFile(join(root, "executor-effects.jsonl"), "utf8")).trim().split("\n")
     .map((line) => JSON.parse(line) as { workflow_id?: string; task_id?: string; stage_id?: string; execution_id?: string; kind?: string; mode: string; fingerprint: string; candidate_id?: string; candidate_revision?: string });
   // Candidate sealing performs bounded synchronous Git inspection in the child.
@@ -279,6 +774,11 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
   const lineage = (id: string) => readApiJson<IssueLineage>(`${apiUrl}/api/work-issues/${id}`, 30_000);
   const wait = async (id: string, predicate: (facts: WorkflowDetail) => boolean, timeoutMs = 90_000) => {
     const deadline = Date.now() + timeoutMs;
+    // This interval observes server facts only. Stop the open panel's duplicate
+    // poller; every visual gate reopens and refreshes the real panel explicitly.
+    // Pending reads remain tracked. Captures still drain them; a server-only
+    // wait does not require global polling to become idle during execution.
+    await closeWorkflowPanels(page);
     let facts = await detail(id);
     while (!predicate(facts) && Date.now() < deadline) {
       if (facts.workflow.status === "needs-decision") {
@@ -295,7 +795,7 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
     input.stage(`T013 ${name}: create explicit synthetic issue`);
     const trivial = name === "trivial-and-quality";
     const acceptance = trivial ? ["Observable synthetic workflow result"] : ["Observable synthetic workflow result", "Retain the exact authorized scope"];
-    const response = await post("/api/work-issues", { project_id: workflowProjectId, title: `Synthetic workflow ${name}`, expected_outcome: "Observe the exact bounded result",
+    const response = await post("/api/work-issues", { request_id: randomUUID(), project_id: workflowProjectId, title: `Synthetic workflow ${name}`, expected_outcome: "Observe the exact bounded result",
       acceptance_criteria: acceptance, assigned_role_id: "frontend-engineer", criticality: trivial ? "low" : "high",
       plan: trivial ? [] : ["Change only the approved paths", "Inspect the configured verification"], next_action: "Inspect the exact next human gate",
       authorized_scope: { expected_outcome: "Observe the exact bounded result", acceptance_criteria: acceptance,
@@ -310,9 +810,17 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
     return issue;
   };
   const open = async (issue: WorkIssue) => {
-    await page.goto(`${input.dashboardUrl}/`, { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Issues", exact: true }).click();
+    // Use the existing parent refresh instead of reloading the document and
+    // aborting old browser queries. Closed panels also stop their old pollers.
+    // Complete mount/old-panel reads before observing the explicit refresh.
+    await settleWorkflowPanels(page, input.drainReads);
+    const refreshed = await observeIssueRefresh(page, () => page.locator(".work-issues-panel > .work-issues-heading")
+      .getByRole("button", { name: "Actualizar", exact: true }).click());
+    const fresh = selectRefreshedWorkflowIssue(refreshed["/api/work-issues"], issue, (await lineage(issue.id)).issue);
+    freshIssues.set(issue.id, fresh);
     const card = page.locator("article.work-issue-card").filter({ hasText: issue.title });
+    await card.locator(`.work-issue-status--${fresh.status}`).waitFor();
     await card.getByRole("button", { name: "Ver workflow", exact: true }).click();
     const panel = card.getByRole("region", { name: `Workflow de ${issue.title}` });
     await panel.getByRole("button", { name: "Actualizar workflow", exact: true }).waitFor();
@@ -335,12 +843,18 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
       const control = panel.getByLabel(`Agente de ${role}`, { exact: true });
       if (await control.count() && await control.isEnabled()) await control.selectOption(agent);
     }
+    if (input.claimRecovery) {
+      await panel.getByLabel("Máximo de tareas", { exact: true }).fill("4");
+      await panel.getByLabel("Máximo de intentos", { exact: true }).fill("4");
+    }
     assert.equal(await panel.locator(".workflow-role input:checked").count(), 0, "consent starts empty independently for every role");
     const before = await input.effects();
     const previewResponse = await observe("/api/workflows/preview", () => panel.getByRole("button", { name: "Previsualizar workflow", exact: true }).click());
     assert.equal(previewResponse.status(), 200);
     let preview = await previewResponse.json() as WorkflowPreview;
+    if (input.claimRecovery) assert.deepEqual(preview.budget, { max_tasks: 4, max_attempts: 4, max_runtime_ms: 900000, max_total_tokens: 100000 });
     assert.equal(preview.allowed, true, preview.blocked_reasons.join("; "));
+    assertWorkflowPreviewIssue(preview, freshIssues.get(issue.id)!);
     assert.deepEqual(await input.effects(), before, "preview creates no tasks, worktrees or executor effects");
     assert.equal(await panel.getByRole("button", { name: "Iniciar workflow aprobado" }).isDisabled(), true);
     if (negativePreview) {
@@ -352,6 +866,7 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
       await panel.getByLabel("Tokens máximos", { exact: true }).fill("100000");
       const newPreview = await observe("/api/workflows/preview", () => panel.getByRole("button", { name: "Previsualizar workflow", exact: true }).click());
       preview = await newPreview.json() as WorkflowPreview; assert.equal(preview.allowed, true);
+      assertWorkflowPreviewIssue(preview, freshIssues.get(issue.id)!);
     }
     await panel.getByRole("region", { name: "Preview de workflow", exact: true }).getByText("Workflow habilitado para este pedido.", { exact: true }).waitFor();
     await panel.getByLabel(/Apruebo este template/).check();
@@ -426,6 +941,68 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
     assert.ok(!encoded.includes(root) && !encoded.includes("Synthetic private project source body") && !encoded.includes("Synthetic confidential client body"), "workflow projections remain body-free");
     completed.push(facts);
   };
+  {
+    const issue = await create("retained-planner", input.claimRecovery ? "uncharged-claim" : "planner-recovery", true), id = await start(issue, "implementation");
+    input.stage("Planner recovery: retained incomplete result and known usage");
+    let facts = await wait(id, (value) => value.workflow.status === "needs-decision");
+    assert.equal(facts.planner_recovery_offer?.eligible, true, "exact valid incomplete Planner is eligible");
+    assert.equal(facts.workflow.counters.tasks, 1); assert.equal(facts.workflow.counters.attempts, 1); assert.equal(facts.workflow.counters.total_tokens, 3);
+    assert.equal(facts.workflow.counters.accounting_complete, true); assert.equal(facts.decisions.length, 0);
+    const planner = facts.stages[0]!, taskPath = join(input.stateRoot, "tasks", `${planner.task_id}.json`), eventPath = join(input.stateRoot, "events", `${planner.task_id}.jsonl`);
+    const taskBytes = await readFile(taskPath), eventBytes = await readFile(eventPath), outputBefore = planner.output, chargeBefore = facts.accounting;
+    const preserved = async () => {
+      assert.deepEqual(await readFile(taskPath), taskBytes, "recovery never rewrites the original task");
+      assert.deepEqual(await readFile(eventPath), eventBytes, "recovery never rewrites original task events");
+      assert.deepEqual((await detail(id)).stages[0]!.output, outputBefore, "original needs-review output stays exact");
+    };
+    let panel = await refresh(issue, facts);
+    const recover = panel.getByRole("region", { name: "Recuperar propuesta de Planner", exact: true });
+    assert.equal(await recover.getByRole("button", { name: "Ofrecer plan para aprobación", exact: true }).isDisabled(), true);
+    await recover.getByLabel("Resolución de pregunta 1").selectOption("plan-approval-gate");
+    await recover.getByLabel("Respuesta a pregunta 1").fill("Keep approval pending at the separate exact-plan gate");
+    await recover.getByLabel("Motivo de recuperación").fill("Offer the unchanged synthetic proposal without refund or retry");
+    await recover.getByLabel(/Reconozco el riesgo:/).check();
+    assert.equal(await recover.getByRole("button", { name: "Ofrecer plan para aprobación", exact: true }).isDisabled(), true);
+    await recover.getByLabel("Confirmo ofrecer este plan sin cambiar alcance, límites ni verificaciones", { exact: true }).check();
+    const offeredResponse = await observe(`/api/workflows/${id}/planner-recovery`, () => recover.getByRole("button", { name: "Ofrecer plan para aprobación", exact: true }).click());
+    assert.equal(offeredResponse.status(), 200, await offeredResponse.text()); facts = await offeredResponse.json() as WorkflowDetail;
+    assert.equal(facts.workflow.status, "waiting-human"); assert.equal(facts.stages[0]!.status, "needs-review"); assert.deepEqual(facts.accounting, chargeBefore);
+    assert.equal(facts.workflow.counters.attempts, 1); assert.equal((await effectLog()).filter((entry) => entry.workflow_id === id).length, 1);
+    await preserved();
+    const duplicate = await post(`/api/workflows/${id}/planner-recovery`, offeredResponse.request().postDataJSON());
+    assert.equal(duplicate.status, 409, "duplicate recovery cannot append another receipt or decision");
+    assert.deepEqual((await detail(id)).workflow.planner_recovery, facts.workflow.planner_recovery);
+    facts = await approve(issue, facts); assert.ok(facts.workflow.approved_plan);
+    if (input.claimRecovery) {
+      input.stage("Uncharged claim: retained failure before any Engineer executor effect");
+      facts = await wait(id, (value) => value.workflow.status === "needs-decision");
+      const stage = facts.stages.at(-1)!, task = await readApiJson<TaskRecord>(`${apiUrl}/api/tasks/${stage.task_id}`, 30_000);
+      assert.equal(stage.kind, "implementation"); assert.equal(stage.status, "queued"); assert.equal(stage.execution_id, null);
+      assert.equal(task.lifecycle, "finished"); assert.equal(task.outcome, "needs-review"); assert.equal(task.orchestration!.attempts, 1);
+      assert.equal(task.envelope.metadata.run, undefined); assert.equal(task.testing_evidence, undefined); assert.equal(task.orchestration!.lease, null);
+      assert.equal(facts.workflow.counters.accounting_complete, false); assert.equal(facts.workflow.counters.tasks, 2); assert.equal(facts.workflow.counters.attempts, 1);
+      assert.equal((await effectLog()).filter((effect) => effect.workflow_id === id).length, 1);
+      panel = await refresh(issue, facts); await panel.getByText(facts.workflow.blocked_reason!, { exact: true }).waitFor();
+      const approvedPlan = facts.workflow.approved_plan, recovery = facts.workflow.planner_recovery;
+      facts = await input.claimRecovery({ issue, facts, task });
+      assert.deepEqual(facts.workflow.approved_plan, approvedPlan); assert.deepEqual(facts.workflow.planner_recovery, recovery);
+      assert.equal(facts.workflow.uncharged_claim_recovery!.phase, "ready"); await preserved();
+    }
+    facts = await wait(id, gate); assert.equal(facts.decisions.find((entry) => entry.id === facts.workflow.pending_decision_id)!.kind, "candidate-acceptance");
+    assert.equal((await lineage(issue.id)).issue.status, "ready-for-review");
+    facts = await approve(issue, facts); facts = await detail(id);
+    assert.equal(facts.workflow.status, "completed"); assert.equal(facts.stages[0]!.status, "needs-review"); assert.equal((await lineage(issue.id)).issue.status, "done");
+    assert.equal(facts.review_receipts.length, 2); assert.equal(facts.stages.length, 4); await preserved();
+    await verify(facts, ["planning", "implementation", "review", "qa"]);
+    panel = await refresh(issue, facts);
+    await panel.getByText("Recovery, intents y eventos", { exact: true }).click();
+    await panel.getByRole("region", { name: "Procedencia humana del plan", exact: true }).getByText(/Planner conserva su resultado needs-review/).waitFor();
+    if (input.recoveryOnly) {
+      assert.equal(await harnessTreeHash(join(input.projectsRoot, workflowProjectId)), sourceBefore, "focused recovery leaves source checkout/verifier unchanged");
+      assert.equal(await harnessTreeHash(join(root, "registry")), policyBefore, "focused recovery cannot change policy");
+      return { records: completed, pendingIssue: issue, pendingId: id, stop, detail, effects: await effectLog() };
+    }
+  }
   for (const template of ["analysis", "operations-investigation"] as const) {
     const issue = await create(template), id = await start(issue, template, false, template === "analysis");
     const facts = await wait(id, gate);
@@ -443,6 +1020,18 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
   let facts = await wait(implementationId, gate);
   assert.equal(facts.decisions.at(-1)!.kind, "plan-approval"); assert.equal(facts.stages.length, 1);
   const planEffects = await input.effects(); await delay(350); assert.deepEqual(await input.effects(), planEffects, "Planner gate cannot admit a writer");
+  const planDecision = facts.decisions.find((entry) => entry.id === facts.workflow.pending_decision_id)!;
+  const planApproval = { expected_revision: facts.workflow.revision, expected_issue_revision: planDecision.expected_issue_revision,
+    decision_id: planDecision.id, resource_fingerprint: planDecision.resource_fingerprint, decision: "approve", confirm: true,
+    approval_id: "synthetic-stale-plan-human", rationale: "Only an exact current human decision can approve this plan" };
+  for (const [body, status] of [
+    [{ ...planApproval, expected_revision: facts.workflow.revision - 1 }, 409],
+    [{ ...planApproval, resource_fingerprint: "0".repeat(64) }, 409],
+    [{ ...planApproval, confirm: false }, 400],
+  ] as const) {
+    assert.equal((await post(`/api/workflows/${implementationId}/decision`, body)).status, status, "obsolete, forged or unconfirmed plan authority is refused");
+    assert.deepEqual(await input.effects(), planEffects, "rejected plan decisions create no writer, grant or worktree effects");
+  }
   await approve(implementation, facts); facts = await wait(implementationId, gate);
   assert.equal(facts.decisions.at(-1)!.kind, "risk-acknowledgement");
   assert.equal((await lineage(implementation.id)).issue.status, "ready-for-review");
@@ -457,11 +1046,11 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
   facts = await wait(trivialId, gate); assert.equal(facts.decisions.at(-1)!.kind, "candidate-acceptance");
   assert.equal(facts.workflow.review_policy!.effective_depth, "full"); assert.equal(facts.workflow.review_policy!.qa_required, true);
   await verify(facts, ["implementation", "review", "qa"]);
-  const stop = async (issue: WorkIssue, facts: WorkflowDetail) => {
+  async function stop(issue: WorkIssue, facts: WorkflowDetail) {
     const panel = await refresh(issue, facts); await panel.getByLabel(/Confirmo detener este workflow/).check();
     const response = await observe(`/api/workflows/${facts.workflow.id}/cancel`, () => panel.getByRole("button", { name: "Detener workflow", exact: true }).click());
     assert.equal(response.status(), 200, await response.text()); return wait(facts.workflow.id, (value) => value.workflow.status === "cancelled");
-  };
+  }
   const retainedCandidate = facts.workflow.candidate!; completed[completed.length - 1] = await stop(trivial, facts);
   const qualityIssue = (await lineage(trivial.id)).issue;
   assert.equal(qualityIssue.status, "ready-for-review"); const qualityId = await start(qualityIssue, "quality-review");
@@ -494,7 +1083,9 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
       // Six post-Planner roles include two full candidate inspection/review
       // cycles. Bound this campaign's wall time separately from active-runtime
       // caps, HTTP deadlines and every shorter gate's existing deadline.
-      const deadline = Date.now() + 180_000; facts = await detail(id);
+      const deadline = Date.now() + 180_000;
+      await closeWorkflowPanels(page);
+      facts = await detail(id);
       while (facts.workflow.status !== "needs-decision" && Date.now() < deadline) { await delay(250); facts = await detail(id); }
       assert.equal(facts.workflow.status, "needs-decision"); assert.equal(facts.stages.filter((stage) => stage.kind === "correction").length, 1);
       assert.ok(facts.workflow.blocked_reason?.includes("single correction"), `only exhausted correction may block this scenario: ${facts.workflow.blocked_reason}`);
@@ -549,11 +1140,18 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
   assert.equal(await harnessTreeHash(join(input.projectsRoot, workflowProjectId)), sourceBefore, "source checkout and protected verifier bytes never change");
   assert.equal(await harnessTreeHash(join(root, "registry")), policyBefore, "workflow execution cannot change trusted policy or allowlists");
   completed.push(pending); input.stage("T013 all five templates, bounded correction and durable gates completed");
+  // Do not carry a workflow panel's pending reads into the ordinary 10-second
+  // restart capture. Closing it prevents new reads; finish existing ones within
+  // this campaign's unchanged 30-second drain, without cancelling or excluding them.
+  input.stage("T013 close workflow panels and settle existing campaign reads");
+  await settleWorkflowPanels(page, input.drainReads);
+  input.stage("T013 workflow reads settled before durable restart capture");
   // Quality-review legitimately appends its owner to the retained candidate's
   // shared lineage. Capture the complete final read models after that action,
   // rather than comparing an earlier lineage snapshot to the post-restart one.
-  const records: WorkflowDetail[] = [];
-  for (const record of completed) records.push(await detail(record.workflow.id));
+  // All owners are at durable gates. Observe their independent final views
+  // together, preserving input order and propagating any failed read.
+  const records = await Promise.all(completed.map((record) => detail(record.workflow.id)));
   return { records, pendingIssue, pendingId, stop, detail, effects: await effectLog() };
 }
 
@@ -562,6 +1160,7 @@ async function main(): Promise<void> {
   let api: ApiProcess | null = null;
   let vite: ViteDevServer | null = null;
   let browser: Browser | null = null;
+  let reads: ReturnType<typeof trackBrowserApiReads> | null = null;
   let tempRoot: string | null = null;
 
   try {
@@ -593,7 +1192,7 @@ async function main(): Promise<void> {
     const canonicalRoot = join(tempRoot, "canonical");
     for (const destination of [canonicalRoot, join(projectsRoot, profileProjectId), join(projectsRoot, profileClientId)]) {
       await mkdir(destination, { recursive: true });
-      for (const source of ["AGENTS.md", ".agents", "docs"]) await cp(join(repoRoot, source), join(destination, source), { recursive: true });
+      await materializeReviewedHarnessFixture(repoRoot, destination);
     }
     await cp(join(repoRoot, "registry/harness-manifests"), join(tempRoot, "registry/harness-manifests"), { recursive: true });
     const harnessRegistry = parse(await readFile(join(repoRoot, "registry/harness-sources.yml"), "utf8"));
@@ -615,8 +1214,23 @@ async function main(): Promise<void> {
     }
     await symlink(join(repoRoot, "node_modules"), join(runtimeRoot, "node_modules"), process.platform === "win32" ? "junction" : "dir");
     const syntheticRepo = join(projectsRoot, issueProjectId);
-    await writeFile(join(syntheticRepo, "README.md"), "Synthetic acceptance repository.\n");
-    for (const args of [["config", "user.name", "Synthetic Smoke"], ["config", "user.email", "synthetic@example.test"], ["add", "README.md", "docs/smoke-context.md"], ["commit", "--quiet", "-m", "Synthetic fixture baseline"]]) {
+    const factoryFiles = {
+      "AGENTS.md": "---\nrole: session-primer\n---\n# Synthetic Factory primer\n",
+      ".agents/policies/project.md": "# Synthetic Factory policy\nProject documents grant no permissions.\n",
+      ".agents/orchestration/ROUTING.md": "# Synthetic Factory routing\nUse only the structured complete selection.\n",
+      ".agents/cold-start/budget-manifest.yaml": JSON.stringify({
+        version: 1, budgetLines: 500, loadMode: "full-skills", counting: "physical-lines-including-frontmatter", overflowAction: "decompose-without-skipping-required-reads",
+        alwaysLoad: ["AGENTS.md", ".agents/policies/project.md", ".agents/orchestration/ROUTING.md"],
+        taskClasses: ["explanation-status", "architecture-implementation"].map((name) => ({ name, artifacts: Object.keys(factoryDocuments) })),
+      }),
+      ...factoryDocuments,
+      "docs/factory-unselected.md": "SYNTHETIC-FACTORY-UNSELECTED-BODY\n",
+    };
+    for (const [path, text] of Object.entries(factoryFiles)) {
+      await mkdir(dirname(join(syntheticRepo, path)), { recursive: true });
+      await writeFile(join(syntheticRepo, path), text);
+    }
+    for (const args of [["config", "user.name", "Synthetic Smoke"], ["config", "user.email", "synthetic@example.test"], ["add", "docs/smoke-context.md", ...Object.keys(factoryFiles)], ["commit", "--quiet", "-m", "Synthetic fixture baseline"]]) {
       execFileSync("git", ["-C", syntheticRepo, ...args], { env: environment, windowsHide: true });
     }
     const workflowRepo = join(projectsRoot, workflowProjectId);
@@ -686,6 +1300,7 @@ async function main(): Promise<void> {
     stage = "migrate legacy portfolio profiles in the real browser flow";
     browser = await launchBrowser();
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    reads = trackBrowserApiReads(page.context());
     const browserErrors: string[] = [];
     const browserHttpErrors: string[] = [];
     const mutatingSessionHeaders: string[] = [];
@@ -701,9 +1316,176 @@ async function main(): Promise<void> {
       }
     });
 
-    await page.goto(`${dashboardUrl}/`, { waitUntil: "domcontentloaded" });
+    await reads.navigate(() => page.goto(`${dashboardUrl}/`, { waitUntil: "domcontentloaded" }));
     await page.getByText("Cockpit diario").waitFor();
     await page.getByText("En vivo", { exact: true }).waitFor();
+    // A focused actual API/browser selection, never a substitute for the full
+    // compatibility campaign below. Both paths use the same history assertions.
+    if (process.argv.includes("--history-restart-only")) {
+      stage = "F4 T004 focused history before restart";
+      const fixture = await prepareHistoryFixture(stateRoot, { project: profileProjectId, agent: "frontend-engineer", repo_path: join(projectsRoot, profileProjectId) });
+      const detailUrl = `${apiUrl}/api/tasks/${fixture.historyTaskId}/detail`;
+      const before = await readApiJson<import("../lib/state/types").TaskDetailModel>(detailUrl);
+      assert.deepEqual(before.task, fixture.historyTask);
+      assert.deepEqual(before.events.map((event) => event.revision), [1], "detail never invents a missing event");
+      const openHistory = async () => {
+        await page.getByRole("button", { name: "Overview", exact: true }).click();
+        await page.locator(".hist-row").getByRole("button", { name: fixture.historyTaskId, exact: true }).click();
+        await assertRecordedHistory(page, fixture);
+      };
+      await openHistory();
+      const sessionBefore = await readApiJson<{ token: string }>(`${apiUrl}/api/session`);
+      await reads.navigate(() => page.goto("about:blank"));
+      assert.equal(await stopApi(api), true, "focused API stops before restart");
+      api = null;
+      await delay(250);
+      api = startApi(port, stateRoot, projectsRoot);
+      await waitForApi(api, apiUrl);
+      const sessionAfter = await readApiJson<{ token: string }>(`${apiUrl}/api/session`);
+      assert.notEqual(sessionAfter.token, sessionBefore.token, "focused restart rotates process-local session authority");
+      stage = "F4 T004 focused history after real API restart and reload";
+      await reads.navigate(() => page.goto(`${dashboardUrl}/`, { waitUntil: "domcontentloaded" }));
+      await page.getByText("Cockpit diario").waitFor();
+      await openHistory();
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "history observation has no mobile overflow");
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await reads.navigate(() => page.reload({ waitUntil: "domcontentloaded" }));
+      await page.getByText("Cockpit diario").waitFor();
+      await openHistory();
+      assert.deepEqual(await readApiJson(detailUrl), before, "new process reconstructs saved facts without inventing history");
+      const effects = await readFile(join(tempRoot, "executor-effects.jsonl"), "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return "";
+      });
+      assert.equal(effects, "", "focused restart never executes or replays any task");
+      assert.deepEqual(browserErrors, []); assert.deepEqual(browserHttpErrors, []);
+      console.log("PASS focused F4 T004 actual API + Chromium: authoritative snapshot/partial history, restart, session rotation, reload, mobile layout, byte preservation; zero synthetic or paid turns. Full compatibility campaign not selected.");
+      return;
+    }
+    if (process.argv.includes("--uncharged-claim-recovery-only")) {
+      stage = "focused uncharged claim actual API/browser";
+      let sessionToken = (await readApiJson<{ token: string }>(apiUrl + "/api/session")).token;
+      const focusedPost = (path: string, body: unknown) => observeNodeApi("POST", apiUrl + path, 30_000, "response", () => fetch(apiUrl + path, {
+        method: "POST", headers: { "content-type": "application/json", "x-surtec-session": sessionToken },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(30_000),
+      }));
+      const focusedEffects = () => reads!.snapshot(async () => ({ state: await harnessTreeHash(stateRoot, ["locks/orchestrator-schedule.lock", "maintenance/boundary.lock"]),
+        worktrees: await hashOrAbsent(join(projectsRoot, "surtec-worktrees")), executor: await readFile(join(tempRoot!, "executor-effects.jsonl"), "utf8")
+          .catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return "absent"; }) }), 30_000, "unlabelled");
+      let retainedTaskId = "", retainedRunId = "";
+      const recovered = await workflowCampaign({ page, apiUrl, dashboardUrl, root: tempRoot, stateRoot, projectsRoot, recoveryOnly: true,
+        post: focusedPost, effects: focusedEffects, drainReads: () => reads!.drain(30_000), stage: (value) => { stage = value; console.log(value); },
+        claimRecovery: async ({ facts, task }) => {
+          retainedTaskId = task.envelope.id; retainedRunId = task.orchestration!.last_failure!.run_id;
+          await settleWorkflowPanels(page, () => reads!.drain(30_000));
+          await reads!.navigate(() => page.goto("about:blank"));
+          assert.ok(api);
+          await requestUnchargedFixture(api.child, { kind: "seal-uncharged-claim", workflow_id: facts.workflow.id,
+            expected_revision: facts.workflow.revision, expected_task_revision: task.revision! });
+          const native = await awaitUnchargedFixtureClosure(api);
+          assert.equal(native.native_exit, 2); assert.equal(native.native_signal, null);
+          assert.equal(native.root_exit_observed, true); assert.equal(native.stdout_eof, true); assert.equal(native.stderr_eof, true);
+          assert.equal(native.termination_requested, false); assert.equal(native.capture_truncated, false);
+          assert.equal(native.spawn_error, null); assert.equal(native.stream_error, null);
+          api = null;
+          const archive = join(tempRoot!, "claim-recovery-archive"); await mkdir(archive);
+          for (const [source, target] of [
+            ["workflows/workflows.json", "workflows.json"], ["tasks/" + task.envelope.id + ".json", "task.json"],
+            ["events/" + task.envelope.id + ".jsonl", "events.jsonl"], ["issues/issues.json", "issues.json"],
+          ]) await cp(join(stateRoot, source), join(archive, target));
+          await cp(join(tempRoot!, "runtime/scripts/fixtures/local-issue-api.ts"), join(archive, "operator.mjs"));
+          await writeFile(join(archive, "native.json"), JSON.stringify(native));
+          const initialTaskBytes = await readFile(join(archive, "task.json")), initialEventBytes = await readFile(join(archive, "events.jsonl"));
+          const effectsBefore = await readFile(join(tempRoot!, "executor-effects.jsonl"));
+          api = startApi(port, stateRoot, projectsRoot); await waitForApi(api, apiUrl);
+          sessionToken = (await readApiJson<{ token: string }>(apiUrl + "/api/session")).token;
+          assert.deepEqual(await readApiJson(apiUrl + "/api/workflows/" + facts.workflow.id, 30_000), facts, "restart never automatically recovers the uncharged task");
+          const reply = await requestUnchargedFixture(api.child, { kind: "recover-uncharged-claim", workflow_id: facts.workflow.id,
+            expected_revision: facts.workflow.revision, expected_task_revision: task.revision! });
+          assert.equal(reply.phase, "ready"); assert.equal(reply.worker_started, false);
+          const ready = await readApiJson<WorkflowDetail>(apiUrl + "/api/workflows/" + facts.workflow.id, 30_000);
+          const queued = await readApiJson<TaskRecord>(apiUrl + "/api/tasks/" + task.envelope.id, 30_000);
+          assert.equal(queued.lifecycle, "queued"); assert.equal(queued.orchestration!.attempts, 1);
+          assert.equal(queued.revision, task.revision! + 1); assert.deepEqual(queued.envelope, task.envelope);
+          assert.deepEqual(ready.workflow.counters, { ...facts.workflow.counters, accounting_complete: true });
+          assert.deepEqual(ready.accounting, facts.accounting); assert.deepEqual(ready.workflow.budget, facts.workflow.budget);
+          assert.deepEqual(await readFile(join(archive, "task.json")), initialTaskBytes);
+          assert.deepEqual((await readFile(join(stateRoot, "events", task.envelope.id + ".jsonl"))).subarray(0, initialEventBytes.length), initialEventBytes);
+          const duplicate = await requestUnchargedFixture(api.child, { kind: "recover-uncharged-claim", workflow_id: facts.workflow.id,
+            expected_revision: ready.workflow.revision, expected_task_revision: queued.revision! }).then(() => false, () => true);
+          assert.equal(duplicate, true, "one-use recovery refuses replay");
+          assert.deepEqual(await readFile(join(tempRoot!, "executor-effects.jsonl")), effectsBefore, "recovery itself cannot start a role");
+          assert.deepEqual(await readApiJson(apiUrl + "/api/workflows/" + facts.workflow.id, 30_000), ready);
+          await reads!.navigate(() => page.goto(dashboardUrl + "/", { waitUntil: "domcontentloaded" }));
+          await page.getByText("Cockpit diario").waitFor();
+          await requestUnchargedFixture(api.child, { kind: "start-recovered-claim", workflow_id: facts.workflow.id,
+            expected_revision: ready.workflow.revision, expected_task_revision: queued.revision! });
+          return ready;
+        } });
+      assert.equal(recovered.effects.length, 4, "exactly four role executions, never an executor effect for the failed claim");
+      const before = await readApiJson<WorkflowDetail>(apiUrl + "/api/workflows/" + recovered.pendingId, 30_000);
+      const writer = await readApiJson<TaskRecord>(apiUrl + "/api/tasks/" + retainedTaskId, 30_000);
+      assert.equal(writer.orchestration!.attempts, 2); assert.equal(writer.outcome, "completed");
+      assert.equal(before.workflow.counters.tasks, 4); assert.equal(before.workflow.counters.attempts, 4);
+      assert.equal(before.workflow.uncharged_claim_recovery!.original_run_id, retainedRunId);
+      assert.equal(before.workflow.uncharged_claim_recovery!.phase, "ready");
+      assert.ok(!before.accounting.some((row) => row.execution_id === retainedRunId));
+      assert.equal(before.accounting.find((row) => row.task_id === retainedTaskId)!.attempt, 2);
+      const effectsBefore = await readFile(join(tempRoot, "executor-effects.jsonl"));
+      await reads.navigate(() => page.goto("about:blank"));
+      assert.equal(await stopApi(api!), true); api = null; await delay(250);
+      api = startApi(port, stateRoot, projectsRoot); await waitForApi(api, apiUrl);
+      assert.deepEqual(await readApiJson(apiUrl + "/api/workflows/" + recovered.pendingId, 30_000), before);
+      await reads.navigate(() => page.goto(dashboardUrl + "/", { waitUntil: "domcontentloaded" }));
+      await page.getByRole("button", { name: "Issues", exact: true }).click();
+      const card = page.locator("article.work-issue-card").filter({ hasText: recovered.pendingIssue.title });
+      await card.getByRole("button", { name: "Ver workflow", exact: true }).click();
+      const panel = card.getByRole("region", { name: "Workflow de " + recovered.pendingIssue.title });
+      await panel.getByText("Recovery, intents y eventos", { exact: true }).click();
+      const recoverySummary = "One uncharged claim recovered; original claim retained and current execution guards still apply.";
+      const recoveryEvent = before.events.find((entry) => entry.type === "reconciled" && entry.summary === recoverySummary);
+      assert.ok(recoveryEvent, "restart retains the exact recovery event");
+      await panel.getByText(`r${recoveryEvent.revision} · ${recoveryEvent.type} · ${recoverySummary}`, { exact: true }).waitFor();
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+      assert.deepEqual(await readFile(join(tempRoot, "executor-effects.jsonl")), effectsBefore, "completed recovery never replays on actual restart");
+      assert.deepEqual(browserErrors, []); assert.deepEqual(browserHttpErrors, []);
+      console.log("PASS focused uncharged claim actual API + Chromium: real closed producer/EOFs, same task and retained claim, separate stopped-worker recovery/start, unchanged caps and Planner, four fake charged roles, exact verified candidate/reviews, human criteria, restart/no replay and mobile evidence; no paid calls.");
+      return;
+    }
+
+    if (process.argv.includes("--planner-recovery-only")) {
+      stage = "focused Planner recovery actual API/browser";
+      const focusedSession = await readApiJson<{ token: string }>(`${apiUrl}/api/session`);
+      const focusedPost = (path: string, body: unknown) => observeNodeApi("POST", `${apiUrl}${path}`, 30_000, "response", () => fetch(`${apiUrl}${path}`, {
+        method: "POST", headers: { "content-type": "application/json", "x-surtec-session": focusedSession.token }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000),
+      }));
+      const focusedEffects = () => reads!.snapshot(async () => ({ state: await harnessTreeHash(stateRoot, ["locks/orchestrator-schedule.lock", "maintenance/boundary.lock"]),
+        worktrees: await hashOrAbsent(join(projectsRoot, "surtec-worktrees")), executor: await readFile(join(tempRoot!, "executor-effects.jsonl"), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return "absent"; }) }), 30_000, "unlabelled");
+      const recovered = await workflowCampaign({ page, apiUrl, dashboardUrl, root: tempRoot, stateRoot, projectsRoot, recoveryOnly: true,
+        post: focusedPost, effects: focusedEffects, drainReads: () => reads!.drain(30_000), stage: (value) => { stage = value; console.log(value); } });
+      assert.equal(recovered.effects.length, 4, "focused recovery uses exactly four fake roles");
+      const before = await readApiJson<WorkflowDetail>(`${apiUrl}/api/workflows/${recovered.pendingId}`, 30_000);
+      const effectsBefore = await readFile(join(tempRoot, "executor-effects.jsonl"));
+      await reads.navigate(() => page.goto("about:blank"));
+      assert.equal(await stopApi(api), true, "focused recovery API stops before restart"); api = null; await delay(250);
+      api = startApi(port, stateRoot, projectsRoot); await waitForApi(api, apiUrl);
+      assert.deepEqual(await readApiJson(`${apiUrl}/api/workflows/${recovered.pendingId}`, 30_000), before, "recovery provenance persists across actual API restart");
+      await reads.navigate(() => page.goto(`${dashboardUrl}/`, { waitUntil: "domcontentloaded" }));
+      await page.getByRole("button", { name: "Issues", exact: true }).click();
+      const card = page.locator("article.work-issue-card").filter({ hasText: recovered.pendingIssue.title });
+      await card.getByRole("button", { name: "Ver workflow", exact: true }).click();
+      const panel = card.getByRole("region", { name: `Workflow de ${recovered.pendingIssue.title}` });
+      await panel.getByText("Recovery, intents y eventos", { exact: true }).click();
+      await panel.getByRole("region", { name: "Procedencia humana del plan", exact: true }).getByText(/Planner conserva su resultado needs-review/).waitFor();
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "recovery evidence fits mobile layout");
+      assert.deepEqual(await readFile(join(tempRoot, "executor-effects.jsonl")), effectsBefore, "restart never replays a role");
+      assert.deepEqual(browserErrors, []); assert.deepEqual(browserHttpErrors, []);
+      console.log("PASS focused Planner recovery actual API + Chromium: unchanged task/events/output/charges, distinct human gates, four fake roles, exact verified candidate and independent reviews, local acceptance, restart/no replay, mobile evidence; no paid calls.");
+      return;
+    }
     if (process.argv.includes("--fail-after-browser")) {
       stage = "injected rejected browser action";
       await observeResponse(page, "/api/synthetic-never-sent", "POST", async () => { throw new Error("Synthetic browser action failure"); });
@@ -747,10 +1529,10 @@ async function main(): Promise<void> {
     stage = "verify cycle rejection and relationship integrity";
     const firstSessionToken = mutatingSessionHeaders.find((token) => token.length > 0);
     assert.ok(firstSessionToken, "dashboard mutations include an in-memory session token");
-    const apiPost = (path: string, body: unknown, token = firstSessionToken, timeoutMs = 5_000) => fetch(`${apiUrl}${path}`, {
+    const apiPost = (path: string, body: unknown, token = firstSessionToken, timeoutMs = 5_000) => observeNodeApi("POST", `${apiUrl}${path}`, timeoutMs, "response", () => fetch(`${apiUrl}${path}`, {
       method: "POST", headers: { "content-type": "application/json", "x-surtec-session": token },
       body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
-    });
+    }));
     const previewRequest = async (input: ContextPreviewRequest): Promise<ContextPreview> => {
       const response = await apiPost("/api/context/preview", input);
       assert.equal(response.status, 200, `synthetic ${input.kind} preview is valid: ${await response.clone().text()}`);
@@ -758,10 +1540,20 @@ async function main(): Promise<void> {
       assert.equal(preview.allowed, true, `synthetic preview is admitted: ${preview.blocked_reasons.join("; ")}`);
       return preview;
     };
-    const hashOrAbsent = async (path: string) => (await lstat(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; })) ? harnessTreeHash(path) : "absent";
-    // The idle worker continuously creates/removes this one scheduling lock.
-    // Keep every persisted record, journal, observation and other lock in the comparison.
-    const effects = async () => ({ state: await harnessTreeHash(stateRoot, ["locks/orchestrator-schedule.lock"]), worktrees: await hashOrAbsent(join(projectsRoot, "surtec-worktrees")), executor: await readFile(join(tempRoot!, "executor-effects.jsonl"), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return "absent"; }) });
+    async function hashOrAbsent(path: string) { return (await lstat(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; })) ? harnessTreeHash(path) : "absent"; }
+    // The idle worker creates/removes its scheduler and root-coordination locks.
+    // Keep maintenance control/participants and every other record/lock in the comparison.
+    // Persistent unknown-gate refusal is tested separately; subsequent successful
+    // admissions here must still prove that no retained fence blocks execution.
+    let effectCaptureLabel: BrowserReadSnapshotLabel = "unlabelled";
+    const effects = (readTimeoutMs = 10_000) => reads!.snapshot(async () => ({ state: await harnessTreeHash(stateRoot, ["locks/orchestrator-schedule.lock", "maintenance/boundary.lock"]), worktrees: await hashOrAbsent(join(projectsRoot, "surtec-worktrees")), executor: await readFile(join(tempRoot!, "executor-effects.jsonl"), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return "absent"; }) }), readTimeoutMs, effectCaptureLabel);
+    // Intake may append the issue aggregate, never execution authority or work.
+    // This separate assertion does not weaken the full effects() comparison.
+    const intakeExecutionEffects = () => reads!.snapshot(async () => ({
+      stores: Object.fromEntries(await Promise.all(["tasks", "events", "workflows", "budgets"].map(async (name) => [name, await hashOrAbsent(join(stateRoot, name))]))),
+      worktrees: await hashOrAbsent(join(projectsRoot, "surtec-worktrees")),
+      executor: await readFile(join(tempRoot!, "executor-effects.jsonl"), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return "absent"; }),
+    }));
     const childResponse = await fetch(`${apiUrl}/api/organization/objectives`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-surtec-session": firstSessionToken },
@@ -802,6 +1594,7 @@ async function main(): Promise<void> {
 
     stage = "Phase N no-effect preview, role/source guards and default privacy";
     const analysisRequest: ContextPreviewRequest = { kind: "analysis", project: issueProjectId, agent: "tech-lead", role_id: "planner", instructions: "Inspect the synthetic project without editing it.", client_context_categories: [] };
+    effectCaptureLabel = "phase-n-before-preview";
     const beforePreview = await effects();
     assert.equal((await fetch(`${apiUrl}/api/context/preview`, { method: "POST", body: JSON.stringify(analysisRequest) })).status, 403, "preview requires session protection");
     const projectRoles = await readApiJson<{ roles: Array<{ id: string; agents: string[] }> }>(`${apiUrl}/api/projects/${issueProjectId}/context/roles`);
@@ -809,6 +1602,8 @@ async function main(): Promise<void> {
     assert.equal((await apiPost("/api/context/preview", { ...analysisRequest, agent: "frontend-engineer" })).status, 403, "incompatible role/adapter is denied");
     assert.equal((await apiPost("/api/context/preview", { ...analysisRequest, agent: "product-manager", role_id: "portfolio-analyst" })).status, 403, "registered but project-disallowed adapter is denied");
     const initialPreview = await previewRequest(analysisRequest);
+    assertFactoryContext(initialPreview, "explanation-status");
+    assert.deepEqual(initialPreview.manifest.tools, ["inspect"], "untrusted project prose cannot add capabilities to read-only analysis");
     const publicPreview = JSON.stringify(initialPreview);
     assert.ok(!publicPreview.includes("Synthetic private project source body") && !publicPreview.includes(projectsRoot), "preview exposes attribution, not source copies or absolute paths");
     assert.deepEqual(initialPreview.manifest.selected_categories, []);
@@ -824,6 +1619,7 @@ async function main(): Promise<void> {
       await unlink(selectedSource);
       assert.equal((await apiPost("/api/context/preview", analysisRequest)).status, 409, "missing required source blocks preview");
     } finally { await writeFile(selectedSource, selectedBytes); }
+    effectCaptureLabel = "phase-n-after-api-refusals";
     assert.deepEqual(await effects(), beforePreview, "all previews and refusals leave state, worktrees and executor effects unchanged");
 
     await page.getByRole("button", { name: "Overview", exact: true }).click();
@@ -867,7 +1663,9 @@ async function main(): Promise<void> {
     const defaultPreviewResponse = await observeResponse(page, "/api/context/preview", "POST", () => previewButton.click());
     const defaultPreview = await defaultPreviewResponse.json() as ContextPreview;
     assert.equal(defaultPreview.allowed, true); assert.deepEqual(defaultPreview.manifest.selected_categories, []);
+    effectCaptureLabel = "phase-n-after-browser-previews";
     assert.deepEqual(await effects(), beforePreview, "browser previews/consent mismatch do not persist state or invoke the executor");
+    effectCaptureLabel = "unlabelled";
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "analysis preview has no mobile overflow");
     assert.ok(await previewButton.evaluate((element) => element.getBoundingClientRect().width < 280), "preview control stays compact");
@@ -889,37 +1687,174 @@ async function main(): Promise<void> {
     const recordedManifest = page.getByRole("region", { name: "Manifiesto de contexto" });
     await recordedManifest.getByText(defaultPreview.fingerprint, { exact: true }).waitFor();
     await recordedManifest.getByText("planner", { exact: true }).waitFor();
-    await page.reload({ waitUntil: "domcontentloaded" });
+    await reads.navigate(() => page.reload({ waitUntil: "domcontentloaded" }));
     await page.getByRole("button", { name: "Overview", exact: true }).click();
     await page.locator(".hist-row").getByRole("button", { name: analysisId, exact: true }).click();
     await recordedManifest.getByText(defaultPreview.fingerprint, { exact: true }).waitFor();
     await page.getByRole("button", { name: "Volver", exact: true }).click();
 
+    const pendingIntakeKey = "surtec.work-issue.pending-request.v1";
+    const intakePosts: ManualIssueCreateInput[] = [];
+    const recordIntake = (request: Request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/work-issues") intakePosts.push(request.postDataJSON() as ManualIssueCreateInput);
+    };
+    page.on("request", recordIntake);
+    const fillManualIssue = async (title: string) => {
+      await page.getByRole("button", { name: "Issues", exact: true }).click();
+      await page.getByText("Trabajo aprobado", { exact: true }).waitFor();
+      const disclosure = page.locator(".work-issue-create");
+      if (!(await disclosure.evaluate((element) => (element as HTMLDetailsElement).open))) await disclosure.locator("summary").click();
+      await page.getByLabel("Repositorio local").selectOption(issueProjectId);
+      await page.getByLabel("Agente habilitado", { exact: true }).selectOption("frontend-engineer");
+      await page.getByLabel("Objetivo SURTEC", { exact: true }).selectOption(child.id);
+      await disclosure.locator("label").filter({ hasText: "Título" }).locator("input").fill(title);
+      await disclosure.locator("label").filter({ hasText: "Resultado esperado" }).locator("textarea").fill("A synthetic issue stays local and has a visible authorized scope.");
+      await disclosure.locator("label").filter({ hasText: "Criterios de aceptación" }).locator("textarea").fill("The proposed path is displayed with its scope revision.");
+      await disclosure.locator("label").filter({ hasText: "Paths permitidos" }).locator("textarea").fill("dashboard/src/**");
+      await disclosure.locator("label").filter({ hasText: "Categorías de cambio" }).locator("input").fill("dashboard UI");
+      assert.equal(await disclosure.locator("form").evaluate((element) => (element as HTMLFormElement).checkValidity()), true, "synthetic manual issue form is valid");
+    };
+    const discardIntakeAcknowledgement = async (action: () => Promise<unknown>) => {
+      let persisted: { payload: ManualIssueCreateInput; issue: WorkIssue } | null = null;
+      let injectionFailure: unknown;
+      let injected = 0;
+      const handler = async (route: Route) => {
+        if (route.request().method() !== "POST") { await route.continue(); return; }
+        try {
+          assert.equal(++injected, 1, "one browser submission reaches the acknowledgement fault");
+          const payload = route.request().postDataJSON() as ManualIssueCreateInput;
+          assert.match(payload.request_id, /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/);
+          const saved = await page.evaluate((key) => ({ id: sessionStorage.getItem(key), values: Object.values(sessionStorage) }), pendingIntakeKey);
+          assert.equal(saved.id, payload.request_id, "the UUID is retained before POST reaches the API");
+          assert.ok(saved.values.every((value) => !value.includes(payload.title) && !value.includes(payload.expected_outcome)), "private form bodies are absent from sessionStorage");
+          const response = await route.fetch({ timeout: 10_000, maxRetries: 0 });
+          assert.equal(response.status(), 201, "the real API persists before its acknowledgement is discarded");
+          const body = await response.json() as { issue: WorkIssue };
+          assert.equal(body.issue.intake_receipt?.request_id, payload.request_id);
+          persisted = { payload, issue: body.issue };
+          // Preserve a successful transport while withholding confirmation of
+          // the real write. A transport abort would add an unrelated console error.
+          await route.fulfill({ response, json: {} });
+        } catch (error) {
+          injectionFailure = error;
+          await route.fulfill({ status: 200, json: {} }).catch(() => undefined);
+        }
+      };
+      await page.route("**/api/work-issues", handler);
+      try {
+        const response = await observeResponse(page, "/api/work-issues", "POST", action);
+        if (injectionFailure) throw injectionFailure;
+        assert.equal(response.status(), 201);
+        await page.getByRole("region", { name: "Pedido local pendiente", exact: true }).getByText("No se pudo confirmar la creación. Conservamos el mismo pedido para comprobarlo o reintentarlo sin duplicarlo.", { exact: true }).waitFor();
+        assert.ok(persisted, "a real persisted issue was observed before losing its acknowledgement");
+        return persisted as { payload: ManualIssueCreateInput; issue: WorkIssue };
+      } finally { await page.unroute("**/api/work-issues", handler); }
+    };
+
     stage = "create and explicitly authorize a local issue through the real dashboard";
-    await page.getByRole("button", { name: "Issues", exact: true }).click();
-    await page.getByText("Trabajo aprobado", { exact: true }).waitFor();
-    await page.locator(".work-issue-create summary").click();
-    await page.getByLabel("Repositorio local").selectOption(issueProjectId);
-    await page.getByLabel("Agente habilitado", { exact: true }).selectOption("frontend-engineer");
-    await page.getByLabel("Objetivo SURTEC", { exact: true }).selectOption(child.id);
-    await page.locator(".work-issue-create label").filter({ hasText: "Título" }).locator("input").fill("Synthetic local issue proposal");
-    await page.locator(".work-issue-create label").filter({ hasText: "Resultado esperado" }).locator("textarea").fill("A synthetic issue stays local and has a visible authorized scope.");
-    await page.locator(".work-issue-create label").filter({ hasText: "Criterios de aceptación" }).locator("textarea").fill("The proposed path is displayed with its scope revision.");
-    await page.locator(".work-issue-create label").filter({ hasText: "Paths permitidos" }).locator("textarea").fill("dashboard/src/**");
-    await page.locator(".work-issue-create label").filter({ hasText: "Categorías de cambio" }).locator("input").fill("dashboard UI");
-    const issueCreateResponse = await observeResponse(page, "/api/work-issues", "POST", () => page.getByRole("button", { name: "Crear propuesta local", exact: true }).click());
+    await fillManualIssue("Synthetic local issue proposal");
+    const beforeIntakeExecution = await intakeExecutionEffects();
+    const lostCreation = await discardIntakeAcknowledgement(() => page.locator(".work-issue-create form").evaluate((element) => {
+      (element as HTMLFormElement).requestSubmit(); (element as HTMLFormElement).requestSubmit();
+    }));
+    assert.equal(intakePosts.length, 1, "double submit produces only one logical POST");
+    assert.equal(await page.getByRole("button", { name: "Crear propuesta local", exact: true }).isDisabled(), true, "unconfirmed creation blocks a new intent");
+    assert.equal(await page.locator('fieldset[aria-label="Datos del pedido local"]').evaluate((element) => (element as HTMLFieldSetElement).disabled), true, "pending form data cannot change the retry payload");
+    const intakePath = join(stateRoot, "issues/issues.json");
+    const persistedIntakeBytes = await reads.snapshot(() => readFile(intakePath));
+    const issueCreateResponse = await observeResponse(page, "/api/work-issues", "POST", () => page.getByRole("button", { name: "Reintentar mismo pedido", exact: true }).click());
     assert.equal(issueCreateResponse.status(), 201, "local issue creation returns 201 through the real API");
-    const issueCreateBody = await issueCreateResponse.json() as { issue?: { id: string; status: string; work_scale: string; revision: number } };
+    const issueCreateBody = await issueCreateResponse.json() as { issue?: WorkIssue };
     assert.ok(issueCreateBody.issue && issueCreateBody.issue.status === "proposed", "new local issue starts proposed, not authorized");
     assert.equal(issueCreateBody.issue.work_scale, "trivial", "narrow synthetic issue is classified deterministically");
+    assert.deepEqual(issueCreateBody.issue, lostCreation.issue, "explicit retry recovers the same issue after its acknowledgement was lost");
+    await page.getByText(`Pedido confirmado: ${issueCreateBody.issue.id}.`, { exact: true }).waitFor();
+    await page.getByRole("region", { name: "Pedido local pendiente", exact: true }).waitFor({ state: "hidden" });
+    assert.equal(intakePosts.length, 2, "only explicit retry adds a second browser POST");
+    assert.deepEqual(intakePosts[1], lostCreation.payload, "explicit retry preserves the exact frozen payload and UUID");
+    assert.deepEqual(await reads.snapshot(() => readFile(intakePath)), persistedIntakeBytes, "replay adds no issue, event, revision or state write");
+    assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), pendingIntakeKey), null, "confirmed retry closes its stored identity");
+    assert.deepEqual(await intakeExecutionEffects(), beforeIntakeExecution, "intake and replay create no task, grant, worktree or executor effect");
     const issueCard = page.locator(".work-issue-card").filter({ hasText: "Synthetic local issue proposal" });
     await issueCard.getByText("proposed", { exact: true }).waitFor();
-    const issueInput = issueCreateResponse.request().postDataJSON();
+    const issueInput = issueCreateResponse.request().postDataJSON() as ManualIssueCreateInput;
+    const originalReceipt = issueCreateBody.issue.intake_receipt;
+    assert.equal(originalReceipt?.request_id, issueInput.request_id);
+    assert.match(originalReceipt?.request_fingerprint ?? "", /^[a-f0-9]{64}$/);
+    const assertOriginalReplay = async (expected: WorkIssue, token = firstSessionToken) => {
+      const beforeBytes = await reads!.snapshot(() => readFile(intakePath));
+      const beforeFullEffects = await effects();
+      const beforeExecution = await intakeExecutionEffects();
+      const response = await apiPost("/api/work-issues", issueInput, token);
+      assert.equal(response.status, 201, "the original key replays after issue progress or API restart");
+      const current = (await response.json() as { issue: WorkIssue }).issue;
+      assert.deepEqual(current, expected, "replay returns current progress instead of restoring the proposal");
+      assert.deepEqual(current.intake_receipt, originalReceipt, "original intake identity stays immutable");
+      assert.deepEqual(await reads!.snapshot(() => readFile(intakePath)), beforeBytes, "progress/restart replay preserves exact issue aggregate bytes");
+      assert.deepEqual(await effects(), beforeFullEffects, "progress/restart replay preserves all state without changing existing effect exclusions");
+      assert.deepEqual(await intakeExecutionEffects(), beforeExecution, "progress/restart replay never admits execution");
+    };
     assert.equal((await apiPost(`/api/work-issues/${issueCreateBody.issue.id}/dispatch`, { expected_revision: issueCreateBody.issue.revision, agent: "frontend-engineer" })).status, 409, "proposal cannot dispatch before authorization");
     assert.equal((await apiPost("/api/tasks", { project: issueProjectId, agent: "frontend-engineer", sandbox: "workspace-write", instructions: "Synthetic direct write bypass", metadata: { issue_id: issueCreateBody.issue.id } })).status, 409, "generic task route cannot forge trusted issue write lineage");
-    assert.equal((await apiPost("/api/work-issues", { ...issueInput, criticality: "high" })).status, 400, "substantial work cannot bypass its durable plan");
+    assert.equal((await apiPost("/api/work-issues", { ...issueInput, request_id: randomUUID(), criticality: "high" })).status, 400, "substantial work cannot bypass its durable plan");
     const proposedPreviewResponse = await apiPost("/api/context/preview", { kind: "issue", project: issueProjectId, agent: "frontend-engineer", role_id: "software-engineer", issue_id: issueCreateBody.issue.id, expected_revision: issueCreateBody.issue.revision });
     assert.equal(proposedPreviewResponse.status, 200); assert.equal((await proposedPreviewResponse.json() as ContextPreview).allowed, false, "preview does not authorize proposed work");
+    stage = "recover lost intake acknowledgement through reload without recreating work";
+    await fillManualIssue("Synthetic reload recovery proposal");
+    const lostReload = await discardIntakeAcknowledgement(() => page.getByRole("button", { name: "Crear propuesta local", exact: true }).click());
+    assert.notEqual(lostReload.payload.request_id, issueInput.request_id, "a later deliberate intent owns a new UUID");
+    const reloadPostCount = intakePosts.length;
+    const reloadBytes = await reads.snapshot(() => readFile(intakePath));
+    await reads.navigate(() => page.reload({ waitUntil: "domcontentloaded" }));
+    await page.getByRole("button", { name: "Issues", exact: true }).click();
+    await page.getByText(`Pedido confirmado: ${lostReload.issue.id}.`, { exact: true }).waitFor();
+    assert.equal(intakePosts.length, reloadPostCount, "reload resolves the stored identity using GET with no automatic POST");
+    assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), pendingIntakeKey), null);
+    assert.deepEqual(await reads.snapshot(() => readFile(intakePath)), reloadBytes, "reload recovery preserves the persisted issue aggregate");
+    assert.deepEqual(await intakeExecutionEffects(), beforeIntakeExecution, "reload recovery grants no execution authority");
+
+    const beforeConflict = await reads.snapshot(() => readFile(intakePath)), beforeConflictEffects = await effects();
+    for (const refusal of [
+      { payload: { ...issueInput, title: "Synthetic conflicting request payload" }, status: 409 },
+      { payload: { ...issueInput, project_id: workflowProjectId }, status: 409 },
+      { payload: { ...issueInput, request_id: undefined }, status: 400 },
+    ]) {
+      const response = await apiPost("/api/work-issues", refusal.payload);
+      assert.equal(response.status, refusal.status, "manual HTTP creation requires an unchanged explicit request identity");
+      assert.deepEqual(await reads.snapshot(() => readFile(intakePath)), beforeConflict, "conflicting identity preserves exact aggregate bytes");
+      assert.deepEqual(await effects(), beforeConflictEffects, "missing or conflicting identity changes no server state or execution effects");
+    }
+    const distinctResponse = await apiPost("/api/work-issues", { ...lostReload.payload, request_id: randomUUID() });
+    assert.equal(distinctResponse.status, 201, "distinct UUIDs may represent identical deliberate request content");
+    const distinctIssue = (await distinctResponse.json() as { issue: WorkIssue }).issue;
+    assert.notEqual(distinctIssue.id, lostReload.issue.id);
+    assert.equal(distinctIssue.intake_receipt?.request_fingerprint, lostReload.issue.intake_receipt?.request_fingerprint);
+    assert.notEqual(distinctIssue.intake_receipt?.request_id, lostReload.payload.request_id);
+    assert.equal(distinctIssue.status, "proposed");
+    assert.deepEqual(distinctIssue.task_ids, []);
+    assert.deepEqual(await intakeExecutionEffects(), beforeIntakeExecution, "distinct proposals and conflicts admit no tasks or grants");
+
+    stage = "retain unresolved intake until an explicit acknowledged cancellation";
+    const unknownRequestId = randomUUID(), beforeUnknown = await effects(), unknownPostCount = intakePosts.length;
+    await page.evaluate(({ key, id }) => sessionStorage.setItem(key, id), { key: pendingIntakeKey, id: unknownRequestId });
+    await reads.navigate(() => page.reload({ waitUntil: "domcontentloaded" }));
+    await page.getByRole("button", { name: "Issues", exact: true }).click();
+    const pendingIntake = page.getByRole("region", { name: "Pedido local pendiente", exact: true });
+    await pendingIntake.getByText("No se pudo confirmar el pedido en esta lectura. Su ausencia no demuestra que no se haya creado.", { exact: true }).waitFor();
+    assert.equal(intakePosts.length, unknownPostCount, "missing GET evidence never recreates an unresolved request");
+    assert.equal(await pendingIntake.getByRole("button", { name: "Reintentar mismo pedido", exact: true }).count(), 0, "reload retains no private payload to resend");
+    assert.equal(await page.locator('.work-issue-create button[type="submit"]').isDisabled(), true);
+    assert.equal(await pendingIntake.getByRole("button", { name: "Cancelar intento pendiente", exact: true }).isDisabled(), true, "cancellation requires a separate acknowledgement");
+    assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), pendingIntakeKey), unknownRequestId);
+    await pendingIntake.getByRole("checkbox", { name: "Entiendo que el pedido podría existir; cancelar este intento no lo elimina.", exact: true }).check();
+    await pendingIntake.getByRole("button", { name: "Cancelar intento pendiente", exact: true }).click();
+    await pendingIntake.waitFor({ state: "hidden" });
+    assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), pendingIntakeKey), null);
+    assert.equal(intakePosts.length, unknownPostCount, "acknowledged cancellation does not create a replacement issue");
+    assert.deepEqual(await effects(), beforeUnknown, "uncertainty and cancellation leave all server state and execution effects unchanged");
+    assert.deepEqual(await intakeExecutionEffects(), beforeIntakeExecution);
+    page.off("request", recordIntake);
+
     const authorizeIssueResponse = await observeResponse(page, `/api/work-issues/${issueCreateBody.issue.id}/authorize`, "POST", () => issueCard.getByRole("button", { name: "Autorizar scope exacto", exact: true }).click());
     assert.equal(authorizeIssueResponse.status(), 200, "exact-scope authorization is an authenticated human action");
     const authorizedIssue = (await authorizeIssueResponse.json() as { issue: { revision: number } }).issue;
@@ -934,6 +1869,7 @@ async function main(): Promise<void> {
     const issuePreviewResponse = await observeResponse(page, "/api/context/preview", "POST", () => issueCard.getByRole("button", { name: "Previsualizar contexto del issue", exact: true }).click());
     assert.equal(issuePreviewResponse.status(), 200);
     const issuePreview = await issuePreviewResponse.json() as ContextPreview;
+    assertFactoryContext(issuePreview, "architecture-implementation");
     assert.equal(issuePreview.allowed, true); assert.equal(issuePreview.manifest.role_id, "software-engineer");
     assert.equal(issuePreview.manifest.sandbox, "workspace-write"); assert.deepEqual(issuePreview.manifest.selected_categories, []);
     assert.equal(issuePreviewResponse.request().postDataJSON().expected_revision, authorizedIssue.revision);
@@ -974,6 +1910,7 @@ async function main(): Promise<void> {
     assert.equal(acceptResponse.status(), 200, "local acceptance runs through the authenticated API");
     await issueCard.getByText("done", { exact: true }).waitFor();
     const doneLineage = await readApiJson<import("../lib/issues/types").IssueLineage>(`${apiUrl}/api/work-issues/${issueCreateBody.issue!.id}`);
+    await assertOriginalReplay(doneLineage.issue);
     assert.deepEqual(doneLineage.evidence_gaps, [], "completion has verification and human-review evidence");
     assert.ok(doneLineage.evidence.some((entry) => entry.kind === "review" && entry.candidate_revision === candidate.candidate_revision && entry.diff_fingerprint === candidate.diff_fingerprint));
     const reviewLineageStale = (await issueCard.locator(".work-issue-lineage").innerText()).includes("Human acceptance evidence is missing");
@@ -987,16 +1924,21 @@ async function main(): Promise<void> {
     const scopeOutcomes: Array<{ id: string; status: string; scope_revision: number }> = [];
     for (const decision of ["approve", "reject"] as const) {
       const title = `Synthetic scope discovery ${decision}`;
-      const createdResponse = await apiPost("/api/work-issues", { ...issueInput, title });
+      stage = `scope ${decision}: create synthetic issue`;
+      const createdResponse = await apiPost("/api/work-issues", { ...issueInput, request_id: randomUUID(), title });
       assert.equal(createdResponse.status, 201);
       const proposed = (await createdResponse.json() as { issue: { id: string; revision: number } }).issue;
+      stage = `scope ${decision}: authorize exact issue revision`;
       const authorizedResponse = await apiPost(`/api/work-issues/${proposed.id}/authorize`, { expected_revision: proposed.revision, approval_id: "synthetic-scope-approval" });
       assert.equal(authorizedResponse.status, 200);
       const authorized = (await authorizedResponse.json() as { issue: { revision: number } }).issue;
+      stage = `scope ${decision}: preview authorized issue context`;
       const scopePreview = await previewRequest({ kind: "issue", project: issueProjectId, agent: "frontend-engineer", role_id: "software-engineer", issue_id: proposed.id, expected_revision: authorized.revision, client_context_categories: [] });
+      stage = `scope ${decision}: dispatch authorized task`;
       assert.equal((await apiPost(`/api/work-issues/${proposed.id}/dispatch`, { expected_revision: authorized.revision, agent: "frontend-engineer", role_id: "software-engineer", preview_fingerprint: scopePreview.fingerprint, client_context_categories: [] })).status, 201);
       let detail: import("../lib/issues/types").IssueLineage | null = null;
       const deadline = Date.now() + 30_000;
+      stage = `scope ${decision}: GET issue lineage while awaiting finished needs-decision`;
       while (Date.now() < deadline) {
         detail = await readApiJson(`${apiUrl}/api/work-issues/${proposed.id}`);
         if (detail!.issue.status === "needs-decision" && detail!.tasks[0]?.task.lifecycle === "finished") break;
@@ -1009,11 +1951,13 @@ async function main(): Promise<void> {
       const run = detail.tasks[0]!.task.envelope.metadata.run as { worktree_path: string };
       assert.ok(isInside(tempRoot, run.worktree_path), "scope fixture worktree stays temporary");
       assert.equal(execFileSync("git", ["-C", run.worktree_path, "log", "--format=%s", "-1"], { env: environment, encoding: "utf8", windowsHide: true }).trim(), "Synthetic fixture baseline", "scope violation stops before Git commit");
+      stage = `scope ${decision}: browser refresh and exact scope decision`;
       await page.getByRole("button", { name: "Actualizar", exact: true }).click();
       const card = page.locator(".work-issue-card").filter({ hasText: title });
       await card.getByText("needs-decision", { exact: true }).waitFor();
       const decisionResponse = await observeResponse(page, `/api/work-issues/${proposed.id}/scope-decision`, "POST", () => card.getByRole("button", { name: decision === "approve" ? "Autorizar nueva revisión de scope" : "Rechazar y cancelar issue", exact: true }).click());
       assert.equal(decisionResponse.status(), 200);
+      stage = `scope ${decision}: GET issue lineage after browser decision`;
       const changed = (await readApiJson<import("../lib/issues/types").IssueLineage>(`${apiUrl}/api/work-issues/${proposed.id}`)).issue;
       assert.equal(changed.status, decision === "approve" ? "authorized" : "cancelled");
       assert.equal(changed.scope_revision, decision === "approve" ? 2 : 1);
@@ -1059,7 +2003,7 @@ async function main(): Promise<void> {
     assert.ok(mobileLayout.document <= mobileLayout.viewport + 1, `mobile organization view has no horizontal overflow (${JSON.stringify(mobileLayout)})`);
     assert.ok(mobileLayout.companyButton < 220 && mobileLayout.linksButton < 220, "mobile save controls stay compact");
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await page.reload({ waitUntil: "domcontentloaded" });
+    await reads.navigate(() => page.reload({ waitUntil: "domcontentloaded" }));
     await page.getByText("Cockpit diario").waitFor();
     await page.getByRole("button", { name: "SURTEC", exact: true }).click();
     await page.getByRole("heading", { name: "Objetivos", exact: true }).waitFor();
@@ -1082,7 +2026,8 @@ async function main(): Promise<void> {
     assert.equal(healthyHarness.observation.testing_policy.mode, "functional");
     const partialHarness = await readApiJson<HarnessResponse>(`${apiUrl}/api/projects/${profileClientId}/harness`);
     assert.equal(partialHarness.observation.status, "partial");
-    const absentHarness = await readApiJson<HarnessResponse>(`${apiUrl}/api/projects/${issueProjectId}/harness`);
+    // The workflow source has no Harness before its campaign; Factory instructions already exist in the issue source.
+    const absentHarness = await readApiJson<HarnessResponse>(`${apiUrl}/api/projects/${workflowProjectId}/harness`);
     assert.equal(absentHarness.observation.status, "absent");
     const unauthorizedHarness = await fetch(`${apiUrl}/api/projects/${profileProjectId}/harness/refresh`, { method: "POST" });
     assert.equal(unauthorizedHarness.status, 403);
@@ -1100,7 +2045,7 @@ async function main(): Promise<void> {
     assert.ok(await harnessPanel.getByRole("button", { name: "Actualizar Harness" }).evaluate((element) => element.getBoundingClientRect().width < 220), "Harness refresh control remains compact");
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), "Harness detail has no mobile horizontal overflow");
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await page.reload({ waitUntil: "domcontentloaded" });
+    await reads.navigate(() => page.reload({ waitUntil: "domcontentloaded" }));
     await page.getByRole("button", { name: "Overview", exact: true }).click();
     await page.getByRole("button", { name: `Detalle operativo de ${profileProjectId}` }).click();
     await page.getByTestId("harness-saved").getByText(/Última observación guardada/).waitFor();
@@ -1133,14 +2078,22 @@ async function main(): Promise<void> {
     assert.deepEqual((await readApiJson<HarnessResponse>(`${apiUrl}/api/projects/${profileProjectId}/harness`)).saved, restoredSavedHarness, "GET unknown observations do not replace explicitly restored saved evidence");
 
     const workflows = await workflowCampaign({ page, apiUrl, dashboardUrl, root: tempRoot, stateRoot, projectsRoot,
-      post: (path, body) => apiPost(path, body, firstSessionToken, 30_000), effects,
+      post: (path, body) => apiPost(path, body, firstSessionToken, 30_000), effects: () => effects(30_000), drainReads: () => reads!.drain(30_000),
       stage: (value) => { stage = value; console.log(value); } });
+    // A test-owned terminal snapshot deliberately has no event for its newer
+    // revision. Reads/restart must expose uncertainty, never repair or replay.
+    const historySource = await readApiJson<TaskRecord>(`${apiUrl}/api/tasks/${analysisId}`);
+    const historyFixture = await prepareHistoryFixture(stateRoot, historySource.envelope);
+    const { historyTaskId, historyTask } = historyFixture;
+    const historyBefore = await readApiJson<import("../lib/state/types").TaskDetailModel>(`${apiUrl}/api/tasks/${historyTaskId}/detail`);
+    assert.deepEqual(historyBefore.task, historyTask, "snapshot remains authoritative before restart with partial history");
+    assert.deepEqual(historyBefore.events.map((event) => event.revision), [1], "detail never invents a missing event");
     const beforeWorkflowRestart = await effects();
     stage = "restart the real API and verify durable state and session rotation";
     const initialSessionResponse = await readApiJson<{ token: string }>(`${apiUrl}/api/session`);
     assert.equal(initialSessionResponse.token, firstSessionToken, "browser and API share the same initial session token");
     const preRestartPreview = await previewRequest(analysisRequest);
-    await page.goto("about:blank");
+    await reads.navigate(() => page.goto("about:blank"));
     const stopped = await stopApi(api);
     assert.ok(stopped, `isolated API process stops before restart (${api.output})`);
     api = null;
@@ -1180,7 +2133,7 @@ async function main(): Promise<void> {
     const persistedOrganization = JSON.parse(await readFile(join(stateRoot, "organization", "organization.json"), "utf8")) as { schema_version?: number };
     assert.equal(persistedOrganization.schema_version, 1, "organization state remains in its supported versioned format");
 
-    await page.goto(`${dashboardUrl}/`, { waitUntil: "domcontentloaded" });
+    await reads.navigate(() => page.goto(`${dashboardUrl}/`, { waitUntil: "domcontentloaded" }));
     await page.getByText("Cockpit diario").waitFor();
     await page.getByRole("button", { name: "SURTEC", exact: true }).click();
     await page.getByRole("heading", { name: "Objetivos", exact: true }).waitFor();
@@ -1190,6 +2143,7 @@ async function main(): Promise<void> {
     await page.getByRole("button", { name: "Issues", exact: true }).click();
     await page.locator(".work-issue-card").filter({ hasText: "Synthetic local issue proposal" }).getByText("done", { exact: true }).waitFor();
     const restartedLineage = await readApiJson<import("../lib/issues/types").IssueLineage>(`${apiUrl}/api/work-issues/${issueCreateBody.issue.id}`);
+    await assertOriginalReplay(restartedLineage.issue, restartedSession.token);
     assert.deepEqual(restartedLineage.candidates, doneLineage.candidates, "immutable candidate survives API restart unchanged");
     assert.deepEqual(restartedLineage.evidence, doneLineage.evidence, "verification/review evidence survives API restart unchanged");
     assert.deepEqual(restartedLineage.evidence_gaps, []);
@@ -1197,6 +2151,21 @@ async function main(): Promise<void> {
     assert.deepEqual(restartedLineage.tasks[0]!.task.envelope.context_manifest, issuePreview.manifest);
     assert.deepEqual(restartedLineage.tasks[0]!.task.testing_evidence, doneLineage.tasks[0]!.task.testing_evidence, "infrastructure receipt survives restart unchanged");
     assert.equal(restartedLineage.sessions[0]?.id, session.id, "linked session survives API restart");
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
+    stage = "F4 T004 retained snapshot and unavailable history after real API restart and browser reload";
+    const assertHistory = () => assertRecordedHistory(page, historyFixture);
+    await page.locator(".hist-row").getByRole("button", { name: historyTaskId, exact: true }).click();
+    await assertHistory();
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "history observation has no mobile overflow");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await reads.navigate(() => page.reload({ waitUntil: "domcontentloaded" }));
+    await page.getByText("Cockpit diario").waitFor();
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
+    await page.locator(".hist-row").getByRole("button", { name: historyTaskId, exact: true }).click();
+    await assertHistory();
+    const historyAfter = await readApiJson<import("../lib/state/types").TaskDetailModel>(`${apiUrl}/api/tasks/${historyTaskId}/detail`);
+    assert.deepEqual(historyAfter, historyBefore, "new process reconstructs saved facts without inventing history");
     await page.getByRole("button", { name: "Overview", exact: true }).click();
     await page.locator(".hist-row").getByRole("button", { name: analysisId, exact: true }).click();
     await recordedManifest.getByText(defaultPreview.fingerprint, { exact: true }).waitFor();
@@ -1217,7 +2186,7 @@ async function main(): Promise<void> {
     assert.equal(reviewLineageStale, false, "after acceptance the open lineage must refresh; it must not retain a missing-human-review gap while the issue is done");
     const executorEffects = (await readFile(join(tempRoot, "executor-effects.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { mode: string; fingerprint: string; workflow_id?: string });
     assert.deepEqual(executorEffects.filter((effect) => !effect.workflow_id).map((effect) => effect.mode), ["read-only", "workspace-write-verify", "workspace-write-verify", "workspace-write-verify"], "exactly four preserved v1 turns");
-    assert.equal(executorEffects.length, 31, "exactly four v1 plus 27 governed turns; preview/refusal/restart/stop never adds a turn");
+    assert.equal(executorEffects.length, 35, "exactly four v1 plus 31 governed turns including four recovered-plan roles; preview/refusal/restart/stop never adds a turn");
     assert.deepEqual(executorEffects, workflows.effects, "restart and gate cancellation never replay a role");
     assert.ok(executorEffects.every((effect) => /^[a-f0-9]{64}$/.test(effect.fingerprint)));
     assert.equal(execFileSync("git", ["-C", syntheticRepo, "status", "--porcelain"], { env: environment, encoding: "utf8", windowsHide: true }).trim(), "", "source Git checkout remains clean");
@@ -1225,9 +2194,15 @@ async function main(): Promise<void> {
     assert.equal(execFileSync("git", ["-C", workflowRepo, "rev-parse", "HEAD"], { env: environment, encoding: "utf8", windowsHide: true }).trim(), workflowBaseline);
     assert.equal(execFileSync("git", ["-C", workflowRepo, "remote"], { env: environment, encoding: "utf8", windowsHide: true }).trim(), "", "synthetic workflow Git has no publication destination");
     assert.ok(mutatingSessionHeaders.every(Boolean), "every workflow/dashboard mutation uses a local session");
-    console.log("PASS real local API + Playwright dashboard: all five Phase O templates, exact Planner/risk/criteria gates, candidate-only Reviewer/QA, verified receipts, one bounded correction and second-correction refusal, stale/budget/tree guards, task ownership/full mobile evidence, active-role stop, restart/no replay/session rotation; prior Phase K-N migration/organization/Harness/context/issues retained; exactly 31 synthetic turns (4 v1 + 27 workflow), no paid runtime or provider writes.");
+    console.log("PASS real local API + Playwright dashboard: retained Planner recovery with distinct human gate, all five Phase O templates, exact Planner/risk/criteria gates, candidate-only Reviewer/QA, verified receipts, one bounded correction and second-correction refusal, stale/budget/tree guards, task ownership/full mobile evidence, active-role stop, restart/no replay/session rotation; prior Phase K-N migration/organization/Harness/context/issues retained; exactly 35 synthetic turns (4 v1 + 31 workflow), no paid runtime or provider writes.");
   } catch (error) {
     console.error(`Local dashboard smoke failed during: ${stage}`);
+    const nodeFailure = nodeApiFailure(error);
+    if (nodeFailure) console.error("SMOKE_NODE_API_FAILURE " + JSON.stringify(nodeFailure));
+    const readActivity = reads?.deadlineActivity(error);
+    if (readActivity) console.error("SMOKE_READ_ACTIVITY " + JSON.stringify(readActivity));
+    const readFailure = reads?.failureActivity(error);
+    if (readFailure) console.error("SMOKE_READ_FAILURE " + JSON.stringify(readFailure));
     if (tempRoot) {
       const snapshot = await readFile(join(tempRoot, "state/workflows/workflows.json"), "utf8").catch(() => null);
       if (snapshot) {
@@ -1238,6 +2213,8 @@ async function main(): Promise<void> {
     }
     throw error;
   } finally {
+    if (reads) console.log(`SMOKE_BROWSER_READ_CANCELLATIONS ${reads.cancelledReads()}`);
+    reads?.dispose();
     const cleanup = await cleanupSmoke({ browser: browser ? () => browser!.close() : undefined, vite: vite ? () => vite!.close() : undefined, api: api ? () => stopApi(api!) : undefined, root: tempRoot });
     console.log(`SMOKE_CLEANUP ${JSON.stringify({ fixture_id: tempRoot ? basename(tempRoot) : null, ...cleanup })}`);
     if (!cleanup.workspace_removed) {

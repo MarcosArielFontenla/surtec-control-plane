@@ -79,7 +79,8 @@ export function validateWorkflowStageOutput(prepared: ReturnType<typeof prepareW
   dependencies: WorkflowStageDependencies = {}) {
   const live = prepareWorkflowStage(prepared.task.envelope.id, prepared.stage.execution_id!, repoRoot, dependencies);
   if (prepared.candidateView && !isDeepStrictEqual(prepared.candidateView, live.candidateView)) throw new ContextContractError("Candidate tree changed during read-only review");
-  if (!isDeepStrictEqual(prepared.admission, live.admission) || prepared.thread.fingerprint !== live.thread.fingerprint) throw new ContextContractError("Workflow stage contract changed during execution");
+  if (!isDeepStrictEqual(prepared.admission, live.admission) || prepared.thread.fingerprint !== live.thread.fingerprint
+    || prepared.thread.runtimeContextProfile !== live.thread.runtimeContextProfile) throw new ContextContractError("Workflow stage contract changed during execution");
   if (live.stage.kind === "implementation" || live.stage.kind === "correction") throw new ContextContractError("Engineer output retains the generic result validation path");
   const issues = readIssueDocument();
   return roleOutputResult(live.task.envelope, value, { kind: live.stage.kind, issue: live.issue, evidence: issues.evidence, candidate: live.admission.candidate }, logsPath);

@@ -1,0 +1,98 @@
+schema_version: 1
+name: Factory Local F2 - request, context, and plan contract
+entity: WorkIssue
+domains: [work-issue-intake, file-state, context-evidence, dashboard]
+purpose: Add durable manual-intake identity to the existing WorkIssue and demonstrate current attributed context and exact human plan approval without introducing a second tracker or runtime.
+requirements:
+  - id: req-001
+    description: >-
+      The public manual create endpoint requires a canonical UUID request_id. Under the existing issue lock, equal original normalized payload and identity return the current issue without duplicate records, events, revisions, timestamps or state writes; changed payload or project with that identity returns 409. Distinct identities permit identical content. Preserve the current response shape and 201 contract without treating it as a new-create count or execution authority.
+  - id: req-002
+    description: >-
+      Store an optional closed own plain-JSON intake_receipt v1 containing request_id and the SHA-256 original normalized input fingerprint in the existing WorkIssue v1 aggregate. Enforce global identity uniqueness, original receipt immutability and no legacy backfill. Preserve readable absent legacy facets; malformed, null, inherited/accessor and future facets fail closed with bytes retained. Keep current locks, bounds and atomic replacement; only the explicit replay path skips writing.
+  - id: req-003
+    description: >-
+      The form owns one UUID per logical pending intent, retaining the submitted payload for explicit retries after a lost response. Only the pending UUID may enter sessionStorage. Reload reconciles with the existing validated GET; missing, failed or incomplete evidence remains visibly uncertain. Do not silently rotate identity, recreate work or claim resolution; require an explicit resolve/cancel decision when certainty is unavailable. Confirmed success permits a subsequent deliberate new request.
+  - id: req-004
+    description: >-
+      Reuse existing context preview and demonstrate a synthetic project's contained selected README, architecture/ADR and contract with source IDs, revisions, inclusion reasons, limits, exclusions and trusted configured checks. Preview is without dispatch effects; drift or restart needs current issuance. Context data cannot grant permissions, include another project's data or create global routes. Configured verification is distinct from executed passing evidence.
+  - id: req-005
+    description: >-
+      Demonstrate current explicit scope, consent, workflow and exact-plan decisions through existing server-owned revision, decision and fingerprint bindings. Reject obsolete or forged authority without tasks/worktree effects. Keep production context/workflow components, lifecycle, roles, capabilities, budget/correction limits and publication gates unchanged.
+  - id: req-006
+    description: >-
+      Automate repeatable acceptance using isolated synthetic state/repositories, real local API/Vite/browser and fake execution with no paid calls, normal-state or sibling mutation. Record native results, refusals, restart facts and owned cleanup honestly. Full F2 closure additionally needs the human's real project/request/criteria/source/command confirmation; fixture success alone leaves pilot preparation pending. Do not treat F2 evidence as Q acceptance or F3 authority.
+      Under the owner-approved functional acceptance revision, F2 requires the six unchanged catalog checks and the mandatory external functional, Harness, real API/browser and human-pilot procedure. Whole-repository regression completion and performance are deferred separately as open DEBT-F2-GLOBAL-900; that debt is not passing evidence or a substitute for any remaining required result.
+constraints:
+  - Follow docs/architecture/factory-request-contract-design.md and the exact 22-path ordered plan; preserve all pre-existing user changes and old phase/task evidence.
+  - The repository owner explicitly approved the proposed design, 22 target files and T001-T008 plan in this conversation, but authorized execution of T001 and documentary checks only. T002-T008 require continuation authority.
+  - approvedAt records the session acknowledgement of that explicit approval, not an earlier human timestamp or evidence that product behavior passed.
+  - T001 writes only the design, this spec and its task plan; run structural validators without -Run or -ConfirmExecution and do not execute acceptance commands from metadata.
+  - Fingerprint every original normalized IssueCreateInput field except request_id, using current defaults and stable object-key ordering while preserving array order; exclude generated/derived fields and never recompute from a mutable issue.
+  - Resolve replay under the existing issue lock before new-create capacity and mutable-reference checks, with current HTTP/access authority intact; request_id is not a credential or grant.
+  - The service may retain identified direct internal legacy callers without a key; the manual HTTP endpoint and UI must not expose an unkeyed bypass or accept caller-owned receipts as authority.
+  - No new store, aggregate migration, implicit repair, retroactive receipt, automatic retry, new lifecycle state, external provider or runtime change is included.
+  - Do not edit production ContextPreview, WorkflowPanel, context-service, context sources or registry/context-policy.yml; use selected synthetic fixtures and existing attributed mechanisms.
+  - Preserve the existing 900-second explicit per-command gate ceiling, all defaults, assertions, guards, context/runtime budgets, exact command catalog and current sandbox/read-isolation limitations.
+  - A separate authorized bounded follow-up must establish ownership/closure of the prior unknown Q launch before another workload; this approval grants no process probe, cleanup, Q retry, profiling or campaign execution now.
+  - P remains partial with T015-T026 deferred and Q T012 remains incomplete. No paid calls, normal-state writes/migration, sibling change, commit, push, merge, deploy or F3 operation is included.
+  - The owner-approved 2026-10-30 revision activates only five existing acceptance documents and documentary validation. Initial T001-only scope statements remain historical. Running the revised acceptance sequence still requires separate explicit execution authority; no command or metadata field grants it.
+  - The current F2 functional exit is the complete procedure in docs/runbooks/factory-request-contract-acceptance.md#current-f2-functional-acceptance. The six catalog checks alone cannot prove runtime behavior or complete F2; preserve req-001 through req-005 and all their observable behavior.
+  - Mandatory external functional IDs are f2-functional-state-http, f2-functional-context-plan, f2-functional-ui and f2-functional-smoke-helpers. They require the nine complete F2 test files and the existing reviewed smoke-helper selection with fixed arguments and current native, coverage and stream evidence; they are not new guarded-catalog entries or package aliases.
+  - After those required checks pass, require pnpm harness:check and the actual isolated local API/Vite/browser smoke with fake execution, all prior K-O scenarios and exactly 31 fake turns. Intake, context, refusal and recovery assertions add no dispatch. Confirm current owned closure and fixture removal separately; unknown relevant cleanup leaves acceptance incomplete.
+  - Full F2 closure also requires the owner-confirmed real pilot baseline, requested outcome and criteria, allowed and excluded paths/categories, contained context sources, trusted verification commands and approver. Preparation does not create a real issue, grant sibling access or authorize a paid turn.
+  - Retire only ac-behavior from the active acceptanceChecks array. Preserve its original definition and all seven-check FAIL, TIMEOUT and UNKNOWN history in the task revision and open roadmap debt DEBT-F2-GLOBAL-900. That debt is non-blocking only for the explicitly revised functional F2 exit; focused checks cannot close it or certify Q, CI or the original gate.
+  - Every remaining mandatory check stops on the first failed or unknown result. Preserve all per-command, test and poll limits and execution/cleanup ownership; no automatic rerun, repair, new profiler, CI, publication or F3 successor is included.
+nonGoals:
+  - A new primary entity, tracker, context engine, dashboard screen, multi-agent framework or scheduler.
+  - Global context routing changes, Harness replacement/repinning, dependency installation or regeneration of protocol bindings.
+  - Production P admission cutover, routine effects, maintenance, backup, restore or process cleanup.
+  - Multi-user authentication, universal document-conflict detection, universal secret prevention or stronger runtime read isolation.
+  - Declaring a real pilot prepared from fixture results, creating its issue automatically, or starting a real builder/reviewer turn.
+  - Removing new receipts to make an older strict reader accept data, or treating source rollback as a state downgrade procedure.
+  - Treating the revised six-check gate as complete functional acceptance or resolving whole-repository debt from focused/browser results, duration extrapolation or a larger timeout.
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-10-30T13:46:42Z"
+  acceptanceChecks:
+    - id: ac-schemas
+      requirementIds: [req-001, req-002]
+      description: Compile strict issue schema changes while behavioral fixtures check legacy, invalid, future, uniqueness and immutable receipt cases.
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-001, req-002, req-003, req-004, req-005, req-006]
+      description: Typecheck the contained contract, store, service, API, UI and test integration without broadening authority.
+      command: pnpm typecheck
+      expectedExitCode: 0
+    - id: ac-build
+      requirementIds: [req-003, req-004, req-005, req-006]
+      description: Build the dashboard with explicit pending-intake recovery and existing context/plan presentation; a build alone is not behavioral acceptance.
+      command: pnpm build
+      expectedExitCode: 0
+    - id: ac-repository
+      requirementIds: [req-006]
+      description: Check repository consistency for the scoped delivery while preserving existing module and runtime boundaries.
+      command: pnpm repository:check
+      expectedExitCode: 0
+    - id: ac-secrets
+      requirementIds: [req-002, req-003, req-004, req-006]
+      description: Run existing deterministic tracked-secret checks; this does not claim universal DLP or authorize private fixtures.
+      command: pnpm secrets:check
+      expectedExitCode: 0
+    - id: ac-evals
+      requirementIds: [req-004, req-005, req-006]
+      description: Preserve existing offline role/outcome evaluation gates using deterministic fixtures with no paid canary.
+      command: pnpm evals:check
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications:
+  - date: "2026-10-24"
+    question: Approve the proposed F2 design, 22 target paths and T001-T008 plan, beginning with T001 and documentary checks only?
+    answer: The repository owner explicitly approved that design, file list and plan in the current conversation and authorized only T001, without campaigns, process cleanup, commit, push or merge.
+    affects: Record the prospective contract and ordered tasks; product changes and execution of acceptance checks remain outside the current task. Metadata acknowledges actual conversation approval and does not grant independent execution authority.
+  - date: "2026-10-30"
+    question: Approve the exact bounded functional acceptance revision, explicit whole-repository timeout debt, five-document activation and documentary checks only?
+    answer: The repository owner approved that exact revision and authorized only its five-document activation and documentary checks, without tests, CI, guard or timeout changes, commit, push or merge. The session acknowledged that approval at 2026-10-30T13:46:42Z; this is not an inferred earlier human timestamp.
+    affects: Retire only active ac-behavior while preserving its original definition and failed/incomplete history; retain six exact catalog checks and null checksWaiver; require the external functional, Harness/browser/cleanup and human-pilot procedure. The original 2026-10-24 approval remains historical and T008 remains pending. Acceptance execution requires a separate explicit instruction.

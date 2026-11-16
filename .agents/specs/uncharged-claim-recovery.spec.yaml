@@ -1,0 +1,73 @@
+schema_version: 1
+name: "Factory Local F3 - recovery of an uncharged Engineer claim"
+entity: GovernedWorkflow
+domains: [workflow-policy, task-orchestration, file-state, dashboard-acceptance]
+purpose: "Recover one demonstrably unexecuted Engineer claim through its existing task and approved finite workflow while preserving evidence, numerical consumption and all current limits."
+requirements:
+  - id: req-proof
+    description: "Require a positively attributable pre-charge non-execution chain for the exact first Engineer claim, including validated pinned producer ordering, immutable accounting/history, committed intent, unique claim/failure and absence of downstream effects. A missing row or metadata/error-string/operator flag alone is insufficient; unprovable or charged/unknown inference remains blocked."
+  - id: req-human
+    description: "Keep the existing exact approved plan, grant, consent, scope and source bindings; permit one explicit operator recovery only for the first implementation stage. Require actual approval of this design/spec/tasks and a separately current operational action/ownership declaration before real recovery, never inferred from technical PASS."
+  - id: req-preserve
+    description: "Preserve original Planner task/output/events/terminal receipt/charges byte-for-byte. Archive the prior Engineer snapshot/event/workflow/issue bytes privately before real recovery, retain its original event prefix and bounded failure provenance, advance the same task by audited revision and never claim its current snapshot remained unchanged."
+  - id: req-journal
+    description: "Add one optional closed uncharged_claim_recovery v1 facet to workflow v1 with immutable provenance and monotonic prepared/task-requeued/ready phases. Revalidate exact pre/post revisions and fingerprints under separate existing locks, verify the task recovery event before readiness and refuse unknown partial states without a cross-store transaction or automatic replay."
+  - id: req-owner
+    description: "Expose recovery solely through the actual owning stopped TaskOrchestrator and WorkflowOrchestrator with private identity, no poller/active attempt/tick and current cross-store fences. Recovering does not enqueue/start a worker, grant a run proof or admit another identity. Generic retry, startup recovery and public API/CLI remain denied."
+  - id: req-caps
+    description: "Retain all task/root/context/native/capture/HTTP/test limits, numeric consumption, original task attempts and existing grants/correction allowance. Requeue the same task without decrement; its next normal claim increments task attempts and durably charges exactly one actual workflow run before effects. No fabricated zero-cost run, replenishment or reinterpretation of unknown usage is allowed."
+  - id: req-context
+    description: "Reassemble current issue/plan/grant/consent/policy/testing/context from projected in-memory facts before and after the journal. Exact manifests/instructions/caps and known ownership must match; do not repin sources, replace grants, change verification or waive candidate-bound independent Reviewer/QA and final human acceptance."
+  - id: req-observer
+    description: "Replace the next private operator monitor's asynchronous live-state reads with synchronous bounded validated reads that close all handles before yielding; retain the old launcher and frozen runtime. Synthetic observer checks prove ordering and fail-closed read handling without model/state/user-source effects."
+  - id: req-errors
+    description: "Preserve existing workflow atomic-write behavior and public error messages while exposing only bounded internal phase/allowlisted native code/syscall classification. No raw path/message/stack/cause, retry, wait, fallback or guard relaxation; keep the historical lost cause explicitly unknown."
+  - id: req-compat
+    description: "Historical absence remains unchanged; null/malformed/future facets fail closed with bytes preserved. Receipt provenance is immutable, phase progression is fenced, repeated recovery cannot requeue again, and ordinary incomplete/charged/P/other-role cases retain their denials. Older incompatible code cannot strip new state."
+  - id: req-acceptance
+    description: "Complete mandatory C01-C07 in the design using synthetic state/protocol fakes and real isolated API/Chromium with exactly four fake role executions in each focused browser flow. Prove fault/restart/denial/preservation/attempt accounting and owned cleanup; filtered/skipped/unknown results are not passes and existing whole-suite/CI debt remains open."
+  - id: req-privacy
+    description: "Keep real pilot IDs, paths, business context, raw captures and archived private state outside Git; no credentials or raw reasoning in evidence. Closed fixture-only child IPC cannot become a product recovery endpoint, command runner, path selector or paid-runtime activation."
+constraints:
+  - "Follow docs/proposals/factory-local-f3-engineer-claim-recovery-design.md and .agents/specs/tasks/f3-engineer-claim-recovery.tasks.md only after actual human approval of this prospective 24-path design, specification and ordered tasks."
+  - "The owner approved this exact design/spec/tasks for implementation and synthetic technical acceptance in the conversation. No paid call, real recovery, state migration, sibling source write, commit, push, merge, install/download or unrelated process cleanup is included."
+  - "Technical acceptance uses only the explicit C01-C07 sequence, foreground native capture, both EOFs, owned external TEMP/TMP and 900 seconds per command; test, HTTP, role, runtime, token, attempts and capture ceilings remain unchanged."
+  - "Full-suite, CI, eval and audit campaigns are excluded; historical global debt and failed/unknown outcomes remain open and cannot be relabeled or retrospectively approved."
+  - "The facet is a bounded journal on the existing workflow aggregate, not a new primary entity, scheduler or generic recovery framework. No HTTP/CLI/UI recovery surface or production P cutover is added."
+  - "Root attempt caps retain their existing durable-workflow-charge semantics, while the original failed scheduler claim remains counted in the task. Never decrement either counter or create a zero-usage accounting row for it."
+  - "Permit only the exact initial needs-review pre-charge implementation claim; exclude charged/interrupted inference, arbitrary event gaps, cancellation, drift, other roles and P scaffolds."
+  - "Real re-entry additionally requires positive current eligibility, verified private archives and source/runtime/verifier pins, a new actual exclusive-writer/known-instance declaration and the exact human operational action. Earlier plan approval is reused only with unchanged bindings."
+  - "Stop dependent acceptance at failure or unknown, retaining native results. Routine scoped remediation follows standing user authority; material target/contract/check/limit changes require actual human review."
+  - "The unchanged final human criterion decision remains mandatory after a real verified candidate and independent Reviewer/QA; technical acceptance does not close F3 or F5."
+nonGoals:
+  - "Generic v2 retry, new task/stage/workflow/grant identity, replaying inference, refunded/reset consumption or a replacement attempt that changes caps."
+  - "Promoting model failure to completed, fabricating usage, silently clearing unknown accounting, or treating a human statement as technical proof of no execution."
+  - "Changing the approved plan, candidate allowlist, trusted verification, review depth, correction policy, runtime transport, sandbox/network permissions, dependencies, registry or Harness controls."
+  - "Reconstructing the lost original filesystem error, claiming a synthetic EPERM proves its cause, or running another real workflow before technical and operational gates."
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-11-03T22:14:51Z"
+  acceptanceChecks:
+    - id: ac-schemas
+      requirementIds: [req-proof, req-journal, req-compat]
+      description: "Compile the strict additive facet and compatible state contracts; mandatory C01-C04 separately prove behavior and historical-byte preservation."
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-proof, req-human, req-preserve, req-journal, req-owner, req-caps, req-context, req-observer, req-errors, req-compat, req-acceptance, req-privacy]
+      description: "Typecheck proof, journal, worker, diagnostics and isolated fixtures; mandatory C01-C04/C06-C07 remain behavioral acceptance, never replaced by compilation."
+      command: pnpm typecheck
+      expectedExitCode: 0
+    - id: ac-build
+      requirementIds: [req-context, req-compat, req-acceptance, req-privacy]
+      description: "Build the dashboard against compatible workflow state; actual isolated C06-C07 must prove real API/browser reload, restart and no replay."
+      command: pnpm build
+      expectedExitCode: 0
+    - id: ac-secrets
+      requirementIds: [req-preserve, req-errors, req-privacy, req-acceptance]
+      description: "Run the existing secret scanner; private-state/source/credential exclusion and bounded-error fixtures remain mandatory and are not a general DLP claim."
+      command: pnpm secrets:check
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications: []

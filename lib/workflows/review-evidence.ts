@@ -7,6 +7,7 @@ import { validateTaskRecord } from "../state/validation";
 import { validateRoleOutput } from "./role-output";
 import { assertRoleHandoff, assertReviewReceipt, WorkflowContractError } from "./validation";
 import type { GovernedWorkflow, ReviewReceipt, RoleHandoff, WorkflowCandidateBinding, WorkflowDocument, WorkflowStage } from "./types";
+import { approvedPlannerRecovery } from "./planner-recovery";
 
 export const workflowEvidenceHash = (value: unknown): string => contextHash(JSON.stringify(value));
 function requireEvidence(ok: unknown, message: string): asserts ok {
@@ -87,7 +88,8 @@ export function bindVerifiedWorkflowCandidate(issues: IssueDocument, issue: Work
 
 export function sealWorkflowHandoff(document: WorkflowDocument, from: WorkflowStage, to: WorkflowStage, issues: IssueDocument, id: string, at: string): RoleHandoff {
   const workflow = document.workflows[from.workflow_id]!, issue = issues.issues[workflow.issue_id]!;
-  requireEvidence(from.status === "completed" && from.execution_id && from.output_fingerprint && to.workflow_id === from.workflow_id
+  const human = approvedPlannerRecovery(document, from);
+  requireEvidence((from.status === "completed" || human) && from.execution_id && from.output_fingerprint && to.workflow_id === from.workflow_id
     && to.predecessor_stage_id === from.id && to.ordinal === from.ordinal + 1, "Handoff producer or finite recipient differs");
   if (from.output) validateRoleOutput(from.output, { kind: from.kind as "planning" | "analysis" | "operations" | "review" | "qa", issue, evidence: issues.evidence, candidate: from.candidate });
   const evidence = issue.evidence_ids.filter((key) => {
@@ -97,7 +99,7 @@ export function sealWorkflowHandoff(document: WorkflowDocument, from: WorkflowSt
   });
   requireEvidence(evidence.length <= 50 && (from.output ? workflowEvidenceHash(from.output) : workflowEvidenceHash(from.candidate)) === from.output_fingerprint, "Handoff evidence is unsealed or exceeds bounds");
   const handoff: RoleHandoff = { schema_version: 1, id, issue_id: issue.id, from_role_id: from.role_id, to_role_id: to.role_id, execution_id: from.execution_id,
-    outcome_summary: from.output?.summary ?? "Owned implementation produced the exact verified candidate.", evidence_ids: evidence,
+    outcome_summary: human ? "Human adopted the exact retained Planner proposal; the original model result remains needs-review." : from.output?.summary ?? "Owned implementation produced the exact verified candidate.", evidence_ids: evidence,
     unresolved_questions: from.output?.unresolved_questions ?? [], risks: from.output?.risks ?? [],
     recommended_next_action: from.output?.recommended_next_action ?? "Inspect the sealed candidate and captured verification without changing files.",
     requested_decision: from.output?.requested_decision ?? null, created_at: at };

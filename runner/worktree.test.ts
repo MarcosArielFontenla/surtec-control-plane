@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, linkSync, unlinkSync, statSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -8,21 +8,30 @@ import { createTestingEvidence, sealTestingEvidence, evidenceHash } from "../lib
 import type { TaskRecord } from "../lib/state/types";
 import type { WorkflowCandidateBinding } from "../lib/workflows/types";
 import { defaultTaskOrchestration } from "../lib/state/orchestration";
+import { createGitFixtureBaselines } from "./testing/git-fixture";
 
 let dir: string;
 let repo: string;
+const gitBaselines = createGitFixtureBaselines();
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "surtec-wt-"));
   repo = join(dir, "myrepo");
-  spawnSync("git", ["init", "-b", "main", repo], { encoding: "utf8" });
-  spawnSync("git", ["-C", repo, "config", "user.email", "t@t.t"], { encoding: "utf8" });
-  spawnSync("git", ["-C", repo, "config", "user.name", "t"], { encoding: "utf8" });
+  mkdirSync(repo);
   writeFileSync(join(repo, "README.md"), "hi\n", "utf8");
-  spawnSync("git", ["-C", repo, "add", "-A"], { encoding: "utf8" });
-  spawnSync("git", ["-C", repo, "commit", "-m", "init"], { encoding: "utf8" });
+  gitBaselines.attach({
+    caseRoot: dir, repository: repo, key: "worktree-main", files: { "README.md": "hi\n" },
+    initialize: ({ repository }) => {
+      for (const args of [["init", "-b", "main", repository], ["-C", repository, "config", "user.email", "t@t.t"],
+        ["-C", repository, "config", "user.name", "t"], ["-C", repository, "add", "-A"], ["-C", repository, "commit", "-m", "init"]]) {
+        const result = spawnSync("git", args, { encoding: "utf8" });
+        if (result.error || result.status !== 0) throw new Error("Synthetic Git baseline initialization failed");
+      }
+    },
+  });
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => gitBaselines.dispose());
 
 function installFixtureHook(name: string): void {
   const hooksPath = join(repo, ".git", "hooks");

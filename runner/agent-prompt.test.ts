@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { buildGovernedPrompts, buildSystemPrompt, buildUserPrompt, workflowThreadContract, WORKFLOW_PROMPT_VERSION } from "./agent-prompt";
+import { buildGovernedPrompts, buildSystemPrompt, buildUserPrompt, governedThreadContract, workflowThreadContract, WORKFLOW_PROMPT_VERSION } from "./agent-prompt";
+import { BOUNDED_INSPECTION_GUIDANCE, GOVERNED_RUNTIME_CONTEXT_PROFILE, LEGACY_RUNTIME_CONTEXT_PROFILE } from "./runtime-context-profile";
 import { physicalLines } from "../lib/context/assemble";
 import type { RegistryAgent } from "./registry-agents";
 import type { TaskEnvelope } from "../lib/state/types";
@@ -31,6 +32,28 @@ describe("governed execution prompts", () => {
   it("rejects scaffolding-inclusive line and byte overflow without truncating mandatory context", () => {
     expect(() => buildGovernedPrompts("small source", envelope, { ...limits, max_lines: 1 })).toThrow(/budget/);
     expect(() => buildGovernedPrompts("small source", envelope, { ...limits, max_bytes: 20 })).toThrow(/budget/);
+  });
+  it("context-economy preserves every admitted source byte and includes guidance in the same bounds", () => {
+    const sources = "[Required instruction]\nRead all of this.\n[Required skill]\nKeep scope and verification.\nUnicode á";
+    const old = buildGovernedPrompts(sources, envelope, limits);
+    const legacy = buildGovernedPrompts(sources, envelope, limits, undefined, LEGACY_RUNTIME_CONTEXT_PROFILE);
+    expect(legacy).toEqual(old);
+    const next = buildGovernedPrompts(sources, envelope, limits, undefined, GOVERNED_RUNTIME_CONTEXT_PROFILE);
+    expect(next.developerInstructions).toContain(sources); expect(next.developerInstructions).toContain(BOUNDED_INSPECTION_GUIDANCE);
+    expect(next.prompt).toBe(old.prompt); expect(next.bytes).toBe(Buffer.byteLength(`${next.developerInstructions}\n\n${next.prompt}`));
+    expect(next.lines).toBe(physicalLines(`${next.developerInstructions}\n\n${next.prompt}`));
+    expect(next.bytes).toBeGreaterThan(old.bytes);
+    expect(() => buildGovernedPrompts(sources, envelope, { ...limits, max_bytes: old.bytes }, undefined, GOVERNED_RUNTIME_CONTEXT_PROFILE)).toThrow(/budget/);
+    expect(() => buildGovernedPrompts(sources, envelope, { ...limits, max_lines: old.lines }, undefined, GOVERNED_RUNTIME_CONTEXT_PROFILE)).toThrow(/budget/);
+  });
+  it("context-economy binds the non-workflow legacy contract exactly and rejects drift", () => {
+    const task = { ...envelope, metadata: {}, context_manifest: { fingerprint: "a".repeat(64) } } as unknown as TaskEnvelope;
+    const first = governedThreadContract(task, "synthetic", "read-only", [], { type: "object" });
+    expect(first.runtimeContextProfile).toBe(GOVERNED_RUNTIME_CONTEXT_PROFILE);
+    task.metadata.run = { context_fingerprint: "40eb8eac0213421b19f705e9f5d3f903bb741247ad84a91d0a4b42b1f3d00b01", thread_id: "legacy" };
+    expect(governedThreadContract(task, "synthetic", "read-only", [], { type: "object" })).toEqual({
+      fingerprint: "40eb8eac0213421b19f705e9f5d3f903bb741247ad84a91d0a4b42b1f3d00b01", threadId: "legacy", runtimeContextProfile: LEGACY_RUNTIME_CONTEXT_PROFILE });
+    expect(() => governedThreadContract(task, "other", "read-only", [], { type: "object" })).toThrow();
   });
 });
 

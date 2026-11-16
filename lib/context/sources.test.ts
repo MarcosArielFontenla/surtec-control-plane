@@ -76,3 +76,69 @@ describe("contained project context selection", () => {
     write(root, "AGENTS.md", "Synthetic"); write(root, ".agents/cold-start/budget-manifest.yaml", "version: 2\nalwaysLoad: []"); expect(() => readProjectContext(root, input())).toThrow(/Unsupported/);
   });
 });
+
+describe("Factory F2 selected project sources", () => {
+  const selectedDocuments = {
+    "README.md": "# Synthetic request project\nUse the local request contract. [Unselected notes](docs/unselected.md) are not an include directive.\n",
+    "docs/architecture/control-plane.md": "# Synthetic architecture\nKeep one local API and the current issue aggregate.\n",
+    "docs/decisions/ADR-0001-request.md": "# Synthetic request decision\nA proposed request requires a separate current human scope decision.\n",
+    "docs/contracts/request.md": "# Synthetic request contract\nConfigured check: pnpm test. Configuration does not prove execution or approval.\n",
+  };
+  const taskClass = "factory-request-analysis";
+
+  it("loads the complete selected README, architecture, ADR and contract only from their contained project", () => {
+    const root = fixture(); const otherProject = fixture();
+    harness(root, [
+      { name: taskClass, artifacts: Object.keys(selectedDocuments) },
+      { name: "unselected-project-work", artifacts: ["docs/unselected.md", "docs/not-present.md"] },
+    ]);
+    for (const [path, text] of Object.entries(selectedDocuments)) {
+      write(root, path, text);
+      write(otherProject, path, `Other project material must stay excluded: ${path}`);
+    }
+    write(root, "docs/unselected.md", "Unselected document body must stay excluded.");
+    const selection = { ...input(), harnessTaskClasses: [taskClass], routes: [] };
+    const originalSelection = structuredClone(selection);
+    const before = Object.fromEntries(Object.keys(selectedDocuments).map((path) => [path, readFileSync(join(root, path))]));
+
+    const result = readProjectContext(root, selection);
+
+    expect(result.harnessPresent).toBe(true);
+    expect(result.omitted).toEqual([]);
+    expect(result.sources.map((source) => source.id).sort()).toEqual([
+      "project/AGENTS.md", "project/.agents/cold-start/budget-manifest.yaml",
+      "project/.agents/policies/project.md", "project/.agents/orchestration/ROUTING.md",
+      ...Object.keys(selectedDocuments).map((path) => `project/${path}`),
+    ].sort());
+    for (const [path, text] of Object.entries(selectedDocuments)) {
+      expect(result.sources.find((source) => source.id === `project/${path}`)).toEqual({
+        id: `project/${path}`, layer: "instructions", source_type: path.includes("/decisions/") ? "decision" : "instruction",
+        sensitivity: "local", reason: `Selected complete Harness task class ${taskClass}`, text,
+      });
+      expect(readFileSync(join(root, path))).toEqual(before[path]);
+    }
+    expect(result.sources.some((source) => source.text.includes("Other project material must stay excluded"))).toBe(false);
+    expect(result.sources.some((source) => source.text.includes("Unselected document body must stay excluded"))).toBe(false);
+    expect(result.sources.some((source) => source.id.endsWith("/docs/unselected.md") || source.id.endsWith("/docs/not-present.md"))).toBe(false);
+    expect(selection).toEqual(originalSelection);
+  });
+
+  it.each([
+    ["missing", /Required selected context source is missing/],
+    ["oversized", /Selected context source is unsafe or unavailable/],
+  ] as const)("refuses a %s selected contract instead of skipping or truncating the mandatory source", (condition, message) => {
+    const root = fixture();
+    harness(root, [{ name: taskClass, artifacts: Object.keys(selectedDocuments) }]);
+    for (const [path, text] of Object.entries(selectedDocuments)) {
+      if (path !== "docs/contracts/request.md") write(root, path, text);
+    }
+    if (condition === "oversized") write(root, "docs/contracts/request.md", "x".repeat(256 * 1024 + 1));
+    const primerBefore = readFileSync(join(root, "AGENTS.md"));
+    const manifestBefore = readFileSync(join(root, ".agents/cold-start/budget-manifest.yaml"));
+
+    expect(() => readProjectContext(root, { ...input(), harnessTaskClasses: [taskClass] })).toThrow(message);
+
+    expect(readFileSync(join(root, "AGENTS.md"))).toEqual(primerBefore);
+    expect(readFileSync(join(root, ".agents/cold-start/budget-manifest.yaml"))).toEqual(manifestBefore);
+  });
+});

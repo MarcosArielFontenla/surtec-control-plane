@@ -9,7 +9,7 @@ import { ensureTaskOrchestration } from "../lib/state/orchestration";
 import { appendTaskEvent } from "../lib/state/events";
 import { expandHome } from "../lib/expand-home";
 import { codexExecutor } from "./codex-executor";
-import { buildGovernedPrompts, buildSystemPrompt, buildUserPrompt, GOVERNED_PROMPT_VERSION } from "./agent-prompt";
+import { buildGovernedPrompts, buildSystemPrompt, buildUserPrompt, governedThreadContract } from "./agent-prompt";
 import { createContextService, ContextPreviewError, type AdmittedContext } from "../dashboard/src/server/context-service";
 import { contextHash } from "../lib/context/assemble";
 import { ContextContractError } from "../lib/context/validation";
@@ -28,6 +28,7 @@ import { rejectStandaloneWorkflowStage } from "./workflow-stage";
 import { workflowExecutionOwner } from "./workflow-orchestrator";
 import { budgetExecutionOwner } from "./task-orchestrator";
 import { correctionPathReasons, readWorkflowPolicy } from "../lib/workflows/policy";
+import { validateTerminalUsageEvidence } from "./terminal-usage-evidence";
 
 export interface TaskRunOptions {
   signal?: AbortSignal;
@@ -193,6 +194,8 @@ export async function runTask(
   const absLogsPath = join(repoRoot, logsPath);
   let attemptTokens = 0;
   let abortKind: AbortKind | null = null;
+  let knownBudgetExhaustion = false;
+  let budgetAccountingUnknown = false;
   const controller = new AbortController();
 
   const ownedMutation = (mutate: (record: TaskRecord) => void): TaskRecord | null => {
@@ -361,6 +364,8 @@ export async function runTask(
     if (budgetOwner) {
       const elapsed = Math.max(0, Date.now() - Date.parse(startedAt));
       const observed = await budgetOwner.observe(options.budgetExecution!, attemptTokens, elapsed);
+      knownBudgetExhaustion ||= observed.exhausted && !observed.unknown;
+      budgetAccountingUnknown ||= observed.unknown;
       relayBudgetStop();
       if ((observed.exhausted || observed.unknown) && !controller.signal.aborted) {
         effectiveRuntimeMs = Math.min(effectiveRuntimeMs, readTask(taskId)?.orchestration?.max_runtime_ms ?? effectiveRuntimeMs);
@@ -417,13 +422,43 @@ export async function runTask(
     }
   };
 
-  const acceptAgentUsage = async (agentRun: import("./agent-executor").AgentRunResult): Promise<void> => {
+  const acceptAgentUsage = async (agentRun: import("./agent-executor").AgentRunResult, contractFingerprint: string | undefined): Promise<void> => {
+    // A completed result may reveal exhaustion only when its final debit is
+    // recorded. It can prove accounting without granting any further effect.
+    const interruptedOnEntry = controller.signal.aborted;
     if (isCompleteAgentUsage(agentRun.usageHighWater)) await recordUsage(agentRun.usageHighWater);
     else if (agentRun.usageHighWater !== undefined && agentRun.usageHighWater !== null) usageUncertain = true;
     const valid = isCompleteAgentUsage(agentRun.usage);
-    workflowUsageComplete = valid && (agentRun.usageComplete === true || !Object.hasOwn(agentRun, "usageComplete")) && !usageUncertain;
+    // Omission is retained only for existing trusted injected executors. The real
+    // adapter always declares completeness and must prove any positive claim.
+    workflowUsageComplete = valid && !Object.hasOwn(agentRun, "usageComplete") && !usageUncertain;
     if (!valid) { agentRun.usage = null; usageUncertain = true; }
-    if (valid && await recordUsage(agentRun.usage!)) {
+    const tokenLimitReached = valid && await recordUsage(agentRun.usage!);
+    if (agentRun.usageComplete === true) {
+      const lateBudgetStop = !interruptedOnEntry && knownBudgetExhaustion && !budgetAccountingUnknown
+        && (abortKind === "timeout" || abortKind === "tokens") && !options.signal?.aborted
+        && !readTask(taskId)?.orchestration?.cancel_requested_at;
+      if (controller.signal.aborted && !lateBudgetStop) { const error = new Error("task interrupted before terminal evidence acceptance"); error.name = "AbortError"; throw error; }
+      const evidence = valid && !usageUncertain && agentRun.usage!.totalTokens >= attemptTokens && contractFingerprint ? validateTerminalUsageEvidence(agentRun.terminalUsageEvidence, {
+        taskId, executionId: runId, contextFingerprint: contractFingerprint, threadId: agentRun.threadId, turnId: agentRun.turnId, usage: agentRun.usage,
+      }) : null;
+      if (!evidence) throw new ContextPreviewError("Terminal usage evidence is missing, invalid or bound to another execution; no further effect is admitted");
+      if (workflowOwner && !controller.signal.aborted) workflowOwner.prepare(options.workflowExecution!);
+      const accepted = ownedMutation((record) => {
+        const run = metadataRun(record);
+        if (run.context_fingerprint !== evidence.contextFingerprint) throw new ContextPreviewError("Terminal usage context differs from the current execution observations");
+        if (typeof run.thread_id === "string" && run.thread_id !== evidence.threadId || typeof run.turn_id === "string" && run.turn_id !== evidence.turnId) {
+          throw new ContextPreviewError("Terminal usage identity differs from the current execution observations");
+        }
+        record.envelope.metadata.run = { ...run, terminal_usage_evidence: evidence, usage: agentRun.usage, usage_complete: true };
+      });
+      if (!accepted) throw new ContextPreviewError("Attempt ownership changed before terminal usage acceptance");
+      workflowUsageComplete = true;
+      // Account the already closed result, then preserve the original budget
+      // abort. Output, commit, verification and successor gates never run.
+      if (controller.signal.aborted) { const error = new Error("task budget exhausted after terminal receipt"); error.name = "AbortError"; throw error; }
+    }
+    if (tokenLimitReached) {
       const error = new Error("task token budget exhausted"); error.name = "AbortError"; throw error;
     }
     if (budgetOwner && !workflowUsageComplete) throw new ContextPreviewError("Final budget usage is unknown; no further execution effect is admitted");
@@ -497,8 +532,10 @@ export async function runTask(
         ? "workspace-write"
         : "read-only";
     const previousRun = metadataRun(initial);
-    const threadId = workflow ? workflow.thread.threadId : typeof previousRun.thread_id === "string" ? previousRun.thread_id : undefined;
-    const contractFingerprint = workflow?.thread.fingerprint ?? (governed ? contextHash(JSON.stringify({ manifest: governed.preview.fingerprint, version: GOVERNED_PROMPT_VERSION, mode, cwd, verifyCommands, outputSchema: AGENT_REPORT_SCHEMA })) : undefined);
+    const thread = workflow?.thread ?? (governed ? governedThreadContract(initial.envelope, cwd, mode, verifyCommands, AGENT_REPORT_SCHEMA) : undefined);
+    const threadId = thread ? thread.threadId : typeof previousRun.thread_id === "string" ? previousRun.thread_id : undefined;
+    const contractFingerprint = thread?.fingerprint;
+    const runtimeContextProfile = thread?.runtimeContextProfile;
     if (threadId && (!contractFingerprint || previousRun.context_fingerprint !== contractFingerprint)) {
       throw new ContextPreviewError("Thread admission binding is missing or changed; a new confirmed task is required");
     }
@@ -506,7 +543,7 @@ export async function runTask(
     // Never promote that text into the governed resume layer.
     const priorSummary = (initial.result?.status !== "needs-review" ? initial.result?.summary : undefined)
       ?? (typeof previousRun.prior_summary === "string" ? previousRun.prior_summary : undefined);
-    const prompts = governed ? buildGovernedPrompts(governed.rendered, initial.envelope, governed.preview.manifest.limits, priorSummary) : null;
+    const prompts = governed ? buildGovernedPrompts(governed.rendered, initial.envelope, governed.preview.manifest.limits, priorSummary, runtimeContextProfile) : null;
     const systemPrompt = prompts?.developerInstructions ?? buildSystemPrompt(agent, readFileSync(join(repoRoot, "AGENTS.md"), "utf8"), mode, verifyCommands);
     const prompt = prompts?.prompt ?? buildUserPrompt(initial.envelope);
     if (governed) {
@@ -520,7 +557,10 @@ export async function runTask(
     const runAgent = (runCwd: string) => {
       prepareBudget();
       if (controller.signal.aborted) { const error = new Error("task interrupted before model invocation"); error.name = "AbortError"; throw error; }
-      if (!ownedMutation(() => {})) throw new ContextPreviewError("Attempt ownership changed before model invocation");
+      if (!ownedMutation((record) => {
+        const run = metadataRun(record); delete run.terminal_usage_evidence;
+        record.envelope.metadata.run = run;
+      })) throw new ContextPreviewError("Attempt ownership changed before model invocation");
       if (workflowOwner) workflowOwner.prepare(options.workflowExecution!);
       workflowUsageComplete = false;
       modelInvoked = true;
@@ -536,6 +576,8 @@ export async function runTask(
           outputSchema: workflow?.outputSchema ?? AGENT_REPORT_SCHEMA as unknown as Record<string, unknown>,
           threadId,
           contextFingerprint: contractFingerprint,
+          runtimeContextProfile,
+          executionIdentity: { taskId, executionId: runId },
           resumeContextFingerprint: typeof previousRun.context_fingerprint === "string" ? previousRun.context_fingerprint : undefined,
         },
         handleAgentEvent,
@@ -595,7 +637,7 @@ export async function runTask(
       }
       const implementationStarted = new Date().toISOString();
       const agentRun = await runAgent(worktreePath);
-      await acceptAgentUsage(agentRun);
+      await acceptAgentUsage(agentRun, contractFingerprint);
       if (testingEvidence) testingEvidence.implementation = { started_at: implementationStarted, finished_at: new Date().toISOString(), thread_id: agentRun.threadId, turn_id: agentRun.turnId };
       if (controller.signal.aborted) { const error = new Error("task interrupted before commit"); error.name = "AbortError"; throw error; }
       if (!ownedMutation(() => {})) return { outcome: "failed", retryable: false, reason: "attempt lease is no longer current", stale: true };
@@ -700,7 +742,7 @@ export async function runTask(
     }
 
     const agentRun = await runAgent(cwd);
-    await acceptAgentUsage(agentRun);
+    await acceptAgentUsage(agentRun, contractFingerprint);
     if (!workflow) writeLog({ task_id: initial.envelope.id, mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, usage: agentRun.usage, usage_complete: workflowUsageComplete, structured_output: agentRun.structuredOutput });
     ownedMutation((record) => {
       record.envelope.metadata.run = { ...metadataRun(record), mode, thread_id: agentRun.threadId, turn_id: agentRun.turnId, usage: agentRun.usage, usage_complete: workflowUsageComplete };

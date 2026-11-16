@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "id", "issue_id", "task_id", "execution_id", "candidate_id", "candidate_revision", "diff_fingerprint", "scope_revision", "kind", "label", "reference", "status", "created_at"],
   "properties": {
+    "delivery_observation": { "$ref": "#/$defs/deliveryObservation" },
     "testing_evidence_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "schema_version": { "const": 1 }, "id": { "type": "string", "pattern": "^E-[A-Fa-f0-9-]{36}$" },
     "issue_id": { "type": "string", "pattern": "^I-[A-Fa-f0-9-]{36}$" },
@@ -16,5 +17,36 @@
     "kind": { "enum": ["task", "execution", "commit", "diff", "verification", "review", "work-session", "provider", "usage", "screenshot", "work-product"] },
     "label": { "type": "string", "minLength": 1, "maxLength": 300 }, "reference": { "type": "string", "minLength": 1, "maxLength": 2000 },
     "status": { "enum": ["passed", "failed", "informational", "gap"] }, "created_at": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [{
+    "if": { "properties": { "delivery_observation": {} }, "required": ["delivery_observation"] },
+    "then": {
+      "properties": {
+        "task_id": { "type": "null" }, "execution_id": { "type": "null" },
+        "scope_revision": { "type": "integer", "minimum": 1 },
+        "kind": { "enum": ["work-product", "provider"] }, "status": { "const": "informational" }
+      },
+      "not": { "properties": { "testing_evidence_fingerprint": {} }, "required": ["testing_evidence_fingerprint"] },
+      "oneOf": [
+        { "properties": { "candidate_id": { "type": "null" }, "candidate_revision": { "type": "null" }, "diff_fingerprint": { "type": "null" } } },
+        { "properties": { "candidate_id": { "type": "string" }, "candidate_revision": { "type": "string", "minLength": 1 }, "diff_fingerprint": { "type": "string" } } }
+      ]
+    }
+  }],
+  "$defs": {
+    "deliveryObservation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "kind", "origin", "commitment_id", "occurred_at", "summary", "source_reference", "next_action"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "kind": { "enum": ["readiness-reviewed", "environment-observed", "handoff-recorded", "client-response-recorded", "follow-up-recorded"] },
+        "origin": { "const": "operator-entered" },
+        "commitment_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" },
+        "occurred_at": { "type": "string", "format": "date-time" },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" },
+        "source_reference": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,99}|https?://[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~/-]*)?)$" },
+        "next_action": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" }
+      }
+    }
   }
 }

@@ -19,6 +19,9 @@ import { createContextService } from "../dashboard/src/server/context-service";
 import { createTestingEvidence, sealTestingEvidence } from "../lib/context/testing-evidence";
 import { captureVerification } from "./verify";
 import { createWorktree, commitAndDiff } from "./worktree";
+import { WORKFLOW_PROMPT_VERSION } from "./agent-prompt";
+import { contextHash } from "../lib/context/assemble";
+import { GOVERNED_RUNTIME_CONTEXT_PROFILE, LEGACY_RUNTIME_CONTEXT_PROFILE } from "./runtime-context-profile";
 
 let root: string, taskId: string, workflowId: string, stageId: string, issueId: string;
 const runId = "synthetic-analysis-run";
@@ -59,6 +62,33 @@ const output = { schema_version: 1, kind: "analysis", status: "completed", summa
   recommendations: ["Human decides further work"], recommended_next_action: "Review the observation", requested_decision: null };
 
 describe("workflow stage current authority preflight", () => {
+  it("retains the code-owned profile across repeated preparation and metadata persistence", () => {
+    claim(); const prepared = prepareWorkflowStage(taskId, runId, root), before = readTask(taskId);
+    expect(prepared.thread.runtimeContextProfile).toBe(GOVERNED_RUNTIME_CONTEXT_PROFILE);
+    expect(prepareWorkflowStage(taskId, runId, root).thread).toEqual(prepared.thread);
+    expect(readTask(taskId)).toEqual(before);
+    updateTask(taskId, (task) => { task.envelope.metadata.run = { context_fingerprint: prepared.thread.fingerprint }; });
+    expect(prepareWorkflowStage(taskId, runId, root).thread).toEqual(prepared.thread);
+    expect(validateWorkflowStageOutput(prepared, output, "fixture", root).result.status).toBe("completed");
+    expect(readTask(taskId)!.envelope.metadata.run).not.toHaveProperty("runtime_context_profile");
+  });
+  it("preserves an exact legacy stage contract without upgrading or changing durable records", () => {
+    claim(); const prepared = prepareWorkflowStage(taskId, runId, root), admission = prepared.admission;
+    const fingerprint = contextHash(JSON.stringify({ version: WORKFLOW_PROMPT_VERSION, workflow_id: admission.workflow_id, stage_id: admission.stage_id,
+      generation: admission.stage_generation, task_id: taskId, role_id: admission.role_id, grant_id: admission.grant_id, authority_revision: admission.authority_revision,
+      admission, manifest: prepared.task.envelope.context_manifest!.fingerprint, cwd: prepared.cwd, mode: prepared.mode, verifyCommands: prepared.verifyCommands, outputSchema: prepared.outputSchema }));
+    updateTask(taskId, (task) => { task.envelope.metadata.run = { context_fingerprint: fingerprint, thread_id: "legacy-thread", workflow_task_id: taskId, workflow_stage_id: stageId, workflow_generation: admission.stage_generation }; });
+    const before = readTask(taskId), legacy = prepareWorkflowStage(taskId, runId, root);
+    expect(legacy.thread).toEqual({ fingerprint, threadId: "legacy-thread", runtimeContextProfile: LEGACY_RUNTIME_CONTEXT_PROFILE });
+    expect(validateWorkflowStageOutput(legacy, output, "fixture", root).result.status).toBe("completed");
+    expect(readTask(taskId)).toEqual(before);
+  });
+  it("refuses an unknown saved execution fingerprint without replacing it", () => {
+    claim(); updateTask(taskId, (task) => { task.envelope.metadata.run = { context_fingerprint: "b".repeat(64) }; });
+    const before = readTask(taskId);
+    expect(() => prepareWorkflowStage(taskId, runId, root)).toThrow(/another or changed/);
+    expect(readTask(taskId)).toEqual(before);
+  });
   it("assembles actual reserved authority only after an exact durably charged controller claim", () => {
     expect(() => prepareWorkflowStage(taskId, runId, root)).toThrow(/lease/);
     claim(); const beforeTask = readTask(taskId), beforeWorkflow = readWorkflowDocument(), beforeIssue = readIssueDocument();

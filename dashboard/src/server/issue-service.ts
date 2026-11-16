@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { assertTestingEvidenceBinding, testingEvidenceStatus } from "../../../lib/context/testing-evidence";
 import type { IssueTransitionEnvelope } from "../../../lib/organization/issue-lifecycle";
 import { checkIssueTransition } from "../../../lib/organization/issue-lifecycle";
-import type { IssueCreateInput, IssueDocument, IssueEvidenceReference, IssueLineage, ReviewCandidate, WorkIssue } from "../../../lib/issues/types";
-import { readIssueDocument, mutateIssueDocument } from "../../../lib/state/issues";
+import type { IssueCreateInput, IssueDocument, IssueEvidenceReference, IssueLineage, RecordDeliveryObservationInput, ReviewCandidate, WorkIssue } from "../../../lib/issues/types";
+import { readIssueDocument, mutateIssueDocument, mutateIssueDocumentIfChanged } from "../../../lib/state/issues";
 import { readOrganizationSnapshot } from "../../../lib/state/organization";
 import { readTaskEvents } from "../../../lib/state/events";
 import { listTasks, readTask } from "../../../lib/state/store";
@@ -21,12 +21,12 @@ import { applicableWorkflowReviews, assertOwnedWorkflowIssueProgress, assertTerm
 import { readContained } from "../../../lib/harness/source";
 import { inspectCandidateTree } from "../../../runner/worktree";
 import { createWorkflowContextService } from "./workflow-context-service";
-import { assertTaskBudgetAdmissionBinding, taskBudgetReadiness, validateTaskRecord } from "../../../lib/state/validation";
+import { assertTaskBudgetAdmissionBinding, taskBudgetReadiness, validateClientPortfolioDocument, validateDeliveryObservation, validateTaskRecord } from "../../../lib/state/validation";
 import { evaluateWorkflowBudgetStop, projectWorkflowConsumption, independentWorkflowBudgetStopSummary, INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX,
   type IndependentBudgetStopData, type WorkflowBudgetBinding, type WorkflowBudgetStop, type WorkflowBudgetStopOperation, type WorkflowConsumptionView } from "../../../lib/workflows/policy";
 import { BUDGET_DIMENSIONS } from "../../../lib/budgets/types";
 import { readBudgetLedger } from "../../../lib/state/budgets";
-import { budgetStatePath } from "../../../lib/state/paths";
+import { budgetStatePath, clientPortfolioPath } from "../../../lib/state/paths";
 import { readBudgetPolicy, resolveBudgetPolicy } from "../../../lib/budgets/policy";
 import { inspectBudgetStopReceipt } from "../../../runner/task-orchestrator";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, type Stats } from "node:fs";
@@ -406,6 +406,49 @@ function assertDispatchAdmission(value: unknown): void {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       return typeof key !== "string" || !keys.includes(key) || !descriptor?.enumerable || !Object.hasOwn(descriptor, "value");
     })) throw new IssueServiceError("Invalid issue dispatch admission fields");
+}
+
+function assertDeliveryData(value: unknown, keys: readonly string[]): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || nodeTypes.isProxy(value) || Array.isArray(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new IssueServiceError("Invalid delivery observation fields");
+  const descriptors = Object.getOwnPropertyDescriptors(value), names = Reflect.ownKeys(descriptors);
+  if (names.length !== keys.length || names.some((key) => typeof key !== "string" || !keys.includes(key)
+    || !descriptors[key]?.enumerable || !Object.hasOwn(descriptors[key]!, "value"))) throw new IssueServiceError("Invalid delivery observation fields");
+}
+
+/** A stable local read, not a cross-store transaction or authority receipt. */
+function assertDeliveryCommitment(projectId: string, commitmentId: string): void {
+  const path = resolve(clientPortfolioPath()), directory = resolve(path, ".."), drive = parse(directory).root;
+  let fd: number | undefined;
+  const boundary = () => {
+    if (/^[\\/]{2}/.test(path)) throw new Error("unsafe");
+    let current = drive;
+    for (const part of directory.slice(drive.length).split(/[\\/]/).filter(Boolean)) {
+      current = join(current, part);
+      const stat = lstatSync(current);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("unsafe");
+    }
+    if (realpathSync(directory).toLowerCase() !== directory.toLowerCase()) throw new Error("unsafe");
+  };
+  try {
+    boundary();
+    const before = lstatSync(path);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > 10 * 1024 * 1024) throw new Error("unsafe");
+    const same = (stat: Stats) => stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.dev === before.dev && stat.ino === before.ino
+      && stat.size === before.size && stat.mtimeMs === before.mtimeMs && stat.ctimeMs === before.ctimeMs;
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    if (!same(fstatSync(fd))) throw new Error("changed");
+    const bytes = Buffer.alloc(before.size + 1); let length = 0;
+    while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
+    if (length !== before.size || !same(fstatSync(fd)) || !same(lstatSync(path))) throw new Error("changed");
+    boundary();
+    const document: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)));
+    if (!validateClientPortfolioDocument(document)
+      || Object.entries(document.clients).some(([id, client]) => !isSafeIdentifier(id) || client.id !== id)
+      || Object.entries(document.commitments).some(([id, commitment]) => !isSafeIdentifier(id) || commitment.id !== id)
+      || document.commitments[commitmentId]?.project_id !== projectId) throw new Error("invalid");
+  } catch { throw new IssueServiceError("Delivery commitment reference is missing, unsafe or unavailable; source bytes were preserved", 409); }
+  finally { if (fd !== undefined) closeSync(fd); }
 }
 
 function text(value: unknown, label: string, max: number): string {
@@ -833,6 +876,11 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
     create(raw: IssueCreateInput): WorkIssue {
       const projectId = text(raw?.project_id, "project_id", 100);
       if (!projectIds().includes(projectId)) throw new IssueServiceError("project is not registered for local work", 404);
+      const requestId = raw.request_id;
+      if (requestId !== undefined && (typeof requestId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId))) {
+        throw new IssueServiceError("request_id must be a canonical UUID");
+      }
+      if (Object.hasOwn(raw, "intake_receipt")) throw new IssueServiceError("intake_receipt is server-owned");
       const title = text(raw.title, "title", 200);
       const expectedOutcome = text(raw.expected_outcome, "expected_outcome", 4000);
       const criteria = labels(raw.acceptance_criteria, "acceptance_criteria");
@@ -845,43 +893,118 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
       const requiresMigration = rawInputs.requires_migration === true;
       const securityImpact = rawInputs.security_impact === true;
       if ((rawInputs.requires_migration !== undefined && typeof rawInputs.requires_migration !== "boolean") || (rawInputs.security_impact !== undefined && typeof rawInputs.security_impact !== "boolean")) throw new IssueServiceError("classification inputs are invalid");
-      const classification = deriveScale({ ...raw, acceptance_criteria: criteria }, affectedDomains, requiresMigration, securityImpact, criticality, scope.allowed_change_categories);
       const plan = raw.plan === undefined ? [] : optionalLabels(raw.plan, "plan", 30);
-      if (classification.scale === "substantial" && (plan.length === 0 || criteria.length < 2 || !raw.next_action?.trim())) throw new IssueServiceError("substantial work requires a durable plan, at least two acceptance criteria, and a next action");
       const objectiveId = raw.objective_id ?? null;
-      if (objectiveId) {
-        const organization = readOrganizationSnapshot();
-        if (!organization.objectives.some((objective) => objective.id === objectiveId)
-          || !organization.project_objectives[projectId]?.objective_ids.includes(objectiveId)) throw new IssueServiceError("objective must exist and be linked to this project", 409);
-      }
       const parentId = raw.parent_issue_id ?? null;
       const blockers = optionalLabels(raw.blocked_by_issue_ids, "blocked_by_issue_ids", 100);
-      const nowIso = now().toISOString();
-      const id = `I-${randomUUID()}`;
       const priority = raw.priority ?? 50;
       if (!Number.isSafeInteger(priority) || priority < 0 || priority > 100) throw new IssueServiceError("priority must be an integer from 0 to 100");
-      const issue: WorkIssue = {
-        schema_version: 1, id, project_id: projectId, objective_id: objectiveId, parent_issue_id: parentId,
-        title, expected_outcome: expectedOutcome, acceptance_criteria: criteria, status: "proposed", work_scale: classification.scale,
+      // Reconstruct every original input field in a stable order. Source object
+      // order and generated issue state must not change the intake binding.
+      const normalized = {
+        project_id: projectId, objective_id: objectiveId, parent_issue_id: parentId,
+        title, expected_outcome: expectedOutcome, acceptance_criteria: criteria, authorized_scope: scope,
         classification_inputs: { affected_domains: affectedDomains, requires_migration: requiresMigration, security_impact: securityImpact },
-        classification_rationale: classification.rationale, plan, authorized_scope: scope, scope_revision: 1,
-        scope_changed_at: null, scope_change_approval_id: null, scope_change_proposal: null, priority, criticality,
+        plan, priority, criticality,
         blocked_by_issue_ids: blockers, assigned_role_id: raw.assigned_role_id ? text(raw.assigned_role_id, "assigned_role_id", 100) : null,
         related_commitment_ids: optionalLabels(raw.related_commitment_ids, "related_commitment_ids", 100),
         external_references: externalReferences(raw.external_references),
         next_action: raw.next_action === undefined || raw.next_action === null || raw.next_action === "" ? null : text(raw.next_action, "next_action", 1000),
-        task_ids: [], evidence_ids: [], candidate_ids: [], created_at: nowIso, updated_at: nowIso, revision: 1,
       };
-      mutateIssueDocument((document) => {
+      const fingerprint = createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+      // Only the keyed manual-intake path can omit a replacement on replay.
+      const mutate = requestId === undefined ? mutateIssueDocument : mutateIssueDocumentIfChanged;
+      return mutate((document) => {
+        if (requestId !== undefined) {
+          const existing = Object.values(document.issues).find((entry) => entry.intake_receipt?.request_id === requestId);
+          if (existing) {
+            if (existing.intake_receipt!.request_fingerprint !== fingerprint) throw new IssueServiceError("request_id is already bound to a different request", 409);
+            return existing;
+          }
+        }
         if (Object.keys(document.issues).length >= 500) throw new IssueServiceError("local issue capacity reached", 409);
+        if (objectiveId) {
+          const organization = readOrganizationSnapshot();
+          if (!organization.objectives.some((objective) => objective.id === objectiveId)
+            || !organization.project_objectives[projectId]?.objective_ids.includes(objectiveId)) throw new IssueServiceError("objective must exist and be linked to this project", 409);
+        }
         for (const referenceId of [parentId, ...blockers].filter((value): value is string => Boolean(value))) {
           const referenced = requireIssue(document, referenceId);
           if (referenced.project_id !== projectId) throw new IssueServiceError("parent and blocker issues must target the same project");
         }
-        document.issues[id] = issue;
+        const classification = deriveScale(normalized, affectedDomains, requiresMigration, securityImpact, criticality, scope.allowed_change_categories);
+        if (classification.scale === "substantial" && (plan.length === 0 || criteria.length < 2 || !normalized.next_action)) throw new IssueServiceError("substantial work requires a durable plan, at least two acceptance criteria, and a next action");
+        const nowIso = now().toISOString();
+        const issue: WorkIssue = {
+          schema_version: 1, id: `I-${randomUUID()}`, ...normalized,
+          ...(requestId === undefined ? {} : { intake_receipt: { schema_version: 1 as const, request_id: requestId, request_fingerprint: fingerprint } }),
+          status: "proposed", work_scale: classification.scale, classification_rationale: classification.rationale, scope_revision: 1,
+          scope_changed_at: null, scope_change_approval_id: null, scope_change_proposal: null,
+          task_ids: [], evidence_ids: [], candidate_ids: [], created_at: nowIso, updated_at: nowIso, revision: 1,
+        };
+        document.issues[issue.id] = issue;
         appendEvent(document, issue, "issue-proposed", { project_id: projectId, work_scale: issue.work_scale, classification_rationale: issue.classification_rationale }, nowIso);
+        return issue;
       });
-      return issue;
+    },
+
+    recordDeliveryObservation(id: string, raw: RecordDeliveryObservationInput): { issue: WorkIssue; evidence: IssueEvidenceReference } {
+      assertDeliveryData(raw, ["project_id", "expected_revision", "scope_revision", "candidate_id", "candidate_revision", "diff_fingerprint", "delivery_observation", "confirm"]);
+      assertDeliveryData(raw.delivery_observation, ["schema_version", "kind", "origin", "commitment_id", "occurred_at", "summary", "source_reference", "next_action"]);
+      if (typeof id !== "string" || !/^I-[A-Fa-f0-9-]{36}$/.test(id) || !isSafeIdentifier(raw.project_id) || raw.confirm !== true
+        || !Number.isSafeInteger(raw.expected_revision) || raw.expected_revision < 1 || !Number.isSafeInteger(raw.scope_revision) || raw.scope_revision < 1
+        || !validateDeliveryObservation(raw.delivery_observation)) throw new IssueServiceError("Invalid delivery observation data");
+      const observation = { ...raw.delivery_observation };
+      if ([observation.summary, observation.source_reference, observation.next_action].some((value) => redactText(value) !== value)) {
+        throw new IssueServiceError("Delivery observation appears to contain a credential; remove it before saving");
+      }
+      const unbound = raw.candidate_id === null && raw.candidate_revision === null && raw.diff_fingerprint === null;
+      if (!unbound && (typeof raw.candidate_id !== "string" || !/^C-[A-Fa-f0-9-]{36}$/.test(raw.candidate_id)
+        || typeof raw.candidate_revision !== "string" || !/^[a-f0-9]{40,64}$/.test(raw.candidate_revision)
+        || typeof raw.diff_fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(raw.diff_fingerprint))) throw new IssueServiceError("Delivery candidate binding must be complete or explicitly absent");
+      return mutateIssueDocument((document) => {
+        const issue = requireIssue(document, id), recordedAt = now();
+        if (issue.revision !== raw.expected_revision || issue.project_id !== raw.project_id || issue.scope_revision !== raw.scope_revision
+          || !projectIds().includes(issue.project_id)) throw new IssueServiceError("Issue project, revision or scope changed; refresh before recording delivery", 409);
+        if (!Number.isFinite(recordedAt.getTime()) || Date.parse(observation.occurred_at) > recordedAt.getTime()) throw new IssueServiceError("Delivery observation time cannot be in the future");
+        try {
+          if (Object.values(readWorkflowDocument().workflows).some((owner) => owner.issue_id === id && !["completed", "cancelled"].includes(owner.status))) {
+            throw new IssueServiceError("Issue has an active workflow owner; record delivery after its terminal decision", 409);
+          }
+          const linked = issue.task_ids.map((taskId) => readTask(taskId));
+          if (linked.some((task) => !task)) throw new IssueServiceError("Issue task ownership is unavailable; delivery was not recorded", 409);
+          if ([...linked, ...listTasks().filter((task) => taskIssueId(task) === id)].some((task) => task && ["queued", "running"].includes(task.lifecycle))) {
+            throw new IssueServiceError("Issue has an active task owner; delivery was not recorded", 409);
+          }
+        } catch (error) {
+          if (error instanceof IssueServiceError) throw error;
+          throw new IssueServiceError("Issue execution ownership is unavailable; delivery was not recorded", 409);
+        }
+        if (!unbound) {
+          const candidate = document.candidates[raw.candidate_id!];
+          if (!candidate || candidate.issue_id !== id || candidate.repository_id !== issue.project_id || issue.candidate_ids.at(-1) !== candidate.id
+            || candidate.invalidated_at !== null || candidate.scope_revision !== issue.scope_revision
+            || candidate.candidate_revision !== raw.candidate_revision || candidate.diff_fingerprint !== raw.diff_fingerprint) {
+            throw new IssueServiceError("Delivery candidate reference is missing, stale or belongs to another project", 409);
+          }
+        }
+        if (observation.commitment_id !== null) {
+          if (!issue.related_commitment_ids.includes(observation.commitment_id)) throw new IssueServiceError("Delivery commitment must already be linked to this issue", 409);
+          assertDeliveryCommitment(issue.project_id, observation.commitment_id);
+        }
+        if (issue.evidence_ids.filter((evidenceId) => Object.hasOwn(document.evidence[evidenceId]!, "delivery_observation")).length >= 64
+          || issue.evidence_ids.length >= 500 || Object.keys(document.evidence).length >= 5000 || document.events.length >= 20_000) {
+          throw new IssueServiceError("Delivery evidence capacity reached; existing history was preserved", 409);
+        }
+        const at = recordedAt.toISOString();
+        const evidence = addEvidence(document, issue, { task_id: null, execution_id: null, candidate_id: raw.candidate_id,
+          candidate_revision: raw.candidate_revision, diff_fingerprint: raw.diff_fingerprint, scope_revision: issue.scope_revision,
+          kind: "work-product", label: "Operator-entered delivery observation", reference: `/api/work-issues/${issue.id}`,
+          status: "informational", delivery_observation: observation }, at);
+        appendEvent(document, issue, "delivery-observation-recorded", { evidence_id: evidence.id, kind: observation.kind,
+          candidate_id: evidence.candidate_id, commitment_id: observation.commitment_id }, at);
+        return { issue, evidence };
+      });
     },
 
     authorize(id: string, expectedRevision: number, approvalId: string): WorkIssue {

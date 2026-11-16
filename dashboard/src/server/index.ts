@@ -49,7 +49,7 @@ import { UnsupportedOrganizationVersionError } from "../../../lib/state/organiza
 import { validateCompanyProfile, validateObjective } from "../../../lib/state/validation";
 import type { Objective } from "../../../lib/organization";
 import type { Inbox } from "../../../lib/state/types";
-import type { IssueCreateInput } from "../../../lib/issues/types";
+import type { IssueCreateInput, RecordDeliveryObservationInput } from "../../../lib/issues/types";
 import { createIssueService, IssueServiceError } from "./issue-service";
 import { IssueStateError, UnsupportedIssueVersionError } from "../../../lib/state/issues";
 import { createHarnessService, type HarnessService } from "./harness-service";
@@ -58,6 +58,9 @@ import { createContextService, ContextPreviewError, type ContextService } from "
 import { ContextContractError } from "../../../lib/context/validation";
 import { createWorkflowService, WorkflowServiceError, type WorkflowService } from "./workflow-service";
 import { createRoutineService, RoutineServiceError, type RoutineConfigureInput, type RoutineCreateInput, type RoutineRevisionInput, type RoutineService } from "./routine-service";
+import { createOperatingViewService, OperatingRequestError, type OperatingViewService } from "./operating-view-service";
+import { assertOperatingView, OPERATING_SECTIONS, type OperatingViewRequest } from "../../../lib/operating-views";
+import { isSafeIdentifier } from "../../../lib/security/identifiers";
 
 export interface AppDependencies {
   integrations?: ProjectIntegrationsReader;
@@ -71,6 +74,7 @@ export interface AppDependencies {
   context?: ContextService;
   workflows?: WorkflowService;
   routines?: RoutineService;
+  operating?: OperatingViewService;
 }
 
 type JsonBodyResult = { ok: true; value: unknown } | { ok: false; status: 400 | 413; error: string };
@@ -96,7 +100,9 @@ export function createApp(
   const onTaskCreated = typeof taskDispatch === "function" ? taskDispatch : (id: string) => taskDispatch.enqueue(id);
 
   app.use("/api/*", async (c, next) => {
-    if (c.req.path === "/api/budgets" || c.req.path === "/api/routines" || c.req.path.startsWith("/api/routines/")) c.header("Cache-Control", "no-store");
+    if (c.req.path === "/api/budgets" || c.req.path === "/api/routines" || c.req.path.startsWith("/api/routines/")
+      || c.req.path === "/api/operating" || c.req.path.startsWith("/api/operating/")
+      || /^\/api\/work-issues\/[^/]+\/delivery-observations$/.test(c.req.path)) c.header("Cache-Control", "no-store");
     await next();
   });
   app.use("/api/*", httpSecurity.middleware);
@@ -134,6 +140,36 @@ export function createApp(
   const contextService = dependencies.context ?? createContextService(repoRoot);
   const issues = dependencies.issues ?? createIssueService(repoRoot, { context: contextService });
   const workflows = dependencies.workflows ?? createWorkflowService(repoRoot, { issues });
+  const operating = dependencies.operating ?? createOperatingViewService(repoRoot);
+
+  const operatingResponse = async (c: Context, kind: OperatingViewRequest["kind"], id?: string) => {
+    if (id !== undefined && !isSafeIdentifier(id)) return c.json({ error: "Invalid operating view query or cursor." }, 400);
+    const query = new URL(c.req.url).searchParams;
+    const request: { kind: OperatingViewRequest["kind"]; id?: string; page_size?: number; cursors?: Record<string, string> } = { kind, ...(id === undefined ? {} : { id }) };
+    for (const [key, value] of query) {
+      if (query.getAll(key).length !== 1) return c.json({ error: "Invalid operating view query or cursor." }, 400);
+      if (key === "page_size" && /^(?:[1-9]|[1-4][0-9]|50)$/.test(value)) request.page_size = Number(value);
+      else if (key.startsWith("cursor_") && OPERATING_SECTIONS.some((section) => key === `cursor_${section}`)
+        && value.length > 0 && value.length <= 400 && !/[\u0000-\u0020\u007f]/.test(value)) {
+        request.cursors ??= {}; request.cursors[key.slice(7)] = value;
+      } else return c.json({ error: "Invalid operating view query or cursor." }, 400);
+    }
+    try {
+      const view = await operating.read(request);
+      assertOperatingView(view);
+      if (view.view !== kind || view.focus_id !== (id ?? null)
+        || view.sections.some((section) => section.rows.length > (request.page_size ?? 50))) throw new Error("Invalid operating response binding");
+      if (view.focus_status === "not-found") return c.json({ error: "Operating view focus was not found." }, 404);
+      return c.json(view);
+    } catch (error) {
+      if (error instanceof OperatingRequestError) return c.json({ error: "Invalid operating view query or cursor." }, 400);
+      return c.json({ error: "Operating view sources are unavailable; no changes were made." }, 503);
+    }
+  };
+  app.get("/api/operating/overview", (c) => operatingResponse(c, "overview"));
+  app.get("/api/operating/objectives/:id", (c) => operatingResponse(c, "objective", c.req.param("id")));
+  app.get("/api/operating/projects/:id", (c) => operatingResponse(c, "project", c.req.param("id")));
+  app.get("/api/operating/issues/:id", (c) => operatingResponse(c, "issue", c.req.param("id")));
 
   const routineErrorResponse = (c: Context, error: unknown) => error instanceof RoutineServiceError
     ? c.json({ error: error.message }, error.status)
@@ -197,6 +233,13 @@ export function createApp(
     const parsed = await boundedJsonBody(c);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
     try { return c.json(workflows[action](parsed.value), action === "start" ? 201 : 200); }
+    catch (error) { return workflowErrorResponse(c, error); }
+  });
+  app.post("/api/workflows/:id/planner-recovery", async (c) => {
+    c.header("Cache-Control", "no-store");
+    const parsed = await boundedJsonBody(c, 4 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    try { return c.json(workflows.offerPlannerRecovery(c.req.param("id"), parsed.value)); }
     catch (error) { return workflowErrorResponse(c, error); }
   });
   for (const action of ["decision", "cancel", "recover"] as const) app.post(`/api/workflows/:id/${action}`, async (c) => {
@@ -347,7 +390,17 @@ export function createApp(
     const parsed = await boundedJsonBody(c, 32 * 1024);
     if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
     if (typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) return c.json({ error: "invalid local issue body" }, 400);
+    const input = parsed.value as Record<string, unknown>;
+    if (!Object.hasOwn(input, "request_id") || typeof input.request_id !== "string") return c.json({ error: "request_id is required for manual issue creation" }, 400);
+    if (Object.hasOwn(input, "intake_receipt")) return c.json({ error: "intake_receipt is server-owned" }, 400);
     try { return c.json({ issue: issues.create(parsed.value as IssueCreateInput) }, 201); }
+    catch (error) { return issueErrorResponse(c, error); }
+  });
+
+  app.post("/api/work-issues/:id/delivery-observations", async (c) => {
+    const parsed = await boundedJsonBody(c, 8 * 1024);
+    if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status);
+    try { return c.json(issues.recordDeliveryObservation(c.req.param("id"), parsed.value as RecordDeliveryObservationInput), 201); }
     catch (error) { return issueErrorResponse(c, error); }
   });
 

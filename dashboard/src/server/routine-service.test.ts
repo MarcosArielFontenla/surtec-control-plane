@@ -8,11 +8,11 @@ import { budgetOccurrenceIntentId } from "../../../lib/budgets/reservations";
 import type { Objective, OrganizationSnapshot } from "../../../lib/organization";
 import type { RoutineActionEvidence, RoutineEvidenceReadOptions } from "../../../lib/routines/actions";
 import { routineRevisionKey, routineSlotKey } from "../../../lib/routines/schedule";
-import { ROUTINE_ACTIONS, type RoutineOccurrence, type RoutineRecord, type RoutineScope } from "../../../lib/routines/types";
-import { assertRoutineOccurrence } from "../../../lib/routines/validation";
+import { ROUTINE_ACTIONS, type RoutineDocument, type RoutineOccurrence, type RoutineRecord, type RoutineScope } from "../../../lib/routines/types";
+import { assertRoutineDocument, assertRoutineOccurrence } from "../../../lib/routines/validation";
 import { readBudgetLedger } from "../../../lib/state/budgets";
 import { budgetStatePath, routineStatePath } from "../../../lib/state/paths";
-import { mutateRoutineDocument, readRoutineDocument, updateRoutineTransaction } from "../../../lib/state/routines";
+import { readRoutineDocument } from "../../../lib/state/routines";
 import { RoutineRunner } from "../../../runner/routine-runner";
 import { createRoutineService, RoutineServiceError } from "./routine-service";
 
@@ -311,6 +311,7 @@ describe("T012 protected application routine service", () => {
     const record = enabled({ kind: "project", id: "alpha" }, { schedule: null }), fixture = wired();
     advance(); fixture.api.run(record.id, { expected_revision: record.revision }); await fixture.runner.idle();
     const completed = inventory()[0]!, ledgerBytes = readFileSync(ledgerPath);
+    const historicalFixture: RoutineDocument = structuredClone(readRoutineDocument(path)!);
     // Read-model history uses strictly validated synthetic unstarted denials;
     // only the first completed observation above invokes the real fake runner.
     for (let i = 0; i < 20; i++) {
@@ -329,8 +330,13 @@ describe("T012 protected application routine service", () => {
           signals_evaluated: 0, proposals_created: 0, reports_written: 0 },
         consumption: { attempts: 0, runtime_ms: 0, runtime_state: "complete", model_calls: 0, total_tokens: 0, workspace_writes: 0 } };
       assertRoutineOccurrence(entry);
-      mutateRoutineDocument((tx) => updateRoutineTransaction(tx, (doc) => { doc.occurrences[entry.id] = entry; }), path, at);
+      historicalFixture.occurrences[entry.id] = entry;
+      historicalFixture.revision++; historicalFixture.updated_at = at;
     }
+    // The owned fixture has no concurrent writer after idle; this is historical
+    // bootstrap, not batched production admission or a replacement runner.
+    assertRoutineDocument(historicalFixture);
+    writeFileSync(path, JSON.stringify(historicalFixture));
     const before = bytes(), history = fixture.api.detail(record.id), chronological = inventory().sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
     expect(history.occurrences).toHaveLength(20); expect(history.occurrences.map((entry) => entry.id)).not.toContain(chronological[0]?.id);
     expect(history.occurrences[0]?.id).toBe(chronological.at(-1)?.id); expect(inventory()).toHaveLength(21);

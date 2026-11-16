@@ -10,7 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BUDGET_DIMENSIONS, BUDGET_LIMITS, type BudgetAmounts, type BudgetLedger, type BudgetLimits, type BudgetTaskSubject } from "../budgets/types";
 import { assertBudgetLedger } from "../budgets/validation";
 import { systemProcessEnvironment } from "../security/environment";
-import { budgetStatePath, budgetsDir } from "./paths";
+import { budgetStatePath, budgetsDir, maintenanceControlPath, maintenanceGatePath } from "./paths";
+import { acquireMaintenanceExclusive, MaintenanceStateError, releaseMaintenanceExclusive, setMaintenanceHold } from "./maintenance";
 import { BudgetStateError, mutateBudgetLedger, readBudgetLedger, readBudgetTransaction, UnsupportedBudgetVersionError, updateBudgetTransaction, type BudgetTransaction } from "./budgets";
 import { StateLockConflictError } from "./store";
 
@@ -50,6 +51,21 @@ function setup(path: string, active = false): void {
 }
 function mutate(path: string, operation: (draft: BudgetLedger, time: string) => void, time = later): void { mutateBudgetLedger((tx) => updateBudgetTransaction(tx, operation), path, time); }
 function raw(path: string, bytes: string | Buffer): void { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); }
+function openedPath(fd: number): string | undefined {
+  const mock = vi.mocked(openSync).mock;
+  for (let index = mock.results.length - 1; index >= 0; index--) {
+    const result = mock.results[index]!;
+    if (result.type === "return" && result.value === fd) {
+      const file = mock.calls[index]?.[0]; return typeof file === "string" ? file : undefined;
+    }
+  }
+  return undefined;
+}
+function hold(state: string): void {
+  const ownership = acquireMaintenanceExclusive(state);
+  try { setMaintenanceHold(ownership, { operation_id: "synthetic-restore", kind: "restore" }); }
+  finally { releaseMaintenanceExclusive(ownership); }
+}
 function child(source: string, path: string) {
   const proc = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source, path], { cwd: process.cwd(), env: systemProcessEnvironment(), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }); children.add(proc);
   let out = "", err = ""; proc.stdout!.on("data", (data) => { out += String(data); }); proc.stderr!.on("data", (data) => { err += String(data); });
@@ -97,9 +113,13 @@ describe("T003 private budget ledger store", () => {
   it("rejects async and accessor/proxy thenables without invoking hooks or publishing drafts", () => {
     const f = fixture(); setup(f.path); const before = readFileSync(f.path), hook = vi.fn();
     expect(() => mutateBudgetLedger(async () => undefined, f.path, later)).toThrow(/synchronous/);
-    const thenable = Object.defineProperty({}, "then", { get: hook });
-    for (const result of [thenable, { then: hook }, new Proxy({}, { ownKeys: hook as never }), Promise.resolve()]) expect(() => mutateBudgetLedger(() => result, f.path, later)).toThrow(BudgetStateError);
     expect(() => mutateBudgetLedger((tx) => updateBudgetTransaction(tx, async (draft, time) => seed(draft, time, "2")), f.path, later)).toThrow(/synchronous/);
+    const thenable = Object.defineProperty({}, "then", { get: hook });
+    for (const result of [thenable, { then: hook }, new Proxy({}, { ownKeys: hook as never }), Promise.resolve()]) {
+      const owned = fixture(); setup(owned.path); const bytes = readFileSync(owned.path);
+      expect(() => mutateBudgetLedger(() => result, owned.path, later)).toThrow(BudgetStateError);
+      expect(readFileSync(owned.path)).toEqual(bytes); expect(existsSync(maintenanceGatePath(owned.state))).toBe(true);
+    }
     expect(hook).not.toHaveBeenCalled(); expect(readFileSync(f.path)).toEqual(before);
   });
   it("rolls back thrown/invalid/accessor drafts while revoking escaped transaction proofs", () => {
@@ -148,17 +168,24 @@ describe("T003 private budget ledger store", () => {
   });
   it.each(["write", "flush", "rename"])("preserves old snapshot and cleans only its owned stage on %s failure", async (kind) => {
     const f = fixture(); setup(f.path); raw(`${f.path}.unknown.tmp`, "unowned"); const before = readFileSync(f.path), actual = await vi.importActual<typeof import("node:fs")>("node:fs");
-    if (kind === "write") vi.mocked(writeFileSync).mockImplementationOnce(actual.writeFileSync).mockImplementationOnce(() => { throw new Error("SYNTHETIC-PRIVATE"); });
-    if (kind === "flush") vi.mocked(fsyncSync).mockImplementationOnce(actual.fsyncSync).mockImplementationOnce(() => { throw new Error("SYNTHETIC-PRIVATE"); });
-    if (kind === "rename") vi.mocked(renameSync).mockImplementationOnce(() => { throw new Error("SYNTHETIC-PRIVATE"); });
+    const stage = (file: string | undefined) => file?.startsWith(`${f.path}.`) && file.endsWith(".tmp") && !file.endsWith(".unknown.tmp");
+    if (kind === "write") vi.mocked(writeFileSync).mockImplementation((file, data, options) => {
+      if (typeof file === "number" && stage(openedPath(file))) throw new Error("SYNTHETIC-PRIVATE");
+      actual.writeFileSync(file, data, options);
+    });
+    if (kind === "flush") vi.mocked(fsyncSync).mockImplementation((fd) => { if (stage(openedPath(fd))) throw new Error("SYNTHETIC-PRIVATE"); actual.fsyncSync(fd); });
+    if (kind === "rename") vi.mocked(renameSync).mockImplementation((from, to) => { if (to === f.path) throw new Error("SYNTHETIC-PRIVATE"); actual.renameSync(from, to); });
     expect(() => mutate(f.path, (draft, time) => seed(draft, time, "2"))).toThrow(/replacement failed/); expect(readFileSync(f.path)).toEqual(before);
     expect(readdirSync(dirname(f.path)).sort()).toEqual(["budgets.json", "budgets.json.unknown.tmp"]); expect(existsSync(f.lock)).toBe(false);
   });
-  it("cleans only an owned uninitialized lock when token writing fails", () => {
-    const f = fixture(); vi.mocked(writeFileSync).mockImplementationOnce(() => { throw new Error("SYNTHETIC-PRIVATE"); }); expect(() => setup(f.path)).toThrow(/initialization failed/); expect(existsSync(f.lock)).toBe(false); expect(existsSync(f.path)).toBe(false);
+  it("cleans only an owned uninitialized lock when token writing fails", async () => {
+    const f = fixture(), actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(writeFileSync).mockImplementation((file, data, options) => { if (typeof file === "number" && openedPath(file) === f.lock) throw new Error("SYNTHETIC-PRIVATE"); actual.writeFileSync(file, data, options); });
+    expect(() => setup(f.path)).toThrow(/initialization failed/); expect(existsSync(f.lock)).toBe(false); expect(existsSync(f.path)).toBe(false);
   });
-  it("reports lock release failure honestly after replacement without undoing committed state", () => {
-    const f = fixture(); setup(f.path); vi.mocked(unlinkSync).mockImplementationOnce(() => { throw new Error("SYNTHETIC-PRIVATE"); });
+  it("reports lock release failure honestly after replacement without undoing committed state", async () => {
+    const f = fixture(); setup(f.path); const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(unlinkSync).mockImplementation((file) => { if (file === f.lock) throw new Error("SYNTHETIC-PRIVATE"); actual.unlinkSync(file); });
     expect(() => mutate(f.path, (draft, time) => seed(draft, time, "2"))).toThrow(/lock release failed/);
     expect(readBudgetLedger(f.path)!.revision).toBe(2); expect(readBudgetLedger(f.path)!.subjects["S-2"]).toBeDefined(); expect(existsSync(f.lock)).toBe(true);
     expect(() => mutateBudgetLedger(() => undefined, f.path, later)).toThrow(StateLockConflictError);
@@ -269,9 +296,93 @@ describe("T003 private budget ledger store", () => {
     const f = fixture(); setup(f.path, true);
     const holder = child(`import { mutateBudgetLedger,updateBudgetTransaction } from ${JSON.stringify(moduleUrl)}; import {readSync} from 'node:fs'; mutateBudgetLedger(tx=>{process.stdout.write('LOCKED\\n');readSync(0,Buffer.alloc(1),0,1,null);updateBudgetTransaction(tx,(d,at)=>{d.charges['C-1'].runtime_ms=1;d.charges['C-1'].updated_at=at;});},process.argv[1],${JSON.stringify(later)});`, f.path);
     await new Promise<void>((ready, reject) => { let output = ""; holder.proc.stdout!.on("data", (data) => { output += String(data); if (output.includes("LOCKED")) ready(); }); holder.proc.on("error", reject); holder.proc.on("close", (code) => reject(new Error(`holder exited before locking: ${code}`))); });
+    const gateBytes = readFileSync(maintenanceGatePath(f.state));
+    expect(() => acquireMaintenanceExclusive(f.state)).toThrow(StateLockConflictError);
+    expect(readFileSync(maintenanceGatePath(f.state))).toEqual(gateBytes);
     const contender = child(`import {mutateBudgetLedger} from ${JSON.stringify(moduleUrl)};try{mutateBudgetLedger(()=>{throw new Error('must not run')},process.argv[1],${JSON.stringify(later)});process.exitCode=2;}catch(e){if(e.constructor.name!=='StateLockConflictError')throw e;process.stdout.write('CONFLICT');}`, f.path);
     expect(await contender.done).toEqual({ code: 0, out: "CONFLICT", err: "" }); holder.proc.stdin!.end("x"); expect((await holder.done).code).toBe(0); expect(existsSync(f.lock)).toBe(false);
     const restarted = child(`import {readBudgetLedger,mutateBudgetLedger,updateBudgetTransaction} from ${JSON.stringify(moduleUrl)};if(readBudgetLedger(process.argv[1]).charges['C-1'].runtime_ms!==1)throw new Error('lost snapshot');mutateBudgetLedger(tx=>updateBudgetTransaction(tx,(d,at)=>{d.charges['C-1'].runtime_ms=2;d.charges['C-1'].updated_at=at;}),process.argv[1],${JSON.stringify(later)});`, f.path);
     expect(await restarted.done).toEqual({ code: 0, out: "", err: "" }); expect(readBudgetLedger(f.path)!.charges["C-1"]!.runtime_ms).toBe(2); assertBudgetLedger(readBudgetLedger(f.path));
   }, 10_000);
+});
+
+describe("T015 budget cooperative maintenance fencing", () => {
+  it.each(["promise", "thenable", "getter", "inherited-then", "proxy"].flatMap((kind) => ["outer", "update"].map((phase) => [kind, phase])))
+    ("retains unknown ownership after a normal callback returns %s from %s without getter/proxy effects", (kind, phase) => {
+      const f = fixture(); setup(f.path); const before = readFileSync(f.path), hook = vi.fn(); let escaped: BudgetTransaction | undefined;
+      const result = kind === "promise" ? Promise.resolve() : kind === "thenable" ? { then: hook }
+        : kind === "getter" ? Object.defineProperty({}, "then", { get: hook })
+          : kind === "inherited-then" ? Object.create(Object.defineProperty({}, "then", { get: hook }))
+            : new Proxy({}, { get: hook, ownKeys: hook as never, getPrototypeOf: hook as never });
+      expect(() => mutateBudgetLedger((tx) => {
+        escaped = tx;
+        if (phase === "update") return updateBudgetTransaction(tx, (draft, time) => { seed(draft, time, "2"); return result; });
+        updateBudgetTransaction(tx, (draft, time) => seed(draft, time, "2")); return result;
+      }, f.path, later)).toThrow(BudgetStateError);
+      expect(hook).not.toHaveBeenCalled(); expect(readFileSync(f.path)).toEqual(before); expect(existsSync(f.lock)).toBe(false);
+      const marker = readFileSync(maintenanceGatePath(f.state)), callback = vi.fn();
+      expect(() => mutateBudgetLedger(callback, f.path, later)).toThrow(StateLockConflictError);
+      expect(() => acquireMaintenanceExclusive(f.state)).toThrow(StateLockConflictError);
+      expect(() => updateBudgetTransaction(escaped, callback)).toThrow(BudgetStateError); expect(callback).not.toHaveBeenCalled();
+      expect(readFileSync(f.path)).toEqual(before); expect(readFileSync(maintenanceGatePath(f.state))).toEqual(marker);
+    });
+  it("refuses a durable hold before creating a missing budget directory or running a callback", () => {
+    const f = fixture(); hold(f.state); const control = readFileSync(maintenanceControlPath(f.state));
+    const callback = vi.fn((tx: BudgetTransaction) => updateBudgetTransaction(tx, seed));
+    expect(() => mutateBudgetLedger(callback, f.path, at)).toThrow(MaintenanceStateError);
+    expect(callback).not.toHaveBeenCalled(); expect(existsSync(dirname(f.path))).toBe(false);
+    expect(existsSync(dirname(f.lock))).toBe(false); expect(readBudgetLedger(f.path)).toBeNull();
+    expect(readFileSync(maintenanceControlPath(f.state))).toEqual(control);
+  });
+  it("retains unknown accounting, exact holds and proven high-water without accepting a held settlement", () => {
+    const f = fixture(); setup(f.path, true);
+    mutate(f.path, (draft, time) => {
+      const reserve = draft.reservations["R-1"]!, charge = draft.charges["C-1"]!;
+      reserve.status = "unknown"; reserve.uncertain_dimensions = ["runtime_ms", "total_tokens", "concurrent_reads"];
+      reserve.revision++; reserve.updated_at = time; charge.status = "terminal"; charge.runtime_state = charge.usage_state = "unknown";
+      charge.runtime_ms = 27; charge.observed_total_tokens = 12; charge.updated_at = time;
+    });
+    const before = readFileSync(f.path), stamp = lstatSync(f.path).mtimeMs; hold(f.state);
+    const callback = vi.fn((tx: BudgetTransaction) => updateBudgetTransaction(tx, (draft) => { draft.reservations["R-1"]!.held = amounts(); }));
+    expect(() => mutateBudgetLedger(callback, f.path, later)).toThrow(MaintenanceStateError);
+    expect(callback).not.toHaveBeenCalled(); expect(readFileSync(f.path)).toEqual(before); expect(lstatSync(f.path).mtimeMs).toBe(stamp);
+    const snapshot = readBudgetLedger(f.path)!;
+    expect(snapshot.reservations["R-1"]!.held).toEqual(amounts({ runtime_ms: 1000, total_tokens: 100, concurrent_reads: 1 }));
+    expect(snapshot.charges["C-1"]!.observed_total_tokens).toBe(12); expect(snapshot.charges["C-1"]!.usage_state).toBe("unknown");
+  });
+  it("blocks private exclusive ownership without treating inspected budget bytes as authority", () => {
+    const f = fixture(); setup(f.path); const before = readFileSync(f.path), ownership = acquireMaintenanceExclusive(f.state), callback = vi.fn();
+    try {
+      expect(() => mutateBudgetLedger(callback, f.path, later)).toThrow(StateLockConflictError);
+      expect(callback).not.toHaveBeenCalled(); expect(readFileSync(f.path)).toEqual(before);
+      expect(readBudgetLedger(f.path)!.revision).toBe(1);
+    } finally { releaseMaintenanceExclusive(ownership); }
+    mutate(f.path, (draft, time) => seed(draft, time, "2")); expect(readBudgetLedger(f.path)!.revision).toBe(2);
+  });
+  it.each(["{", "null", '{"schema_version":2}', '{"schema_version":1}'])
+    ("preserves malformed or unsupported maintenance control before callback and store effects %s", (bytes) => {
+      const f = fixture(); raw(maintenanceControlPath(f.state), bytes); const callback = vi.fn();
+      expect(() => mutateBudgetLedger(callback, f.path, at)).toThrow(MaintenanceStateError);
+      expect(callback).not.toHaveBeenCalled(); expect(readFileSync(maintenanceControlPath(f.state), "utf8")).toBe(bytes);
+      expect(existsSync(f.path)).toBe(false); expect(existsSync(dirname(f.lock))).toBe(false);
+    });
+  it("rejects a late transaction when its root gate is replaced and preserves both old payload and the unknown owner", () => {
+    const f = fixture(); setup(f.path); const before = readFileSync(f.path), callback = vi.fn(seed); let escaped: BudgetTransaction | undefined;
+    expect(() => mutateBudgetLedger((tx) => {
+      escaped = tx; updateBudgetTransaction(tx, (draft, time) => seed(draft, time, "2"));
+      raw(maintenanceGatePath(f.state), "unknown replacement");
+      expect(() => updateBudgetTransaction(tx, callback)).toThrow(); expect(callback).not.toHaveBeenCalled();
+    }, f.path, later)).toThrow();
+    expect(readFileSync(f.path)).toEqual(before); expect(readFileSync(maintenanceGatePath(f.state), "utf8")).toBe("unknown replacement");
+    expect(() => updateBudgetTransaction(escaped, callback)).toThrow(BudgetStateError); expect(callback).not.toHaveBeenCalled();
+    expect(readdirSync(dirname(f.path))).toEqual(["budgets.json"]);
+  });
+  it("uses a custom file's dedicated parent root rather than a shared temporary maintenance or store lock", () => {
+    const f = fixture(), path = join(f.root, "custom-ledger.json"), callback = vi.fn();
+    mutateBudgetLedger((tx) => updateBudgetTransaction(tx, seed), path, at);
+    expect(readBudgetLedger(path)!.revision).toBe(1); expect(existsSync(join(f.root, "locks", "budgets.lock"))).toBe(false);
+    hold(f.root); const before = readFileSync(path);
+    expect(() => mutateBudgetLedger(callback, path, later)).toThrow(MaintenanceStateError);
+    expect(callback).not.toHaveBeenCalled(); expect(readFileSync(path)).toEqual(before);
+  });
 });

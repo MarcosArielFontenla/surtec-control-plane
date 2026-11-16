@@ -1,9 +1,22 @@
 import { randomUUID } from "node:crypto";
+import { lstatSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { readTask, updateTask } from "../lib/state/store";
 import { readIssueDocument } from "../lib/state/issues";
 import { mutateWorkflowDocument, readWorkflowDocument } from "../lib/state/workflows";
-import type { TaskRecord } from "../lib/state/types";
+import type { TaskEvent, TaskRecord } from "../lib/state/types";
+import { appendTaskEvent } from "../lib/state/events";
+import { eventsDir } from "../lib/state/paths";
+import { validateIssueDocument, validateTaskEvent, validateTaskRecord } from "../lib/state/validation";
+import { assertWorkflowDocument } from "../lib/workflows/validation";
+import { PolicyService } from "../lib/policy/service";
+import { localGitEnvironment } from "../lib/security/environment";
+import { managedWorktreeIdentity } from "./worktree";
+import { assertUnchargedClaimFacts, claimRecoveryEventPayload, claimRecoveryHash, claimRecoveryProvenance,
+  inspectUnchargedClaimPackage, prepareUnchargedClaimRecovery, readClaimRecoveryFile, requeuedClaimTask,
+  unchargedClaimPackage, type UnchargedClaimRecoveryRequest } from "../lib/workflows/uncharged-claim-recovery";
 import type { GovernedWorkflow, WorkflowDocument } from "../lib/workflows/types";
 import { applicableWorkflowReviews, assertOwnedWorkflowIssueProgress, assertTerminalWorkflowTask, hasCurrentRiskAcknowledgement, sealWorkflowReviewReceipt, workflowReviewAllowsContinuation } from "../lib/workflows/review-evidence";
 import { contextHash } from "../lib/context/assemble";
@@ -16,8 +29,10 @@ import { createWorkflowContextService } from "../dashboard/src/server/workflow-c
 import { resolveWorkflowTemplate } from "../lib/workflows/templates";
 import { evaluateWorkflowBudgetStop, hasConcreteCorrectionFinding, independentWorkflowBudgetStopSummary, INDEPENDENT_WORKFLOW_BUDGET_STOP_PREFIX, projectWorkflowConsumption } from "../lib/workflows/policy";
 import { prepareWorkflowStage, validateWorkflowStageOutput } from "./workflow-stage";
-import { assertBudgetWorkflowExecution, budgetExecutionOwner, inspectBudgetStopReceipt } from "./task-orchestrator";
+import { assertBudgetWorkflowExecution, assertStoppedClaimRecoveryOwner, budgetExecutionOwner, inspectBudgetStopReceipt } from "./task-orchestrator";
 import { readBudgetLedger } from "../lib/state/budgets";
+import { approvedPlannerRecovery, assertPlannerRecoveryPlainData, assertRetainedPlannerTask } from "../lib/workflows/planner-recovery";
+import { validateTerminalUsageEvidence } from "./terminal-usage-evidence";
 
 // Process-local identity, never persisted, accepted from JSON or inferred from
 // a live task lease alone. Durable authority is rechecked independently.
@@ -53,6 +68,148 @@ export class WorkflowOrchestrator {
     if (this.control && (this.control !== control || this.workerId !== workerId)) throw new ContextContractError("Workflow controller already has an owning worker");
     this.control = control; this.workerId = workerId;
   }
+  /** One explicit internal recovery; no public route and no automatic tick caller. */
+  recoverUnchargedClaim(input: UnchargedClaimRecoveryRequest, workerProof: object) {
+    const requireCurrent = (ok: unknown): void => { if (!ok) throw new ContextContractError("Uncharged claim recovery lost its exact current evidence or owner"); };
+    requireCurrent(assertStoppedClaimRecoveryOwner(workerProof, this) === this.workerId);
+    assertPlannerRecoveryPlainData(input);
+    const keys = ["workflowId", "expectedRevision", "expectedIssueRevision", "expectedTaskRevision", "packageFingerprint", "runtimeRoot", "archiveRoot", "approvalId", "confirm"];
+    requireCurrent(Object.keys(input).length === keys.length && Reflect.ownKeys(input).length === keys.length && Object.keys(input).every((key) => keys.includes(key)) && input.confirm === true
+      && [input.expectedRevision, input.expectedIssueRevision, input.expectedTaskRevision].every((value) => Number.isSafeInteger(value) && value >= 1)
+      && typeof input.workflowId === "string" && typeof input.packageFingerprint === "string");
+    const observed = readWorkflowDocument();
+    requireCurrent(Object.hasOwn(observed.workflows, input.workflowId) && observed.workflows[input.workflowId]!.revision === input.expectedRevision
+      && observed.workflows[input.workflowId]!.status === "needs-decision" && observed.workflows[input.workflowId]!.uncharged_claim_recovery?.phase !== "ready");
+    const proof = inspectUnchargedClaimPackage({ runtimeRoot: input.runtimeRoot, archiveRoot: input.archiveRoot });
+    const packageFacts = unchargedClaimPackage(proof);
+    assertWorkflowDocument(packageFacts.document);
+    requireCurrent(validateTaskRecord(packageFacts.task) && validateIssueDocument(packageFacts.issues) && packageFacts.events.every((entry) => validateTaskEvent(entry)));
+    const original = assertUnchargedClaimFacts(proof), originalOwner = original.document.workflows[input.workflowId];
+    requireCurrent(originalOwner && original.archive_fingerprint === input.packageFingerprint);
+    const taskId = original.task.envelope.id, eventPath = join(eventsDir(), taskId + ".jsonl");
+    const live = () => ({ document: readWorkflowDocument(), issues: readIssueDocument(), task: readTask(taskId), events: readClaimRecoveryFile(eventPath) });
+    let facts = live(), owner = facts.document.workflows[input.workflowId];
+    requireCurrent(owner && owner.revision === input.expectedRevision && facts.task?.revision === input.expectedTaskRevision
+      && facts.issues.issues[originalOwner!.issue_id]?.revision === input.expectedIssueRevision && equalIssue(facts.issues, original.issues));
+    const existing = owner!.uncharged_claim_recovery;
+    requireCurrent(!existing || existing.phase !== "ready" && existing.approval_id === input.approvalId);
+    const receipt = existing ?? prepareUnchargedClaimRecovery(proof, this.now().toISOString(), input.approvalId);
+    const nextTask = requeuedClaimTask(original.task, receipt.created_at);
+    const messages = [
+      "Explicit pre-charge recovery prepared; no execution authority issued.",
+      "Exact retained task and recovery event verified; dispatch remains blocked.",
+      "One uncharged claim recovered; original claim retained and current execution guards still apply.",
+    ];
+    function equalIssue(a: unknown, b: unknown) { return isDeepStrictEqual(a, b); }
+    const verifyDocument = (document: WorkflowDocument) => {
+      const current = document.workflows[input.workflowId]!, r = current.uncharged_claim_recovery;
+      if (!r) { requireCurrent(isDeepStrictEqual(document, original.document)); return; }
+      requireCurrent(r.fingerprint === receipt.fingerprint && r.archive_fingerprint === original.archive_fingerprint
+        && isDeepStrictEqual(claimRecoveryProvenance(r), claimRecoveryProvenance(receipt)));
+      const index = r.phase === "prepared" ? 1 : r.phase === "task-requeued" ? 2 : 3;
+      const expected = structuredClone(original.document), expectedOwner = expected.workflows[input.workflowId]!;
+      expectedOwner.uncharged_claim_recovery = structuredClone(r); expectedOwner.revision += index; expectedOwner.updated_at = r.created_at;
+      expectedOwner.next_action = messages[index - 1]!;
+      if (r.phase === "ready") { expectedOwner.status = "running"; expectedOwner.recovery_state = "none"; expectedOwner.blocked_reason = null; expectedOwner.counters.accounting_complete = true; }
+      const added = document.events.slice(original.document.events.length);
+      requireCurrent(added.length === index);
+      for (const [i, event] of added.entries()) requireCurrent(event.workflow_id === input.workflowId && event.stage_id === r.stage_id
+        && event.execution_id === null && event.type === "reconciled" && event.summary === messages[i]
+        && event.at === r.created_at && event.revision === originalOwner!.revision + i + 1);
+      expected.events.push(...structuredClone(added));
+      requireCurrent(isDeepStrictEqual(document, expected));
+    };
+    const verifyTaskEvents = (current: ReturnType<typeof live>, allowOriginal: boolean) => {
+      requireCurrent(current.task && isDeepStrictEqual(current.issues, original.issues) && current.events.startsWith(original.events_text));
+      const extra = current.events.slice(original.events_text.length).trim();
+      if (allowOriginal && isDeepStrictEqual(current.task, original.task) && extra === "") return null;
+      requireCurrent(isDeepStrictEqual(current.task, nextTask) && extra.length > 0);
+      const lines = extra.split(/\r?\n/); requireCurrent(lines.length === 1);
+      const event = JSON.parse(lines[0]!) as TaskEvent;
+      requireCurrent(validateTaskEvent(event) && event.task_id === taskId && event.type === "lease-recovered" && event.revision === nextTask.revision
+        && event.run_id === receipt.original_run_id && event.attempt === 1 && event.at === receipt.created_at
+        && isDeepStrictEqual(event.payload, claimRecoveryEventPayload(receipt)));
+      const r = current.document.workflows[input.workflowId]!.uncharged_claim_recovery;
+      if (r?.phase !== "prepared") requireCurrent(event.event_id === r?.event_id && claimRecoveryHash(event) === r?.event_fingerprint);
+      return event;
+    };
+    const verifyContextAndTree = () => {
+      requireCurrent(assertStoppedClaimRecoveryOwner(workerProof, this) === this.workerId);
+      const qualified = unchargedClaimPackage(inspectUnchargedClaimPackage({ runtimeRoot: input.runtimeRoot, archiveRoot: input.archiveRoot }));
+      requireCurrent(qualified.archive_fingerprint === original.archive_fingerprint && qualified.source_fingerprint === original.source_fingerprint);
+      const projected = structuredClone(original.document), projectedOwner = projected.workflows[input.workflowId]!;
+      projectedOwner.status = "running"; projectedOwner.recovery_state = "none"; projectedOwner.blocked_reason = null; projectedOwner.counters.accounting_complete = true;
+      const context = createWorkflowContextService(this.repoRoot, { readWorkflows: () => projected, readIssues: () => original.issues,
+        readTask: (id) => id === taskId ? nextTask : readTask(id) });
+      const assembled = context.revalidateTask(nextTask);
+      requireCurrent(isDeepStrictEqual(assembled.binding, original.task.envelope.context_admission)
+        && isDeepStrictEqual(assembled.preview.manifest, original.task.envelope.context_manifest)
+        && assembled.instructions === original.task.envelope.instructions);
+      const allowed = new PolicyService(this.repoRoot).authorizeTask(nextTask.envelope), sourceRepo = allowed.project.repo_path;
+      requireCurrent(sourceRepo);
+      const tree = managedWorktreeIdentity(sourceRepo!, taskId, nextTask.envelope.agent);
+      let absent = false;
+      try { lstatSync(tree.worktreePath); }
+      catch (error) { absent = (error as NodeJS.ErrnoException).code === "ENOENT"; }
+      requireCurrent(absent);
+      const git = (args: string[]) => spawnSync("git", ["--no-optional-locks", "--no-replace-objects", "-c", "core.fsmonitor=false", "-C", sourceRepo!, ...args],
+        { env: localGitEnvironment(), encoding: "utf8", windowsHide: true, timeout: 30_000, maxBuffer: 1024 * 1024 });
+      const listing = git(["worktree", "list", "--porcelain", "-z"]);
+      requireCurrent(listing.status === 0 && !listing.error && !listing.stdout.split("\0").some((field) =>
+        field === "branch refs/heads/" + tree.branch || field.startsWith("worktree ") && resolve(field.slice(9)).toLowerCase() === resolve(tree.worktreePath).toLowerCase()));
+      const branch = git(["show-ref", "--verify", "--quiet", "refs/heads/" + tree.branch]);
+      requireCurrent(branch.status === 1 && !branch.error);
+    };
+    const fence = (snapshot: ReturnType<typeof live>) => {
+      requireCurrent(assertStoppedClaimRecoveryOwner(workerProof, this) === this.workerId);
+      const current = live(); requireCurrent(isDeepStrictEqual(current, snapshot));
+    };
+    verifyDocument(facts.document); verifyTaskEvents(facts, !existing || existing.phase === "prepared"); verifyContextAndTree();
+    if (!existing) {
+      mutateWorkflowDocument((document) => {
+        fence(facts); requireCurrent(isDeepStrictEqual(document, facts.document));
+        const current = document.workflows[input.workflowId]!; current.uncharged_claim_recovery = structuredClone(receipt);
+        current.next_action = messages[0]!; change(document, current, receipt.created_at, "reconciled", messages[0]!);
+      });
+      facts = live(); verifyDocument(facts.document);
+    }
+    owner = facts.document.workflows[input.workflowId]!;
+    if (owner!.uncharged_claim_recovery!.phase === "prepared") {
+      let event = verifyTaskEvents(facts, true);
+      if (!event) {
+        updateTask(taskId, (task) => {
+          fence(facts); requireCurrent(isDeepStrictEqual(task, original.task));
+          const { revision: _nextRevision, ...replacement } = nextTask;
+          Object.assign(task, replacement);
+        });
+        event = appendTaskEvent({ task_id: taskId, type: "lease-recovered", revision: nextTask.revision!, run_id: receipt.original_run_id,
+          attempt: 1, payload: claimRecoveryEventPayload(receipt), at: receipt.created_at });
+      }
+      facts = live(); verifyDocument(facts.document); verifyTaskEvents(facts, false); verifyContextAndTree();
+      const retainedEvent = event;
+      mutateWorkflowDocument((document) => {
+        fence(facts); requireCurrent(isDeepStrictEqual(document, facts.document));
+        const current = document.workflows[input.workflowId]!, r = current.uncharged_claim_recovery!;
+        r.phase = "task-requeued"; r.event_id = retainedEvent.event_id; r.event_fingerprint = claimRecoveryHash(retainedEvent);
+        current.next_action = messages[1]!; change(document, current, receipt.created_at, "reconciled", messages[1]!);
+      });
+      facts = live(); verifyDocument(facts.document);
+    }
+    verifyTaskEvents(facts, false); verifyContextAndTree();
+    mutateWorkflowDocument((document) => {
+      fence(facts); requireCurrent(isDeepStrictEqual(document, facts.document));
+      const current = document.workflows[input.workflowId]!, r = current.uncharged_claim_recovery!;
+      requireCurrent(r.phase === "task-requeued");
+      r.phase = "ready"; current.status = "running"; current.recovery_state = "none"; current.blocked_reason = null;
+      current.counters.accounting_complete = true; current.next_action = messages[2]!;
+      change(document, current, receipt.created_at, "reconciled", messages[2]!);
+    });
+    const final = live(); verifyDocument(final.document); verifyTaskEvents(final, false);
+    const w = final.document.workflows[input.workflowId]!;
+    return { workflow_id: w.id, revision: w.revision, status: w.status, recovery_id: receipt.id, phase: w.uncharged_claim_recovery!.phase,
+      task_id: taskId, task_revision: final.task!.revision!, worker_started: false as const };
+  }
+
   private facts(task: TaskRecord) {
     const admission = task.envelope.context_admission;
     if (admission?.schema_version !== 2) throw new ContextContractError("A workflow admission is required");
@@ -324,10 +481,12 @@ export class WorkflowOrchestrator {
   }
   private advanceCompletedStage(id: string): void {
     const document = readWorkflowDocument(), owner = document.workflows[id], stage = owner?.current_stage_id ? document.stages[owner.current_stage_id] : null;
-    if (!owner || owner.status !== "running" || !stage || stage.status !== "completed" || !stage.task_id) return;
+    const human = stage ? approvedPlannerRecovery(document, stage) : null;
+    if (!owner || owner.status !== "running" || !stage || (stage.status !== "completed" && !human) || !stage.task_id) return;
     const task = readTask(stage.task_id), issues = readIssueDocument(), issue = issues.issues[owner.issue_id], admission = task?.envelope.context_admission;
     if (task && Object.getOwnPropertyDescriptor(task.envelope, "budget_admission")) return;
-    assertTerminalWorkflowTask(document, stage, task);
+    if (human) assertRetainedPlannerTask(document, stage, task, validateTerminalUsageEvidence);
+    else assertTerminalWorkflowTask(document, stage, task);
     if (!issue || admission?.schema_version !== 2) throw new ContextContractError("Completed stage lost its issue admission");
     assertOwnedWorkflowIssueProgress(document, owner, issues, admission.issue_revision);
     const evidenceIssues = createIssueService(this.repoRoot, { now: () => this.now() });
@@ -353,7 +512,7 @@ export class WorkflowOrchestrator {
       }
     }
     if (stage.kind === "planning") {
-      if (stage.output?.kind !== "plan" || stage.output.status !== "completed" || stage.output.scope_change_required) {
+      if (stage.output?.kind !== "plan" || (stage.output.status !== "completed" && !human) || stage.output.scope_change_required) {
         this.block(id, "Planner output is incomplete or requests an unapproved scope change; human direction is required.");
         return;
       }
@@ -443,7 +602,7 @@ export class WorkflowOrchestrator {
             continue;
           }
           if (owner.status !== "running") continue;
-          if (stage.status === "completed") { this.advanceCompletedStage(owner.id); continue; }
+          if (stage.status === "completed" || approvedPlannerRecovery(snapshot, stage)) { this.advanceCompletedStage(owner.id); continue; }
           const intent = Object.values(snapshot.admission_intents).find((entry) => entry.stage_id === stage.id);
           if (intent?.status === "reserved") { this.service.reconcileAdmission(owner.id); continue; }
           if (!task) { this.block(owner.id, "Reserved task is unavailable; its identity cannot be replaced."); continue; }

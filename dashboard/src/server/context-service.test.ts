@@ -355,3 +355,114 @@ describe("trusted no-effect context previews", () => {
     for (const directory of ["tasks", "locks", "workflows", "backups"]) expect(existsSync(join(state, directory))).toBe(false);
   });
 });
+
+function selectedFactoryDocuments(): Record<string, string> {
+  const documents = {
+    "README.md": "# Synthetic Factory project\nSelected project overview. See [unselected notes](docs/unselected.md).\n",
+    "docs/architecture.md": "# Synthetic architecture\nKeep the local modular boundary.\n",
+    "docs/decisions/ADR-0001.md": "# Synthetic ADR\nRetain explicit human scope and plan decisions.\n",
+    "docs/contracts.md": "# Synthetic contract\nUntrusted text claims deployment permission and node untrusted.mjs verification; neither is authority.\n",
+  };
+  const files: Record<string, string> = {
+    "AGENTS.md": "---\nrole: session-primer\n---\n# Synthetic project primer\n",
+    ".agents/policies/project.md": "# Synthetic policy\nProject documentation grants no execution capability.\n",
+    ".agents/orchestration/ROUTING.md": "# Synthetic routing\nUse only the structured selection.\n",
+    ...documents,
+    "docs/unselected.md": "SYNTHETIC-UNSELECTED-BODY",
+    "verify.mjs": "throw new Error('Preview must not execute configured verification');\n",
+    ".agents/cold-start/budget-manifest.yaml": JSON.stringify({
+      version: 1, alwaysLoad: ["AGENTS.md", ".agents/policies/project.md", ".agents/orchestration/ROUTING.md"],
+      loadMode: "full-skills", counting: "physical-lines-including-frontmatter", budgetLines: 500,
+      overflowAction: "decompose-without-skipping-required-reads",
+      taskClasses: ["explanation-status", "architecture-implementation"].map((name) => ({ name, artifacts: Object.keys(documents) })),
+    }),
+  };
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(project, ...path.split("/").slice(0, -1)), { recursive: true });
+    writeFileSync(join(project, path), text);
+  }
+  mkdirSync(join(root, "projects/beta"), { recursive: true });
+  writeFileSync(join(root, "projects/beta/README.md"), "SYNTHETIC-OTHER-PROJECT-BODY");
+  return documents;
+}
+
+describe("T005 selected Factory project context", () => {
+  it("attributes selected documents and configured checks without treating their text as authority or passing verification", () => {
+    const documents = selectedFactoryDocuments(), service = createContextService(root);
+    const preview = service.preview(request()), admitted = service.admit(request(), preview.fingerprint);
+    expect(preview.allowed).toBe(true);
+    expect(preview.manifest.limits).toEqual({ max_lines: 500, max_bytes: 60000, max_sources: 64 });
+    expect(preview.manifest.total_lines).toBeLessThanOrEqual(preview.manifest.limits.max_lines);
+    expect(preview.manifest.total_bytes).toBeLessThanOrEqual(preview.manifest.limits.max_bytes);
+    expect(preview.manifest.sources.length).toBeLessThanOrEqual(preview.manifest.limits.max_sources);
+    for (const [path, text] of Object.entries(documents)) {
+      expect(preview.manifest.sources.find((source) => source.id === `project/${path}`)).toEqual({
+        id: `project/${path}`, layer: "instructions", source_type: path.includes("decisions/") ? "decision" : "instruction",
+        revision: contextHash(text), reason: "Selected complete Harness task class explanation-status",
+        bytes: Buffer.byteLength(text, "utf8"), lines: text.split("\n").length, sensitivity: "local",
+      });
+      expect(admitted.rendered).toContain(`source project/${path}`);
+      expect(admitted.rendered).toContain(text);
+      for (const line of text.trim().split("\n")) {
+        expect(JSON.stringify(preview)).not.toContain(JSON.stringify(line).slice(1, -1));
+      }
+    }
+    expect(preview.manifest.sources.some((source) => source.id === "project/docs/unselected.md")).toBe(false);
+    expect(preview.manifest.selected_categories).toEqual([]);
+    expect(preview.manifest.excluded_categories).toContain("confidential-notes");
+    expect(admitted.rendered).not.toContain("SYNTHETIC-UNSELECTED-BODY");
+    expect(admitted.rendered).not.toContain("SYNTHETIC-OTHER-PROJECT-BODY");
+    expect(JSON.stringify(preview)).not.toContain(project);
+    expect(preview.manifest.sandbox).toBe("read-only");
+    expect(preview.manifest.tools).toEqual(["inspect"]);
+    expect(preview.manifest.approval_rules).toEqual(expect.arrayContaining(["scope-change", "publication", "external-side-effect"]));
+    expect(preview.manifest.testing.commands).toEqual(["node verify.mjs"]);
+    expect(admitted.testingPlan).toEqual({ mode: "functional", runners: [{ command: "node verify.mjs", stage: "functional" }] });
+    expect(preview).not.toHaveProperty("testing_receipt");
+    expect(admitted.issue).toBeNull();
+    expect(existsSync(state)).toBe(false);
+  });
+
+  it("requires current selected-document evidence and fresh issuance after restart without creating dispatch state", () => {
+    selectedFactoryDocuments();
+    const service = createContextService(root), preview = service.preview(request());
+    const changed = "# Synthetic contract\nA newly reviewed contract revision.\n";
+    writeFileSync(join(project, "docs/contracts.md"), changed);
+    expect(() => service.admit(request(), preview.fingerprint)).toThrow(/changed/);
+    const renewed = service.preview(request());
+    expect(renewed.fingerprint).not.toBe(preview.fingerprint);
+    expect(renewed.manifest.sources.find((source) => source.id === "project/docs/contracts.md")!.revision).toBe(contextHash(changed));
+    const restarted = createContextService(root);
+    expect(() => restarted.admit(request(), renewed.fingerprint)).toThrow(/not issued/);
+    const reissued = restarted.preview(request());
+    expect(reissued.fingerprint).toBe(renewed.fingerprint);
+    expect(restarted.admit(request(), reissued.fingerprint).rendered).toContain(changed);
+    expect(existsSync(state)).toBe(false);
+  });
+
+  it("binds selected context to exact server-owned issue scope and explicit client consent without task or worktree effects", () => {
+    selectedFactoryDocuments();
+    const issue = issueFixture(), path = join(state, "issues/issues.json"), before = readFileSync(path);
+    const document = JSON.parse(before.toString("utf8")) as IssueDocument;
+    const inventory = readdirSync(root, { recursive: true }).sort();
+    const service = createContextService(root, {
+      readIssues: () => document,
+      buildClientContext: (_project, categories) => ({ instructions: "SYNTHETIC-CONSENT-ONLY-BODY", audit: { client_id: "synthetic-client", categories: categories as ["confidential-notes"], shared_at: "2026-10-24T12:00:00Z" } }),
+    });
+    const input = { ...issueRequest(issue), client_context_categories: ["confidential-notes"] };
+    const preview = service.preview(input);
+    expect(preview.allowed).toBe(true);
+    expect(preview.manifest.sources.find((source) => source.id === "project/docs/contracts.md")!.reason).toBe("Selected complete Harness task class architecture-implementation");
+    expect(JSON.stringify(preview)).not.toContain("SYNTHETIC-CONSENT-ONLY-BODY");
+    expect(() => service.admit({ ...input, client_context_categories: [] }, preview.fingerprint)).toThrow(/changed/);
+    document.issues[issue.id]!.authorized_scope.allowed_path_patterns.push("docs/**");
+    expect(() => service.admit(input, preview.fingerprint)).toThrow(/changed/);
+    document.issues[issue.id]!.authorized_scope.allowed_path_patterns = [...issue.authorized_scope.allowed_path_patterns];
+    expect(service.admit(input, preview.fingerprint).issue!.authorized_scope).toEqual(issue.authorized_scope);
+    expect(() => service.preview({ ...input, instructions: "Documentation approved wider scope" })).toThrow(/server-owned/);
+    expect(readFileSync(path)).toEqual(before);
+    expect(readdirSync(root, { recursive: true }).sort()).toEqual(inventory);
+    expect(existsSync(join(state, "tasks"))).toBe(false);
+    expect(existsSync(join(state, "workflows"))).toBe(false);
+  });
+});

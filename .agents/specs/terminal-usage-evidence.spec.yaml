@@ -1,0 +1,84 @@
+schema_version: 1
+name: Factory Local F3 - operational terminal usage evidence
+entity: AgentRunResult
+domains: [agent-runtime, task-accounting, execution-evidence]
+purpose: Qualify exact fresh-turn reported usage through a strict operational transcript and normal drained transport without inferring provider billing finality or reviving historical attempts.
+requirements:
+  - id: req-basis
+    description: >-
+      Define positive completeness only as operational reported usage for the first turn of a fresh thread. Require a zero baseline, exact task/run/context/thread/turn binding, explicit final_answer assistant item, a subsequent valid cumulative usage snapshot, successful terminal notification, normal native exit and both EOFs. Provider billing finality is not claimed. Resumed, unsupported-order and unknown-phase transcripts remain unknown.
+  - id: req-usage
+    description: >-
+      Preserve all six-field snapshot validity, monotonicity, baseline and duplicate rules, five-field normalized usage and high-water charging. Relevant malformed/regressing or post-terminal usage irreversibly prevents completeness without erasing already proven consumption. Preserve interruption on the second cumulative sample of 44954 under the unchanged 40000-token role cap.
+  - id: req-drain
+    description: >-
+      After a matching successful terminal candidate finish stdin normally and await native exit 0 without signal, actual stdout and stderr EOF, final frame parsing, notification queue and all server-request handlers. Keep current cancellation, leases and active-runtime accounting through drain; no pending item/request or late relevant activity may qualify. Stream close alone, silence, forced kill, timeout, error or abort remains unknown with owned bounded shutdown.
+  - id: req-receipt
+    description: >-
+      Construct a closed immutable internal v1 receipt outside model output with exact execution/context/thread/turn identities, source/basis, zero baseline, full and normalized usage, final item and ordered sequence facts, terminal/exit/EOF facts and canonical digest. Reject unknown versions/fields, inherited/accessor data, invalid numbers and altered facts/binding/digest. The digest is binding evidence, not a signature.
+  - id: req-consumer
+    description: >-
+      Charge observations before receipt adjudication. A production explicit usageComplete true requires the exact validated adapter receipt and current ownership before settlement or downstream effects. Persist only accepted normalized optional metadata.run.terminal_usage_evidence in existing owned task mutations for read-only and writer branches. Retain unrelated metadata, existing trusted injected historical-fake omission compatibility and strict real-executor behavior without a new production bypass.
+  - id: req-recovery
+    description: >-
+      Keep missing/interrupted/resumed/stale evidence unknown. Retain aggregate accounting and exact human-plan gates across duplicate settlement and controller reconstruction; no replay, automatic retry, refund, backfill, historical-state repair or successor before human approval. A persisted receipt is not new execution authority.
+  - id: req-acceptance
+    description: >-
+      Require the complete terminal-protocol and terminal-consumer focused-file commands and terminal-dashboard-regression campaign defined in the design, plus all catalog checks below, with observed native results and owned cleanup. Fakes never call a paid runtime; the browser campaign uses isolated synthetic state. These complementary behavior checks are mandatory: catalog compilation/scanning alone cannot prove the behavior. Scoped technical acceptance does not qualify a real producer, close whole-repository debt or complete F3.
+constraints:
+  - Follow docs/proposals/factory-local-f3-terminal-evidence-design.md and .agents/specs/tasks/f3-terminal-usage-evidence.tasks.md only after actual human approval of this exact prospective delta.
+  - This is a proposed amendment to the existing AgentRunResult evidence boundary, not a new primary entity or a retrospective change to Phase O approvals.
+  - The original target set contains 15 files. The owner-approved autonomous closure adds scripts/playwright-local-app-smoke.ts and scripts/harness-validators.test.ts for safe browser diagnostics, plus status-only reconciliation in docs/proposals/factory-local-f3-design.md and docs/roadmap/factory-local-poc.md. Preserve all pre-existing user changes, private historical task/workflow/events, original sibling checkout, frozen runtime and trusted verifier pins.
+  - Preserve the sole stable stdio runtime defined in docs/architecture/execution-runtime.md, model configurability, sandbox/approval policy, leases, attempts, root/role/runtime/token caps, 1000 ms forced-interruption fallback, capture bounds and 900-second per-command ceiling. Drain consumes existing time, not a new allowance.
+  - Item phase must use the installed generated final_answer value. No invented final marker, experimental field, generated protocol edit, quiet-window inference, rollout parser, session import or provider billing assertion.
+  - No raw reasoning, source bodies, credentials, auth files or private project/session identities enter public artifacts or the receipt.
+  - No new store, public API/schema, state migration, package/dependency, Harness catalog/pin/validator, scheduler or production fake-trust switch.
+  - Acceptance is intentionally bounded to the mandatory design commands and existing catalog checks. Full-suite, CI and eval campaigns are not proposed; DEBT-F2-GLOBAL-900 and prior P/Q/CI results remain open and are not passing evidence for this delta.
+  - Structural validation is without -Run or -ConfirmExecution at proposal time. Implementation and execution require actual human approval; review metadata stays null until then.
+  - A failed or unknown check stops dependent acceptance steps. Under the owner's 2026-11-02 standing authorization, diagnose, correct and revalidate necessary acceptance defects without requesting permission per iteration. Preserve every failure as evidence and all guards/timeouts; no cleanup outside ownership, paid calls, sibling changes, commit, push or merge.
+  - Passing fake/native-fixture checks cannot authorize a new real workflow. A later Planner-only qualification requires renewed baseline, source pins, writer window, context and explicit runtime/budget authority disclosing historical consumption.
+  - Under the owner-approved accounting-order correction, a closed result received before interruption may prove accounting if independent budget exhaustion is first recognized while charging that result. Validate exact terminal evidence and current lease/context; preserve the budget AbortError and failed outcome before any further effect. Prior/external interruption, durable cancellation, invalid evidence and unknown accounting cannot qualify. No unknown historical ledger may be repaired or reopened.
+nonGoals:
+  - Provider-final billing, monetary accounting, inferring hidden usage or refunding the historical over-budget attempt.
+  - Changing context assembly or admitting the proposed compact brief without a fresh approved preview.
+  - Completing F3, admitting Engineer, accepting the historical plan or silently refreshing the private pilot runtime.
+  - Resolving global regression/performance debt, changing issue lifecycle or publication/retry policy.
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-10-31T19:31:50Z"
+  acceptanceChecks:
+    - id: ac-schemas
+      requirementIds: [req-consumer, req-recovery]
+      description: Compile unchanged product schemas for compatibility; the mandatory external consumer tests separately prove normalized metadata, historical absence and recovery behavior.
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-basis, req-usage, req-drain, req-receipt, req-consumer, req-recovery, req-acceptance]
+      description: Typecheck receipt, adapter, runner and tests. Additionally require the exact external terminal-protocol, terminal-consumer and terminal-dashboard-regression commands and observations in the design; typechecking is not behavioral acceptance.
+      command: pnpm typecheck
+      expectedExitCode: 0
+    - id: ac-build
+      requirementIds: [req-consumer, req-acceptance]
+      description: Build the existing application after the internal runtime changes; real isolated API/browser regression remains separately mandatory and makes no claim of native producer qualification.
+      command: pnpm build
+      expectedExitCode: 0
+    - id: ac-secrets
+      requirementIds: [req-receipt, req-acceptance]
+      description: Run the existing secret scanner on bounded synthetic artifacts and documentation; this does not claim universal secret prevention or replace negative receipt fixtures.
+      command: pnpm secrets:check
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications:
+  - date: "2026-10-31"
+    question: Update the remaining positive runtime fake and add passed-only console suppression to the consumer acceptance command?
+    answer: The repository owner explicitly approved both proposed adjustments in this conversation after the failed and truncated consumer result.
+    affects: Return the existing exact-bound synthetic receipt in that one fake without changing assertions or guards. Add only --silent=passed-only to the complete consumer-file command; preserve failing logs/reporters, all test/runtime/capture limits and the first-failure stop. No paid call or publication is authorized.
+  - date: "2026-11-01"
+    question: Separate terminal accounting certainty from continuation permission when charging an already returned receipt first reveals exhaustion?
+    answer: After the read-only diagnosis the owner explicitly authorized this correction in the conversation.
+    affects: Change only runner accounting order and focused regressions within the existing targets. Charge observations first, validate exact closed evidence under live ownership, retain known consumption and preserve budget failure with zero downstream effects. Existing cap conditions, cancellation, ledger invariants, unknown/recovery rules and limits stay intact; no model call or publication is authorized.
+  - date: "2026-11-02"
+    question: Continue necessary acceptance diagnostics, corrections and tests without requesting authorization at every failure?
+    answer: The owner explicitly requested autonomous completion of the pending phase tasks in this conversation after reviewing the browser-read diagnostic gap.
+    affects: Add the local-app smoke and its existing validator tests to T004. Capture normalized error-bound transport observations, validate focused regressions and correct demonstrated acceptance defects. Retain 900 seconds, capture bounds, original failure assertions, runtime policy, all historical evidence and the separately gated real execution boundary. Passing consumer/catalog checks need repetition only when affected; this is not a global-debt waiver or authority for a new model turn.

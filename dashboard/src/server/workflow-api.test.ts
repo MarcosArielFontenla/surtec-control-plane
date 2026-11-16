@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
@@ -24,12 +24,31 @@ import { localGitEnvironment } from "../../../lib/security/environment";
 import { managedGitArgs } from "../../../lib/security/managed-git.mjs";
 
 let root: string, state: string, issueId: string;
+const materializeWorkflowFixtureInputs = (() => {
+  let inputs: readonly Readonly<{ path: string; bytes: Buffer }>[] | undefined;
+  return (targetRoot: string): readonly string[] => {
+    if (!inputs) {
+      const registries = ["agents.yml", "agent-roles.yml", "context-policy.yml", "workflow-policy.yml"].map((name) => {
+        const path = `registry/${name}`;
+        return { path, bytes: readFileSync(path) };
+      });
+      const registry = parse(registries.find((input) => input.path === "registry/agent-roles.yml")!.bytes.toString("utf8")) as AgentRoleRegistry;
+      const evaluationPaths = [...new Set(registry.roles.flatMap((role) => role.required_evaluation_ids))];
+      inputs = Object.freeze([...registries, ...evaluationPaths.map((path) => ({ path, bytes: readFileSync(path) }))].map((input) => Object.freeze(input)));
+    }
+    // Only private public-source bytes are reused; each case owns fresh files.
+    for (const input of inputs) {
+      const target = join(targetRoot, input.path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, input.bytes, { flag: "wx" });
+    }
+    return Object.freeze(inputs.map((input) => input.path));
+  };
+})();
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "surtec-workflow-api-")); state = join(root, "state");
   mkdirSync(join(root, "projects/alpha/.git"), { recursive: true }); mkdirSync(join(root, "registry"));
-  for (const name of ["agents.yml", "agent-roles.yml", "context-policy.yml", "workflow-policy.yml"]) cpSync(`registry/${name}`, join(root, "registry", name));
-  const roles = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
-  for (const path of new Set(roles.roles.flatMap((role) => role.required_evaluation_ids))) { mkdirSync(join(root, ...path.split("/").slice(0, -1)), { recursive: true }); cpSync(path, join(root, path)); }
+  materializeWorkflowFixtureInputs(root);
   writeFileSync(join(root, "registry/projects.yml"), "projects:\n  alpha:\n    allowed_agents: [product-manager, backend-engineer, tech-lead, reality-checker, qa-reviewer, devops-engineer]\n    sandbox: { default: workspace-write }\n    verify: ['node verify.mjs']\n");
   writeFileSync(join(root, "projects/alpha/AGENTS.md"), "Synthetic private source body");
   vi.stubEnv("SURTEC_STATE_DIR", state); vi.stubEnv("SURTEC_PROJECTS_ROOT", join(root, "projects"));
@@ -38,6 +57,40 @@ beforeEach(() => {
   issueId = proposed.id;
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); expect(existsSync(root)).toBe(false); });
+describe("workflow API fixture input isolation", () => {
+  function inventory(directory: string, prefix = ""): string[] {
+    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      return entry.isDirectory() ? inventory(join(directory, entry.name), path) : [path];
+    }).sort();
+  }
+  it("materializes every public registry and required evaluation as a normal byte-equivalent file", () => {
+    const copyRoot = join(root, "input-isolation-copy"), paths = materializeWorkflowFixtureInputs(copyRoot);
+    const registry = parse(readFileSync("registry/agent-roles.yml", "utf8")) as AgentRoleRegistry;
+    const expected = ["registry/agents.yml", "registry/agent-roles.yml", "registry/context-policy.yml", "registry/workflow-policy.yml", ...new Set(registry.roles.flatMap((role) => role.required_evaluation_ids))];
+    expect(paths).toEqual(expect.arrayContaining(expected)); expect(paths).toHaveLength(expected.length);
+    expect(inventory(copyRoot)).toEqual([...expected].sort());
+    for (const path of paths) {
+      const info = lstatSync(join(copyRoot, path));
+      expect(info.isFile()).toBe(true); expect(info.isSymbolicLink()).toBe(false);
+      expect(readFileSync(join(copyRoot, path))).toEqual(readFileSync(path));
+      expect(readFileSync(join(root, path))).toEqual(readFileSync(path));
+    }
+  });
+  it("keeps modified copies independent from source files, sibling copies and later materializations", () => {
+    const firstRoot = join(root, "input-isolation-first"), siblingRoot = join(root, "input-isolation-sibling"), laterRoot = join(root, "input-isolation-later");
+    const paths = materializeWorkflowFixtureInputs(firstRoot); materializeWorkflowFixtureInputs(siblingRoot);
+    const changedPath = paths[0]!, original = readFileSync(changedPath);
+    writeFileSync(join(firstRoot, changedPath), "Synthetic case-local input mutation\n");
+    expect(readFileSync(join(firstRoot, changedPath)).equals(original)).toBe(false);
+    expect(materializeWorkflowFixtureInputs(laterRoot)).toEqual(paths);
+    for (const path of paths) {
+      const bytes = readFileSync(path);
+      expect(readFileSync(join(siblingRoot, path))).toEqual(bytes); expect(readFileSync(join(laterRoot, path))).toEqual(bytes);
+    }
+    expect(readFileSync(changedPath)).toEqual(original); expect(readFileSync(join(root, changedPath))).toEqual(original);
+  });
+});
 const request = () => ({ template_id: "analysis", template_version: 1, project_id: "alpha", issue_id: issueId, expected_revision: readIssueDocument().issues[issueId]!.revision, selected_agents: { "portfolio-analyst": "product-manager" } });
 async function post(app: ReturnType<typeof createApp>, path: string, body: unknown) {
   const { token } = await (await app.request("/api/session")).json();
@@ -212,7 +265,7 @@ describe("protected strict workflow API", () => {
     let workflowId = "";
     const usage = { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 3 };
     const executor: AgentExecutor = { run: vi.fn(async (input) => {
-      const owner = readWorkflowDocument().workflows[workflowId], stage = owner?.current_stage_id ? readWorkflowDocument().stages[owner.current_stage_id] : null;
+      const document = readWorkflowDocument(), owner = document.workflows[workflowId], stage = owner?.current_stage_id ? document.stages[owner.current_stage_id] : null;
       if (!stage) throw new Error("Synthetic executor received no current stage");
       const base = { schema_version: 1 as const, status: "completed" as const, summary: `Synthetic ${stage.kind} output`, evidence_ids: [], unresolved_questions: [], risks: [],
         recommended_next_action: "Wait for the next exact gate", requested_decision: null };
@@ -288,10 +341,13 @@ describe("protected strict workflow API", () => {
       let path = `/api/workflows/${workflowId}`;
       const runOne = async (kind: string) => {
         expect(await worker.runOnce()).toBe(1);
-        const owner = readWorkflowDocument().workflows[workflowId]!, stage = readWorkflowDocument().stages[owner.current_stage_id!]!;
+        const document = readWorkflowDocument(), owner = document.workflows[workflowId]!, stage = document.stages[owner.current_stage_id!]!;
         expect(stage.kind).toBe(kind); const taskId = stage.task_id!;
-        await vi.waitFor(() => expect(readTask(taskId)?.lifecycle).toBe("finished"), { timeout: 15_000 });
-        controller.reconcile();
+        await vi.waitFor(() => {
+          // Reconciliation runs in the worker finalizer before the completed attempt can be observed here.
+          if (worker.activeCount !== 0) throw new Error("Synthetic workflow attempt is still active");
+          expect(readTask(taskId)?.lifecycle).toBe("finished");
+        }, { timeout: 15_000 });
         if (page) await page.reload();
         return get(path);
       };
@@ -470,4 +526,21 @@ describe("protected strict workflow API", () => {
       try { await worker.stop(); } finally { try { await browser?.close(); if (browser) expect(browser.isConnected()).toBe(false); } finally { await closeServer(); } }
     }
   }, 30_000);
+});
+
+describe("planner-recovery protected HTTP", () => {
+  it("enforces session/origin/body bounds before invoking recovery and never calls legacy recovery", async () => {
+    const offerPlannerRecovery = vi.fn(() => { throw new Error("synthetic denial"); }), recover = vi.fn(), dispatch = vi.fn();
+    const app = createApp(root, dispatch, undefined, undefined, { workflows: { offerPlannerRecovery, recover } as unknown as WorkflowService });
+    const path = "/api/workflows/synthetic/planner-recovery", { token } = await (await app.request("/api/session")).json();
+    const headerCases: Record<string, string>[] = [{}, { "X-Surtec-Session": "stale" }, { "X-Surtec-Session": token, origin: "https://untrusted.invalid" }, { "X-Surtec-Session": token, "sec-fetch-site": "cross-site" }];
+    for (const headers of headerCases) {
+      expect((await app.request(path, { method: "POST", headers, body: "{}" })).status).toBe(403);
+    }
+    expect((await app.request(path, { method: "POST", headers: { "X-Surtec-Session": token }, body: "{" })).status).toBe(400);
+    expect((await app.request(path, { method: "POST", headers: { "X-Surtec-Session": token }, body: JSON.stringify({ rationale: "x".repeat(4096) }) })).status).toBe(413);
+    expect(offerPlannerRecovery).not.toHaveBeenCalled(); expect(recover).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled(); expect(listTasks()).toEqual([]);
+    const result = await post(app, path, { confirm: true }); expect(result.status).toBeGreaterThanOrEqual(400);
+    expect(offerPlannerRecovery).toHaveBeenCalledOnce(); expect(result.headers.get("cache-control")).toBe("no-store"); expect(recover).not.toHaveBeenCalled();
+  });
 });

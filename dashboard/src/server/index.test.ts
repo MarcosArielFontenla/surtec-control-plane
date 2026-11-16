@@ -4,6 +4,8 @@ import { parse } from "yaml";
 import type { AgentRoleRegistry } from "../../../lib/context/types";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import type { IssueCreateInput, IssueDocument, WorkIssue } from "../../../lib/issues/types";
 import { spawnSync } from "node:child_process";
 import { createApp } from "./index";
 import { readTask, updateTask } from "../../../lib/state/store";
@@ -135,6 +137,25 @@ describe("T012 routine integration isolation", () => {
   });
 });
 
+describe("Q T002 operating read integration", () => {
+  it("wires the production no-migration reader without invoking existing effectful services", async () => {
+    const forbidden = vi.fn(), dispatch = vi.fn();
+    const app = createApp(root, dispatch, fakeManager(), undefined, {
+      signals: { read: forbidden, act: forbidden }, integrations: { read: forbidden, invalidate: forbidden },
+      routines: { budgets: forbidden, warnings: forbidden } as unknown as RoutineService,
+      harness: { read: forbidden, refresh: forbidden },
+    });
+    const before = readFileSync(join(stateDir, "tasks/STK-1.json"));
+    const response = await app.request("/api/operating/overview");
+    expect(response.status).toBe(200); expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = await response.json();
+    expect(body.sections.find((section: { kind: string }) => section.kind === "executions").rows[0]).toMatchObject({ id: "STK-1", operating_state: "working", execution_authority: "none" });
+    expect(readFileSync(join(stateDir, "tasks/STK-1.json"))).toEqual(before);
+    expect(existsSync(join(stateDir, "portfolio"))).toBe(false); expect(existsSync(join(stateDir, "maintenance"))).toBe(false);
+    expect(forbidden).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled();
+  });
+});
+
 describe("api", () => {
   it("protects workflow mutation routes before service invocation or task scheduling", async () => {
     const fired = vi.fn(), preview = vi.fn();
@@ -259,6 +280,36 @@ describe("api", () => {
       diff: { status: "none" },
       cleanup: { status: "unknown" },
     });
+  });
+
+  it.each(["absent", "partial", "malformed"] as const)("F4 T004 preserves snapshot and %s history across new API instances without repair or dispatch", async (history) => {
+    const path = join(stateDir, "tasks/STK-1.json");
+    const snapshot = { ...readTask("STK-1")!, revision: 3, lifecycle: "finished", outcome: "needs-review", finished_at: "2026-05-28T10:00:00Z" };
+    writeFileSync(path, JSON.stringify(snapshot));
+    const eventPath = join(stateDir, "events/STK-1.jsonl");
+    if (history !== "absent") appendTaskEvent({ task_id: "STK-1", type: "queued", revision: 1 });
+    if (history === "malformed") writeFileSync(eventPath, `${readFileSync(eventPath, "utf8")}{"truncated":`);
+    const taskBytes = readFileSync(path), eventBytes = history === "absent" ? null : readFileSync(eventPath);
+    const dispatch = vi.fn(), manager = fakeManager(), control = fakeTaskControl({ enqueue: dispatch });
+    for (let instance = 0; instance < 2; instance++) {
+      const app = createApp(root, control, manager);
+      const current = await app.request("/api/tasks/STK-1");
+      expect(current.status).toBe(200); expect(await current.json()).toEqual(snapshot);
+      const detail = await app.request("/api/tasks/STK-1/detail");
+      expect(detail.status).toBe(history === "malformed" ? 500 : 200);
+      if (history !== "malformed") {
+        const body = await detail.json();
+        expect(body.task).toEqual(snapshot);
+        expect(body.events.map((event: { revision: number }) => event.revision)).toEqual(history === "partial" ? [1] : []);
+      }
+      const events = await app.request("/api/tasks/STK-1/events");
+      expect(events.status).toBe(history === "malformed" ? 400 : 200);
+      expect(readFileSync(path)).toEqual(taskBytes);
+      if (eventBytes) expect(readFileSync(eventPath)).toEqual(eventBytes);
+      else expect(existsSync(eventPath)).toBe(false);
+    }
+    expect(dispatch).not.toHaveBeenCalled(); expect(manager.start).not.toHaveBeenCalled();
+    expect(control.enqueue).not.toHaveBeenCalled(); expect(control.retry).not.toHaveBeenCalled(); expect(control.cancel).not.toHaveBeenCalled();
   });
 
   it("GET /api/dispatch-options returns effective project and agent mode capabilities", async () => {
@@ -401,6 +452,11 @@ describe("api", () => {
     expect(started.status).toBe(201); const detail = await started.json(), id: string = detail.stages[0].task_id;
     const paths = [join(stateDir, "tasks", `${id}.json`), join(stateDir, "events", `${id}.jsonl`), join(stateDir, "workflows/workflows.json"), join(stateDir, "issues/issues.json")];
     const before = paths.map((path) => readFileSync(path));
+    const operatingResponse = await app.request(`/api/operating/issues/${created.id}`);
+    expect(operatingResponse.status).toBe(200);
+    const operatingBody = await operatingResponse.json();
+    expect(operatingBody.sections.find((section: { kind: string }) => section.kind === "executions").rows[0]).toMatchObject({ id, issue_id: created.id, execution_authority: "none" });
+    expect(paths.map((path) => readFileSync(path))).toEqual(before);
     const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
     try {
@@ -1056,6 +1112,7 @@ describe("GET /api/projects/:id/integrations", () => {
     });
     const app = createApp(root, (id) => enqueued.push(id), undefined, undefined, { issues: issueService });
     const issueInput = {
+      request_id: randomUUID(),
       project_id: "stock-control", title: "Deliver the local issue flow", expected_outcome: "A task is tied to approved scope.",
       acceptance_criteria: ["The scope is recorded.", "Execution is linked."],
       assigned_role_id: "backend-engineer", next_action: "Implement the authorized flow.",
@@ -1089,5 +1146,115 @@ describe("GET /api/projects/:id/integrations", () => {
     expect(body.issue.task_ids).toEqual([body.task_id]);
     expect(enqueued).toEqual([body.task_id]);
     expect((await app.request(`/api/work-issues/${issue.id}`)).status).toBe(200);
+  });
+});
+
+describe("F2 T003 protected manual intake identity", () => {
+  function intakeInput(overrides: Partial<IssueCreateInput> = {}): IssueCreateInput {
+    return {
+      request_id: randomUUID(), project_id: "stock-control", title: "Keep one proposed manual request",
+      expected_outcome: "The same request has one durable issue identity.",
+      acceptance_criteria: ["Repeated intake returns the existing issue."],
+      authorized_scope: {
+        expected_outcome: "The same request has one durable issue identity.",
+        acceptance_criteria: ["Repeated intake returns the existing issue."],
+        allowed_path_patterns: ["src/**"], excluded_path_patterns: [], allowed_change_categories: ["test"], explicit_exclusions: [],
+      },
+      ...overrides,
+    };
+  }
+  function intakeApi() {
+    const enqueue = vi.fn();
+    const createTask = vi.fn(() => { throw new Error("Manual intake must not create a task"); });
+    const issues = createIssueService(root, { projectIds: () => ["stock-control"], createTask });
+    return { app: createApp(root, enqueue, fakeManager(), undefined, { issues }), enqueue, createTask };
+  }
+  const postIntake = (app: ReturnType<typeof createApp>, input: unknown) => apiRequest(app, "/api/work-issues", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  });
+  const issueFile = () => join(stateDir, "issues", "issues.json");
+
+  it("creates once and replays the current issue across API reconstruction without enqueuing work", async () => {
+    const first = intakeApi(), input = intakeInput();
+    const taskBytes = readFileSync(join(stateDir, "tasks", "STK-1.json"), "utf8");
+    const created = await postIntake(first.app, input); expect(created.status).toBe(201);
+    const initial = await created.json() as { issue: WorkIssue };
+    expect(Object.keys(initial)).toEqual(["issue"]);
+    expect(initial.issue).toMatchObject({ status: "proposed", revision: 2, task_ids: [], candidate_ids: [], intake_receipt: { schema_version: 1, request_id: input.request_id } });
+    expect(initial.issue.intake_receipt!.request_fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    const createdBytes = readFileSync(issueFile(), "utf8");
+
+    const reconstructed = intakeApi();
+    const replay = await postIntake(reconstructed.app, input); expect(replay.status).toBe(201);
+    expect(await replay.json()).toEqual(initial); expect(readFileSync(issueFile(), "utf8")).toBe(createdBytes);
+
+    const authorized = await apiRequest(reconstructed.app, `/api/work-issues/${initial.issue.id}/authorize`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_revision: initial.issue.revision, approval_id: "synthetic-intake-scope" }),
+    });
+    expect(authorized.status).toBe(200);
+    const current = await authorized.json() as { issue: WorkIssue };
+    expect(current.issue.status).toBe("authorized"); expect(current.issue.revision).toBeGreaterThan(initial.issue.revision);
+    const authorizedBytes = readFileSync(issueFile(), "utf8");
+    const afterProgress = await postIntake(reconstructed.app, input); expect(afterProgress.status).toBe(201);
+    expect(await afterProgress.json()).toEqual(current); expect(readFileSync(issueFile(), "utf8")).toBe(authorizedBytes);
+    const document = JSON.parse(authorizedBytes) as IssueDocument;
+    expect(Object.keys(document.issues)).toEqual([initial.issue.id]);
+    expect(document.events.filter((event) => event.type === "issue-proposed")).toHaveLength(1);
+    expect(current.issue.intake_receipt).toEqual(initial.issue.intake_receipt);
+    expect(readFileSync(join(stateDir, "tasks", "STK-1.json"), "utf8")).toBe(taskBytes);
+    expect(existsSync(join(stateDir, "workflows", "workflows.json"))).toBe(false);
+    for (const instance of [first, reconstructed]) { expect(instance.enqueue).not.toHaveBeenCalled(); expect(instance.createTask).not.toHaveBeenCalled(); }
+  });
+
+  it.each([undefined, null, 42, [], {}, "", "not-a-uuid", "A1111111-B222-4333-8444-E55555555555"])("refuses absent or malformed request identity before persisting (%#)", async (requestId) => {
+    const fixture = intakeApi(), body: Record<string, unknown> = { ...intakeInput() };
+    if (requestId === undefined) delete body.request_id; else body.request_id = requestId;
+    const response = await postIntake(fixture.app, body); expect(response.status).toBe(400);
+    expect(existsSync(issueFile())).toBe(false); expect(fixture.enqueue).not.toHaveBeenCalled(); expect(fixture.createTask).not.toHaveBeenCalled();
+  });
+
+  it("refuses a changed payload under the same UUID without changing state", async () => {
+    const fixture = intakeApi(), input = intakeInput();
+    expect((await postIntake(fixture.app, input)).status).toBe(201);
+    const before = readFileSync(issueFile(), "utf8");
+    const response = await postIntake(fixture.app, { ...input, title: "A different request with a reused identity" });
+    expect(response.status).toBe(409); expect(readFileSync(issueFile(), "utf8")).toBe(before);
+    expect(fixture.enqueue).not.toHaveBeenCalled(); expect(fixture.createTask).not.toHaveBeenCalled();
+  });
+
+  it("allows distinct UUIDs for identical request content without authorizing execution", async () => {
+    const fixture = intakeApi(), input = intakeInput();
+    const first = await postIntake(fixture.app, input), second = await postIntake(fixture.app, { ...input, request_id: randomUUID() });
+    expect(first.status).toBe(201); expect(second.status).toBe(201);
+    const firstIssue = (await first.json() as { issue: WorkIssue }).issue, secondIssue = (await second.json() as { issue: WorkIssue }).issue;
+    expect(firstIssue.id).not.toBe(secondIssue.id); expect(firstIssue.intake_receipt!.request_fingerprint).toBe(secondIssue.intake_receipt!.request_fingerprint);
+    expect(firstIssue.status).toBe("proposed"); expect(secondIssue.status).toBe("proposed");
+    const document = JSON.parse(readFileSync(issueFile(), "utf8")) as IssueDocument;
+    expect(Object.keys(document.issues)).toHaveLength(2); expect(document.events.filter((event) => event.type === "issue-proposed")).toHaveLength(2);
+    expect(fixture.enqueue).not.toHaveBeenCalled(); expect(fixture.createTask).not.toHaveBeenCalled();
+  });
+
+  it("refuses a caller-supplied server receipt without appending another issue", async () => {
+    const fixture = intakeApi(), input = intakeInput();
+    const created = await postIntake(fixture.app, input); expect(created.status).toBe(201);
+    const original = (await created.json() as { issue: WorkIssue }).issue;
+    const before = readFileSync(issueFile(), "utf8");
+    const forged = await postIntake(fixture.app, { ...input, request_id: randomUUID(), intake_receipt: original.intake_receipt });
+    expect(forged.status).toBe(400); expect(readFileSync(issueFile(), "utf8")).toBe(before);
+    expect(fixture.enqueue).not.toHaveBeenCalled(); expect(fixture.createTask).not.toHaveBeenCalled();
+  });
+
+  it.each(["session", "origin", "host", "fetch-site"])("keeps the %s HTTP guard in front of a keyed replay", async (guard) => {
+    const fixture = intakeApi(), input = intakeInput();
+    expect((await postIntake(fixture.app, input)).status).toBe(201);
+    const before = readFileSync(issueFile(), "utf8"), headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (guard === "origin") headers.Origin = "https://outside.invalid";
+    if (guard === "host") headers.Host = "outside.invalid";
+    if (guard === "fetch-site") headers["Sec-Fetch-Site"] = "cross-site";
+    const init = { method: "POST", headers, body: JSON.stringify(input) };
+    const blocked = guard === "session" ? await fixture.app.request("/api/work-issues", init) : await apiRequest(fixture.app, "/api/work-issues", init);
+    expect(blocked.status).toBe(403); expect(readFileSync(issueFile(), "utf8")).toBe(before);
+    expect(fixture.enqueue).not.toHaveBeenCalled(); expect(fixture.createTask).not.toHaveBeenCalled();
   });
 });

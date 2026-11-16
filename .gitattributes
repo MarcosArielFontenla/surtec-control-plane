@@ -7,3 +7,4 @@
 *.ts text eol=lf
 /.agents/scripts/*.ps1 text eol=lf
 
+/fixtures/profile-maintenance/workflow-orchestrator-p14.bin -text

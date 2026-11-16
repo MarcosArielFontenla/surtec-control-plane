@@ -8,7 +8,8 @@ import { isDeepStrictEqual, types as nodeTypes } from "node:util";
 import { budgetBucket } from "../budgets/policy";
 import { BUDGET_DIMENSIONS, BUDGET_LIMITS, type BudgetDimension, type BudgetLedger, type BudgetReservation, type BudgetRunCharge } from "../budgets/types";
 import { assertBudgetLedger } from "../budgets/validation";
-import { budgetStatePath, locksDir } from "./paths";
+import { budgetStatePath, locksDir, stateRootForStoreFile } from "./paths";
+import { assertMaintenanceAvailable, assertMaintenanceMutation, assertSynchronousMaintenanceResult, withMaintenanceMutation } from "./maintenance";
 import { StateLockConflictError } from "./store";
 
 export class BudgetStateError extends Error {
@@ -80,7 +81,9 @@ function atomicWrite(path: string, ledger: BudgetLedger, checkOwnership: () => v
   const encoded = JSON.stringify(ledger); check(Buffer.byteLength(encoded) <= BUDGET_LIMITS.documentBytes, "Budget snapshot exceeds byte limit.");
   const staged = `${path}.${randomUUID()}.tmp`; let fd: number | undefined, stat: Stats | undefined, created = false;
   try {
+    checkOwnership();
     safePath(path, true); mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); safePath(path, true);
+    checkOwnership();
     fd = openSync(staged, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600); created = true; stat = fstatSync(fd);
     writeFileSync(fd, encoded, "utf8"); fsyncSync(fd); closeSync(fd); fd = undefined;
     safePath(path, true); safePath(staged, true); check(sameFile(stat, lstatSync(staged)), "Budget staged ownership was lost."); checkOwnership();
@@ -120,6 +123,8 @@ function callbackValid(callback: unknown): asserts callback is (...args: never[]
   check(typeof callback === "function" && !nodeTypes.isProxy(callback) && !nodeTypes.isAsyncFunction(callback) && !nodeTypes.isGeneratorFunction(callback), "Budget mutation must be synchronous and non-proxied.");
 }
 function synchronous(value: unknown): void {
+  try { assertSynchronousMaintenanceResult(value); }
+  catch { throw new BudgetStateError("Budget mutation must be synchronous; uncertain maintenance ownership was preserved."); }
   if (value === null || (typeof value !== "object" && typeof value !== "function")) return;
   const seen = new Set<object>(); let current: object | null = value;
   while (current !== null) {
@@ -253,18 +258,24 @@ export function updateBudgetTransaction(tx: unknown, update: (draft: BudgetLedge
 /** State-only synchronous critical section: no awaits, effects or nested store locks. */
 export function mutateBudgetLedger<T>(callback: (tx: BudgetTransaction) => T, filePath: string = budgetStatePath(), at: string = new Date().toISOString()): T {
   callbackValid(callback); check(!mutationActive, "Budget mutation is reentrant."); budgetBucket("none", at); const path = resolve(filePath);
+  const root = stateRootForStoreFile(path, "budgets");
   read(path); // Invalid/future/unsafe existing bytes cause no lock/directory writes.
-  mutationActive = true;
-  try {
-    return withBudgetLock(locksDir(dirname(dirname(path))), (checkOwnership) => {
-      const persisted = read(path), before = persisted ?? emptyLedger(at); assertBudgetLedger(before);
-      check(Date.parse(before.updated_at) <= Date.parse(at), "Budget transaction clock cannot regress.");
-      const tx = Object.freeze({}) as BudgetTransaction, state: TransactionState = { working: clone(before), at, active: true, updating: false, checkOwnership }; transactions.set(tx, state);
-      try {
-        const result = callback(tx); synchronous(result); checkOwnership();
-        if (!isDeepStrictEqual(before, state.working)) { check(persisted === null || before.revision < Number.MAX_SAFE_INTEGER, "Budget ledger revision is exhausted."); const final = clone(state.working); final.revision = persisted === null ? 1 : before.revision + 1; final.updated_at = at; assertBudgetLedger(final); atomicWrite(path, final, checkOwnership); }
-        return result;
-      } finally { state.active = false; transactions.delete(tx); }
-    });
-  } finally { mutationActive = false; }
+  assertMaintenanceAvailable(root);
+  return withMaintenanceMutation(root, () => {
+    mutationActive = true;
+    try {
+      return withBudgetLock(locksDir(root), (checkLock) => {
+        const checkOwnership = () => { assertMaintenanceMutation(root); checkLock(); };
+        checkOwnership();
+        const persisted = read(path), before = persisted ?? emptyLedger(at); assertBudgetLedger(before);
+        check(Date.parse(before.updated_at) <= Date.parse(at), "Budget transaction clock cannot regress.");
+        const tx = Object.freeze({}) as BudgetTransaction, state: TransactionState = { working: clone(before), at, active: true, updating: false, checkOwnership }; transactions.set(tx, state);
+        try {
+          const result = callback(tx); synchronous(result); checkOwnership();
+          if (!isDeepStrictEqual(before, state.working)) { check(persisted === null || before.revision < Number.MAX_SAFE_INTEGER, "Budget ledger revision is exhausted."); const final = clone(state.working); final.revision = persisted === null ? 1 : before.revision + 1; final.updated_at = at; assertBudgetLedger(final); atomicWrite(path, final, checkOwnership); }
+          return result;
+        } finally { state.active = false; transactions.delete(tx); }
+      });
+    } finally { mutationActive = false; }
+  });
 }

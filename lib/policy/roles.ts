@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parse } from "yaml";
+import { parseRegistryYaml } from "./registry-yaml";
 import { assertContextConfig, assertRoleRegistry, ContextContractError } from "../context/validation";
 import type { AgentRole, ContextConfig, ExecutionBudget, ToolCapability } from "../context/types";
 import type { PolicyAgent } from "./service";
@@ -18,7 +18,7 @@ function readConfiguration(root: string, path: string): unknown {
     }
     const stat = lstatSync(current);
     if (!stat.isFile() || stat.size > 256 * 1024) throw new Error("configuration size/type");
-    return parse(readFileSync(current, "utf8"));
+    return parseRegistryYaml(readFileSync(current, "utf8"));
   } catch { throw new ContextContractError("Context configuration is missing, unsafe or unreadable"); }
 }
 export function readContextConfig(root: string): ContextConfig {

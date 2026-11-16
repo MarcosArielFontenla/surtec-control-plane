@@ -17,6 +17,9 @@ import { listTasks, readTask } from "../../lib/state/store";
 import { readWorkflowDocument } from "../../lib/state/workflows";
 import { readIssueDocument } from "../../lib/state/issues";
 import type { AgentExecutor } from "../../runner/agent-executor";
+import { createTerminalUsageEvidence } from "../../runner/terminal-usage-evidence";
+import { GOVERNED_RUNTIME_CONTEXT_PROFILE } from "../../runner/runtime-context-profile";
+import { inspectUnchargedClaimPackage, unchargedClaimPackage } from "../../lib/workflows/uncharged-claim-recovery";
 
 const root = realpathSync(process.env.SURTEC_SMOKE_FIXTURE_ROOT ?? "");
 const relativeRoot = relative(realpathSync(tmpdir()), root);
@@ -27,6 +30,8 @@ assert.equal(process.env.NODE_ENV, "test");
 const disabledRuntime = join(root, "forbidden-paid-runtime");
 assert.equal(process.env.SURTEC_CODEX_BIN, disabledRuntime);
 assert.equal(existsSync(disabledRuntime), false, "real runtime entry must not exist in the fixture");
+const unchargedMode = process.argv.includes("--uncharged-claim-recovery-only");
+assert.ok(!unchargedMode || typeof process.send === "function", "uncharged-claim fixture requires its owned parent IPC channel");
 
 const executor: AgentExecutor = {
   async run(options, _events, signal) {
@@ -38,6 +43,7 @@ const executor: AgentExecutor = {
     assert.equal(tasks.length, 1, "synthetic output must belong to exactly one live execution contract");
     const task = tasks[0]!, admission = task.envelope.context_admission;
     if (admission?.schema_version === 2) {
+      assert.equal(options.runtimeContextProfile, GOVERNED_RUNTIME_CONTEXT_PROFILE, "fresh fake roles require the bound code-owned context profile");
       const document = readWorkflowDocument(), owner = document.workflows[admission.workflow_id]!, stage = document.stages[admission.stage_id]!;
       const issue = readIssueDocument().issues[admission.issue_id]!;
       assert.equal(issue.project_id, "workflow-smoke-project");
@@ -48,7 +54,7 @@ const executor: AgentExecutor = {
       assert.equal(owner.authority_revision, admission.authority_revision);
       const scenarios = JSON.parse(readFileSync(join(root, "workflow-scenarios.json"), "utf8")) as Record<string, string>;
       const scenario = scenarios[issue.id];
-      assert.ok(["approve", "correction", "repeat-correction", "hold", "advisory"].includes(scenario ?? ""), "only explicit test-owned scenarios are accepted");
+      assert.ok(["approve", "correction", "repeat-correction", "hold", "advisory", "planner-recovery", "uncharged-claim"].includes(scenario ?? ""), "only explicit test-owned scenarios are accepted");
       const candidate = admission.candidate;
       if (stage.kind === "review" || stage.kind === "qa") {
         assert.equal(options.mode, "read-only"); assert.deepEqual(options.verifyCommands, []); assert.ok(candidate);
@@ -112,8 +118,20 @@ const executor: AgentExecutor = {
         structuredOutput = { ...base, kind: stage.kind, evidence_ids: [evidence.id], verdict: correct ? "correction-required" : "approve", findings,
           ...(stage.kind === "qa" ? { criteria: issue.acceptance_criteria.map((criterion) => ({ criterion, status: correct ? "contradictory" : "supported", evidence_ids: [evidence.id] })) } : {}) };
       }
-      return { finalText: "Never promote raw fallback", structuredOutput, threadId: `synthetic-${stage.id}`, turnId: `synthetic-${stage.id}-turn`,
+      if (["planner-recovery", "uncharged-claim"].includes(scenario!) && stage.kind === "planning") structuredOutput = { ...base, kind: "plan", status: "needs-review",
+        plan: ["Change dashboard/src/workflow.txt only", "Run the configured verifier"], scope_change_required: false,
+        unresolved_questions: ["Approve this exact retained plan?"], risks: ["Verification runtime remains unmeasured"], requested_decision: "Approve the exact plan separately" };
+      const result = { finalText: "Never promote raw fallback", structuredOutput, threadId: `synthetic-${stage.id}`, turnId: `synthetic-${stage.id}-turn`,
         usage: { inputTokens: 2, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 3 } };
+      if (["planner-recovery", "uncharged-claim"].includes(scenario!)) {
+        assert.ok(options.executionIdentity && options.contextFingerprint, "receipt binds the actual synthetic task/run/contract");
+        return { ...result, usageComplete: true, terminalUsageEvidence: createTerminalUsageEvidence({ ...options.executionIdentity, contextFingerprint: options.contextFingerprint,
+          threadId: result.threadId, turnId: result.turnId, usage: result.usage,
+          baseline: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0, cacheWriteInputTokens: 0 },
+          protocolUsage: { ...result.usage, cacheWriteInputTokens: 0 }, finalItemId: `final-${stage.id}`, finalPhase: "final_answer", finalItemSequence: 1, usageSequence: 2,
+          terminalSequence: 3, terminalStatus: "completed", exitCode: 0, signal: null, stdoutEof: true, stderrEof: true }) };
+      }
+      return result;
     }
     if (options.mode === "read-only") {
       assert.ok(["harness-smoke-project", "harness-smoke-client", "appointment-manager"].some((id) => worktree === join(root, "projects", id)), "read-only fake only inspects a synthetic checkout");
@@ -132,7 +150,20 @@ const executor: AgentExecutor = {
 };
 const workflows = new WorkflowOrchestrator(root);
 const worker = new TaskOrchestrator({ repoRoot: root, workflows, executor, pollMs: 100, maxConcurrent: 1 });
-worker.start();
+let claimInjected = false;
+if (unchargedMode) {
+  const originalClaim = workflows.claimRun.bind(workflows);
+  workflows.claimRun = (taskId, runId, proof) => {
+    const task = readTask(taskId), admission = task?.envelope.context_admission;
+    if (admission?.schema_version === 2 && admission.stage_kind === "implementation" && task?.orchestration?.attempts === 1 && !claimInjected) {
+      const scenarios = JSON.parse(readFileSync(join(root, "workflow-scenarios.json"), "utf8")) as Record<string, string>;
+      if (scenarios[admission.issue_id] === "uncharged-claim") { claimInjected = true; throw new Error("Synthetic pre-charge claim failure"); }
+    }
+    return originalClaim(taskId, runId, proof);
+  };
+}
+const retainedUnchargedOwner = unchargedMode && Object.values(readWorkflowDocument().workflows).some((owner) => !["completed", "cancelled"].includes(owner.status));
+if (!retainedUnchargedOwner) worker.start();
 const app = createApp(root, worker, undefined, undefined, { workflows: workflows.service, inbox: async () => ({ items: [], repos: [] }) });
 const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: Number(process.env.PORT) });
 // Match the existing real-HTTP workflow fixture: Windows connection pooling
@@ -144,3 +175,70 @@ let stopping = false;
 const stop = async () => { if (stopping) return; stopping = true; await worker.stop(); server.close(); };
 process.once("SIGINT", () => { void stop(); });
 process.once("SIGTERM", () => { void stop(); });
+
+
+// Closed test-only child IPC. No product route, command/path selection or
+// normal-state fallback; all locations derive from the verified owned root.
+if (unchargedMode) {
+  let operating = false, released = false;
+  const send = (value: Record<string, unknown>) => new Promise<void>((done, reject) => {
+    if (!process.connected || !process.send) { reject(new Error("Owned fixture IPC unavailable")); return; }
+    process.send(value, (error) => error ? reject(error) : done());
+  });
+  const handle = async (message: unknown) => {
+    assert.ok(message && typeof message === "object" && !Array.isArray(message));
+    const value = message as Record<string, unknown>, keys = ["kind", "request_id", "workflow_id", "expected_revision", "expected_task_revision"];
+    assert.deepEqual(Object.keys(value).sort(), [...keys].sort());
+    assert.match(String(value.request_id), /^[a-f0-9-]{36}$/);
+    assert.ok(["seal-uncharged-claim", "recover-uncharged-claim", "start-recovered-claim"].includes(String(value.kind)));
+    assert.ok(typeof value.workflow_id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value.workflow_id));
+    assert.ok(Number.isSafeInteger(value.expected_revision) && Number.isSafeInteger(value.expected_task_revision));
+    assert.equal(operating, false); operating = true;
+    try {
+      const document = readWorkflowDocument(), owner = document.workflows[value.workflow_id], stage = owner?.current_stage_id ? document.stages[owner.current_stage_id] : null;
+      const task = stage?.task_id ? readTask(stage.task_id) : null;
+      assert.ok(owner && stage && task && stage.kind === "implementation" && stage.task_id === task.envelope.id);
+      assert.equal(owner.revision, value.expected_revision); assert.equal(task.revision, value.expected_task_revision);
+      const scenarios = JSON.parse(readFileSync(join(root, "workflow-scenarios.json"), "utf8")) as Record<string, string>;
+      assert.equal(scenarios[owner.issue_id], "uncharged-claim");
+      if (value.kind === "seal-uncharged-claim") {
+        assert.equal(claimInjected, true); assert.equal(owner.status, "needs-decision"); assert.equal(stage.execution_id, null);
+        assert.equal(task.lifecycle, "finished"); assert.equal(task.outcome, "needs-review"); assert.equal(task.orchestration?.attempts, 1);
+        assert.equal(task.orchestration?.lease, null); assert.equal(task.envelope.metadata.run, undefined);
+        assert.ok(!owner.uncharged_claim_recovery); stopping = true; await worker.stop(); assert.equal(worker.activeCount, 0);
+        await new Promise<void>((done, reject) => {
+          httpServer.closeIdleConnections();
+          server.close((error?: Error) => error ? reject(error) : done());
+          httpServer.closeAllConnections();
+        });
+        await send({ kind: "uncharged-claim-fixture-result", request_id: value.request_id, ok: true, result: { sealed: true } });
+        console.log(JSON.stringify({ status: "BLOCKED", plan_approved: true, worker_stopped: true, active_tasks: 0,
+          workflow_id: owner.id, workflow_status: owner.status, workflow_revision: owner.revision, counters: owner.counters, budget: owner.budget }));
+        process.exitCode = 2; process.disconnect?.();
+        return;
+      }
+      if (value.kind === "recover-uncharged-claim") {
+        assert.equal(retainedUnchargedOwner, true); assert.equal(released, false);
+        const archiveRoot = join(root, "claim-recovery-archive"), runtimeRoot = join(root, "runtime");
+        const inspected = unchargedClaimPackage(inspectUnchargedClaimPackage({ runtimeRoot, archiveRoot }));
+        const result = worker.recoverUnchargedWorkflowClaim({ workflowId: owner.id, expectedRevision: owner.revision,
+          expectedIssueRevision: readIssueDocument().issues[owner.issue_id]!.revision, expectedTaskRevision: task.revision!,
+          packageFingerprint: inspected.archive_fingerprint, runtimeRoot, archiveRoot, approvalId: "synthetic-uncharged-human", confirm: true });
+        assert.equal(result.worker_started, false); assert.equal(worker.activeCount, 0);
+        await send({ kind: "uncharged-claim-fixture-result", request_id: value.request_id, ok: true, result });
+        return;
+      }
+      assert.equal(retainedUnchargedOwner, true); assert.equal(released, false); assert.equal(owner.uncharged_claim_recovery?.phase, "ready");
+      assert.equal(owner.status, "running"); assert.equal(task.lifecycle, "queued"); assert.equal(task.orchestration?.attempts, 1);
+      released = true; worker.start();
+      await send({ kind: "uncharged-claim-fixture-result", request_id: value.request_id, ok: true, result: { started: true } });
+    } finally { operating = false; }
+  };
+  process.on("message", (message: unknown) => {
+    const id = message && typeof message === "object" && "request_id" in message && /^[a-f0-9-]{36}$/.test(String(message.request_id))
+      ? String(message.request_id) : "invalid";
+    void handle(message).catch(() => send({ kind: "uncharged-claim-fixture-result", request_id: id, ok: false }))
+      .catch(() => { process.exitCode = 1; process.disconnect?.(); });
+  });
+}
+

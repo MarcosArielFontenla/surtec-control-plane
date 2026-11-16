@@ -1,0 +1,1472 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://surtec.dev/schemas/operating-view.schema.json",
+  "title": "OperatingView v1 - derived navigation facts, never execution authority",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "view",
+    "focus_id",
+    "focus_status",
+    "generated_at",
+    "execution_authority",
+    "phase_p",
+    "sections"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "view": {
+      "enum": [
+        "overview",
+        "objective",
+        "project",
+        "issue"
+      ]
+    },
+    "focus_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "focus_status": {
+      "enum": [
+        "available",
+        "not-found",
+        "unavailable"
+      ]
+    },
+    "generated_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "execution_authority": {
+      "const": "none"
+    },
+    "phase_p": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "budget_cutover",
+        "continuity"
+      ],
+      "properties": {
+        "budget_cutover": {
+          "const": "not-enabled"
+        },
+        "continuity": {
+          "const": "deferred"
+        }
+      }
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "$ref": "#/$defs/section"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^(?!.*\\.\\.)[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 32
+    },
+    "workflowTemplate": {
+      "enum": [
+        "analysis",
+        "implementation",
+        "quality-review",
+        "operations-investigation",
+        "trivial-change"
+      ]
+    },
+    "projectKind": {
+      "enum": [
+        "personal",
+        "internal-tool",
+        "surtec-product",
+        "client-product",
+        "experiment",
+        "template"
+      ]
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "state"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "state": {
+          "enum": [
+            null,
+            "draft",
+            "active",
+            "paused",
+            "achieved",
+            "cancelled",
+            "idea",
+            "discovery",
+            "maintenance",
+            "archived",
+            "proposed",
+            "authorized",
+            "working",
+            "checking",
+            "needs-decision",
+            "ready-for-review",
+            "done",
+            "blocked",
+            "queued",
+            "running",
+            "finished",
+            "waiting-human",
+            "completed",
+            "open",
+            "acknowledged",
+            "snoozed",
+            "resolved",
+            "planned",
+            "in-progress",
+            "absent",
+            "healthy",
+            "partial",
+            "legacy",
+            "invalid",
+            "unknown",
+            "unconfigured",
+            "within-limits",
+            "warning",
+            "denied"
+          ]
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 800
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "criteria": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "principles": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "objective_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent_objective_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "objective_ids": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "primary_objective_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issue_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workflow_template_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/workflowTemplate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/projectKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reviewed_on": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decision_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "scope-changed",
+                "policy-changed",
+                "conflicting-evidence",
+                "budget-exhausted",
+                "correction-exhausted",
+                "required-harness",
+                "external-action",
+                "dependency-blocked",
+                "evidence-gap"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown"
+          ]
+        },
+        "candidate_validity": {
+          "enum": [
+            "current",
+            "stale",
+            "unknown"
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "result_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "completed",
+                "partial",
+                "blocked",
+                "failed",
+                "needs-review",
+                "cancelled"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stage_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "analysis",
+                "planning",
+                "implementation",
+                "review",
+                "qa",
+                "operations",
+                "correction"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "sourceInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "availability",
+        "reason",
+        "origin",
+        "observed_at",
+        "fresh_until",
+        "complete",
+        "items"
+      ],
+      "properties": {
+        "availability": {
+          "enum": [
+            "available",
+            "absent",
+            "unavailable",
+            "not-enabled"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "observed",
+            "coverage-incomplete",
+            "optional-absent",
+            "missing-source",
+            "read-failed",
+            "invalid-source",
+            "not-configured",
+            "phase-p-deferred",
+            "not-required"
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "enum": [
+                "saved",
+                "live-local",
+                "manual"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fresh_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "$ref": "#/$defs/fact"
+          }
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "as_of",
+        "sources"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "as_of": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [],
+          "properties": {
+            "company": {},
+            "objectives": {},
+            "projects": {},
+            "issues": {},
+            "executions": {},
+            "workflows": {},
+            "signals": {},
+            "commitments": {},
+            "harness": {},
+            "sessions": {},
+            "budgets": {}
+          }
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "overview",
+            "objective",
+            "project",
+            "issue"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cursors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [],
+          "properties": {
+            "company": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "objectives": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "projects": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "issues": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "executions": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "workflows": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "signals": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "commitments": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "harness": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "sessions": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            "budgets": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            }
+          }
+        }
+      }
+    },
+    "sourceMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "availability",
+        "reason",
+        "origin",
+        "observed_at",
+        "fresh_until",
+        "complete",
+        "freshness"
+      ],
+      "properties": {
+        "availability": {
+          "enum": [
+            "available",
+            "absent",
+            "unavailable",
+            "not-enabled"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "observed",
+            "coverage-incomplete",
+            "optional-absent",
+            "missing-source",
+            "read-failed",
+            "invalid-source",
+            "not-configured",
+            "phase-p-deferred",
+            "not-required"
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "enum": [
+                "saved",
+                "live-local",
+                "manual"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fresh_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown",
+            "not-applicable"
+          ]
+        }
+      }
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alignment",
+        "objective_ids",
+        "project_id",
+        "issue_id",
+        "role_id",
+        "workflow_template_id",
+        "gaps",
+        "requires_authorization"
+      ],
+      "properties": {
+        "alignment": {
+          "enum": [
+            "aligned",
+            "intentionally-unaligned",
+            "unaligned",
+            "unavailable"
+          ]
+        },
+        "objective_ids": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issue_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workflow_template_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/workflowTemplate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gaps": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "project-unavailable",
+              "objective-unavailable",
+              "issue-unavailable",
+              "cross-project",
+              "objective-not-linked",
+              "objective-cycle",
+              "objective-depth",
+              "incomplete-source"
+            ]
+          }
+        },
+        "requires_authorization": {
+          "const": true
+        }
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "label",
+        "state",
+        "summary",
+        "criteria",
+        "principles",
+        "project_id",
+        "objective_id",
+        "parent_objective_id",
+        "objective_ids",
+        "primary_objective_id",
+        "issue_id",
+        "role_id",
+        "workflow_template_id",
+        "project_kind",
+        "target_date",
+        "reviewed_on",
+        "decision_reason",
+        "validation_status",
+        "candidate_validity",
+        "evidence_ids",
+        "result_status",
+        "stage_kind",
+        "operating_state",
+        "secondary_state",
+        "lineage",
+        "suggested_action",
+        "execution_authority"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "company",
+            "objectives",
+            "projects",
+            "issues",
+            "executions",
+            "workflows",
+            "signals",
+            "commitments",
+            "harness",
+            "sessions",
+            "budgets"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "state": {
+          "enum": [
+            null,
+            "draft",
+            "active",
+            "paused",
+            "achieved",
+            "cancelled",
+            "idea",
+            "discovery",
+            "maintenance",
+            "archived",
+            "proposed",
+            "authorized",
+            "working",
+            "checking",
+            "needs-decision",
+            "ready-for-review",
+            "done",
+            "blocked",
+            "queued",
+            "running",
+            "finished",
+            "waiting-human",
+            "completed",
+            "open",
+            "acknowledged",
+            "snoozed",
+            "resolved",
+            "planned",
+            "in-progress",
+            "absent",
+            "healthy",
+            "partial",
+            "legacy",
+            "invalid",
+            "unknown",
+            "unconfigured",
+            "within-limits",
+            "warning",
+            "denied"
+          ]
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 800
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "criteria": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "principles": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "objective_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent_objective_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "objective_ids": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "primary_objective_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "issue_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "role_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workflow_template_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/workflowTemplate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/projectKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reviewed_on": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decision_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "scope-changed",
+                "policy-changed",
+                "conflicting-evidence",
+                "budget-exhausted",
+                "correction-exhausted",
+                "required-harness",
+                "external-action",
+                "dependency-blocked",
+                "evidence-gap"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validation_status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown"
+          ]
+        },
+        "candidate_validity": {
+          "enum": [
+            "current",
+            "stale",
+            "unknown"
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "result_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "completed",
+                "partial",
+                "blocked",
+                "failed",
+                "needs-review",
+                "cancelled"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stage_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "analysis",
+                "planning",
+                "implementation",
+                "review",
+                "qa",
+                "operations",
+                "correction"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operating_state": {
+          "anyOf": [
+            {
+              "enum": [
+                "working",
+                "checking",
+                "needs-decision",
+                "ready-for-review",
+                "done",
+                "blocked"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secondary_state": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lineage": {
+          "$ref": "#/$defs/lineage"
+        },
+        "suggested_action": {
+          "enum": [
+            "open-detail",
+            "inspect-evidence",
+            "preview-context"
+          ]
+        },
+        "execution_authority": {
+          "const": "none"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "company"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  null
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "objectives"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "draft",
+                  "active",
+                  "paused",
+                  "achieved",
+                  "cancelled"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "projects"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "idea",
+                  "discovery",
+                  "active",
+                  "maintenance",
+                  "paused",
+                  "archived"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "issues"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "proposed",
+                  "authorized",
+                  "working",
+                  "checking",
+                  "needs-decision",
+                  "ready-for-review",
+                  "done",
+                  "blocked",
+                  "cancelled"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "executions"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "queued",
+                  "running",
+                  "finished"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "workflows"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "running",
+                  "waiting-human",
+                  "needs-decision",
+                  "completed",
+                  "cancelled"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "signals"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "open",
+                  "acknowledged",
+                  "snoozed",
+                  "resolved"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "commitments"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "planned",
+                  "in-progress",
+                  "blocked",
+                  "completed",
+                  "cancelled"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "harness"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "absent",
+                  "healthy",
+                  "partial",
+                  "legacy",
+                  "invalid",
+                  "unknown"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "sessions"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "active",
+                  "paused",
+                  "completed"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "budgets"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "unconfigured",
+                  "within-limits",
+                  "warning",
+                  "denied",
+                  "unknown"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "source",
+        "coverage",
+        "total",
+        "rows",
+        "has_more",
+        "next_cursor"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "company",
+            "objectives",
+            "projects",
+            "issues",
+            "executions",
+            "workflows",
+            "signals",
+            "commitments",
+            "harness",
+            "sessions",
+            "budgets"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/sourceMeta"
+        },
+        "coverage": {
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "total": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "rows": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/row"
+          }
+        },
+        "has_more": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 400
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

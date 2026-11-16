@@ -1,0 +1,78 @@
+schema_version: 1
+name: phase-q-operating-views
+entity: OperatingView
+domains:
+  - dashboard
+  - application-read-models
+  - issue-evidence
+purpose: Provide proportionate organization-to-evidence operating views and independently sourced delivery facts without enabling deferred Phase P capabilities or widening execution authority.
+requirements:
+  - id: req-projections
+    description: Compose strict independently versioned bounded read models from validated existing sources with explicit availability, provenance, freshness, coverage and unknown totals; GETs never migrate, refresh providers, reconcile or execute effects.
+  - id: req-overview
+    description: Extend the SURTEC overview with mission/principles, objectives, project distribution, critical signals, at-risk commitments, issues/executions, decisions, budget diagnostics, Harness observations and current Work Session.
+  - id: req-objective
+    description: Provide objective outcome/criteria, canonical ancestry and linked projects, commitments, active/blocked issues, recent executions/evidence, explained health, review dates and next action without double-counting graph contributions.
+  - id: req-issue
+    description: Make existing scope revision, work scale, assignment, workflow/attempt/handoff/session lineage, testing/review requirements, exact candidate validity and bounded correction evidence understandable in the current issue view.
+  - id: req-decisions
+    description: Project six clear operating labels without introducing lifecycle edges or coercing proposed/authorized/cancelled/finished-task states into accepted work; every decision exposes the actual trigger or an explicit evidence gap.
+  - id: req-harness
+    description: Expose configured source, canonical/detected version, capabilities, routing/Doctor/drift, timestamps and recorded validation with a non-executable remediation preview; presence and hashes do not grant ownership or success.
+  - id: req-lineage
+    description: Today and in-app navigation connect optional objective, project, issue/signal, action and registered permitted role/workflow; preserve selection, source timestamps and explicit unavailable or intentionally unaligned facts.
+  - id: req-work-loop
+    description: Reuse project readiness, issues, protected context preview/authorization, verification/review and Work Sessions for one daily loop without a second manager or bypass of current policy, consent, budget and scope gates.
+  - id: req-delivery
+    description: Distinguish exact technical acceptance, human-reviewed delivery readiness, environment observation, manual handoff/client response and open follow-up; completion, builds, URLs and commitment state cannot imply another fact or publication.
+  - id: req-manual-evidence
+    description: Add only an optional strict nested version-1 operator-entered delivery facet to existing issue evidence with bounded same-project/candidate/commitment references and timestamps; protect revisioned recording under the existing issue writer without lifecycle or authority effects.
+  - id: req-personal
+    description: Personal/experimental work remains useful without optional client, objective, release or full Harness installation; only applicable existing policy can deny execution, with its specific reason displayed.
+  - id: req-security
+    description: Preserve no-activation Phase P boundaries, legacy bytes, loopback/origin/session checks and exact current authority; exclude confidential feedback/notes, instructions, logs, credentials and private paths from summaries, prefills and implicit model context.
+  - id: req-acceptance
+    description: Prove pure contracts, protected API/refusals, responsive UI, healthy/empty/degraded/blocked/budget-limited/delivery paths, reload/restart and owned cleanup with real isolated API/browser fixtures and fake runtime/providers; retain unresolved baseline failures honestly.
+constraints:
+  - The owner explicitly approved this Q design/spec/T001-T012 package on 2026-10-16 and subsequently requested T002 through T012 including the final Q gate; execution stops at Q, and later phases require separate design and continuation authority.
+  - The owner-approved 2026-10-16 P amendment retains T001-T014 as partial delivery and defers T015-T026; Q must not activate production budget cutover, pending routine effects, maintenance, backup, restore or recovery.
+  - Preserve existing worker/runtime, modular monolith, file-first state, issue lifecycle, policies, consent, caps, guard/timeouts, skill pins and Harness exact command catalog.
+  - New operating responses are derived API v1 only; use no-migration source reads and no implicit writes, provider refresh, state repair or fabricated empty fallback.
+  - Optional delivery metadata extends the existing evidence record independently; old absent facets remain absent, malformed/null/future facets fail closed and no normal-state migration or new primary entity/store is proposed.
+  - Manual records append under the existing issue lock and expected revision, with no commitment update or multi-store transaction claim; no metadata, UI label or manual record can authorize execution or accepted verification.
+  - Use the explicit bounds, provenance and privacy rules in the Q design; missing optional data is not a permission to bypass a required current policy.
+  - Existing P16 workflow failures remain unresolved baseline defects, not waived passes or a mandate for more profiling; isolated Q checks cannot establish full-repository acceptance.
+  - Automated acceptance uses fictional temporary state/repositories and fake runtime/providers; no real model calls, normal user state, sibling writes, private context exports or uncertain-root deletion.
+  - No deploy, publication, external messages, commit, push or merge is authorized by this package; implementation stops at the exact approved slice.
+nonGoals:
+  - Completing or deleting deferred P work, accepting its diagnostic campaigns, changing its original done gate or activating new budget/routine/continuity effects.
+  - New task manager, workflow state machine, scheduler, permission system, delivery store, project completion percentage or enterprise administration suite.
+  - Automatic Harness apply, provisioning, retry/resume, correction expansion, commitment fulfillment, deployment, publication or client messaging.
+  - Phase R/S/T work, paid qualification, external benchmarks, real-project pilot or bulk state migration.
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-10-16T14:48:57Z"
+  acceptanceChecks:
+    - id: ac-behavior
+      requirementIds: [req-projections, req-overview, req-objective, req-issue, req-decisions, req-harness, req-lineage, req-work-loop, req-delivery, req-manual-evidence, req-personal, req-security, req-acceptance]
+      description: Pure projection/schema, service/API, protected mutation/refusal and React fixture tests prove Q behavior and compatibility; separately authorized actual isolated browser acceptance remains required and is not claimed by this command.
+      command: pnpm test
+      expectedExitCode: 0
+    - id: ac-schemas
+      requirementIds: [req-projections, req-manual-evidence, req-security]
+      description: Compile product schemas including strict operating-response and additive delivery-evidence contracts; behavior tests cover legacy, malformed and future-version refusals without migrations.
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-projections, req-issue, req-work-loop, req-delivery, req-manual-evidence, req-security, req-acceptance]
+      description: Typecheck derived read models, application composition, evidence extension, UI navigation and isolated fixture contracts without widening execution capabilities.
+      command: pnpm typecheck
+      expectedExitCode: 0
+    - id: ac-build
+      requirementIds: [req-overview, req-objective, req-issue, req-decisions, req-harness, req-lineage, req-work-loop, req-delivery, req-personal, req-acceptance]
+      description: Build the dashboard using existing operating views and bounded components; build success does not prove browser behavior, recorded delivery or phase completion.
+      command: pnpm build
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications: []

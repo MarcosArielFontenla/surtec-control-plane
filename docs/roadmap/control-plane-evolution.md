@@ -1,5 +1,7 @@
 # Control plane evolution roadmap
 
+Planning status (2026-10-24): **historical roadmap**. The [Factory Local PoC roadmap](factory-local-poc.md) is the active successor and reconciles later J-Q work, acceptance debt, and deferred capabilities. The entries below preserve their original wording and historical claims. Supersession neither revalidates those claims nor completes pending work; Phase 6 is not an authorization to begin collaboration features.
+
 ## Phase 0 — Codex runtime and baseline repair
 
 Replace the execution runtime, restore dispatch, add structured result validation, normalize events and usage, establish current documentation, and remove obsolete runtime references.

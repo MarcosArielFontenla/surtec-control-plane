@@ -59,6 +59,10 @@ For the client-delivery UI, `pnpm smoke:client-commitments:playwright` runs the 
 
 For end-to-end acceptance run `pnpm smoke:local:playwright`: actual `createApp`, Vite, orchestration, managed Git and verification, with a deterministic injected executor in a test-only bootstrap (not production `serve.ts`). Public runtime source is copied to a unique OS-temp fixture so even managed Git's empty hooks directory stays temporary; installed dependencies are linked read-only by convention and never installed or edited by the fixture. It exercises organization/migration, objective/issue/task/session/evidence lineage, scope/review guards and responsive UI, then reloads/restarts the API to verify persistence and token rotation. It strips provider/runtime credentials and uses no normal state or sibling repositories. Cleanup removes only the fixture after stopping its API; unsafe cleanup preserves the directory and reports its path. No paid turn or provider integration runs. See [Phase L acceptance](phase-l-acceptance.md) for results and any open regression.
 
+For Phase Q operating views, use `pnpm smoke:operating-views:playwright` with no arguments and no manually started server. This separate, focused command owns an actual API/Vite/browser fixture and fictional state; it checks connected navigation, degraded/personal/blocked views, independent delivery facts, protected refusals, privacy, mobile layout, reload/restart and cleanup. It starts no worker or real runtime/provider. Only the exact optional remote font stylesheet is fulfilled locally, so these visual checks use system fallback fonts; this does not validate remote typography or change production asset loading. Expect `status: passed`, all cleanup booleans true and no failures. See [Phase Q acceptance](phase-q-acceptance.md) for coverage, bounds, historical evidence, fresh final-gate status and the stop-on-failure sequence.
+
+The focused Q smoke complements, not replaces, the general local-app compatibility smoke, the original approved spec checks, CI or audit. A previous scoped PASS is not a fresh full-phase gate, and unresolved Phase P baseline failures are not waived by Q. Do not run live-model canaries or a paid Codex smoke as an ordinary acceptance step.
+
 When a UI phase adds a flow not covered by this smoke, extend the isolated browser coverage before delivery. Keep synthetic state and test-owned repositories disposable; do not seed example data into the user's ordinary local state to make acceptance tests pass.
 
 The `Feedback` dashboard view loads aggregate-only local metrics on demand; `pnpm smoke:feedback:playwright` validates its read-only request and refresh behavior using synthetic responses. Metric definitions and freshness windows are in [Local feedback metrics](../operations/feedback-metrics.md). Real-model EVAL canaries are disabled by default, fixed to two read-only requests, and unavailable in CI; see [Agent evaluation suites](../../evals/README.md) before explicitly opting in.
@@ -69,7 +73,7 @@ Inspect the consolidated, read-only integration snapshot with:
 GET http://127.0.0.1:4317/api/projects/<project-id>/integrations
 ```
 
-The response uses `schema_version: 1` and combines local Git, registry-backed GitHub and CI, plus the explicitly registered HTTP-health and Railway deployment providers. Missing tools, credentials, or provider configuration degrade to `unknown` or `unconfigured`; they do not authorize mutations. `RAILWAY_TOKEN` remains optional and environment-only.
+The response uses `schema_version: 2` and combines local Git, registry-backed GitHub and CI, plus the explicitly registered HTTP-health and Railway deployment providers. Missing tools, credentials, or provider configuration degrade to `unknown` or `unconfigured`; they do not authorize mutations. `RAILWAY_TOKEN` remains optional and environment-only.
 
 When extending integrations:
 

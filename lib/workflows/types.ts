@@ -21,6 +21,83 @@ export interface WorkflowBudget {
   max_total_tokens: number;
 }
 export interface WorkflowCounters { tasks: number; attempts: number; runtime_ms: number; total_tokens: number; accounting_complete: boolean }
+export interface PlannerQuestionDisposition {
+  index: number;
+  fingerprint: string;
+  kind: "plan-approval-gate" | "operator-clarification";
+  answer: string;
+}
+export interface PlannerRiskAcknowledgement { index: number; fingerprint: string }
+export interface PlannerRecovery {
+  schema_version: 1;
+  id: string;
+  workflow_id: string;
+  project_id: string;
+  issue_id: string;
+  issue_revision: number;
+  scope_revision: number;
+  stage_id: string;
+  generation: number;
+  task_id: string;
+  execution_id: string;
+  task_revision: number;
+  context_fingerprint: string;
+  task_fingerprint: string;
+  output_fingerprint: string;
+  terminal_receipt_fingerprint: string;
+  accounting_fingerprint: string;
+  grant_id: string;
+  authority_revision: number;
+  grant_fingerprint: string;
+  original_counters: WorkflowCounters;
+  decision_id: string;
+  requested_by: "human";
+  approval_id: string;
+  rationale: string;
+  questions: PlannerQuestionDisposition[];
+  risks: PlannerRiskAcknowledgement[];
+  created_at: string;
+  fingerprint: string;
+}
+export interface UnchargedClaimRecovery {
+  schema_version: 1;
+  id: string;
+  workflow_id: string;
+  workflow_revision: number;
+  project_id: string;
+  issue_id: string;
+  issue_revision: number;
+  scope_revision: number;
+  stage_id: string;
+  task_id: string;
+  original_run_id: string;
+  task_revision: number;
+  grant_id: string;
+  authority_revision: number;
+  context_fingerprint: string;
+  approved_plan_fingerprint: string;
+  intent_fingerprint: string;
+  grant_fingerprint: string;
+  issue_fingerprint: string;
+  task_fingerprint: string;
+  events_fingerprint: string;
+  source_fingerprint: string;
+  archive_fingerprint: string;
+  native_fingerprint: string;
+  original_failure: { kind: "terminal"; message: "Workflow attempt requires retained-fact review"; at: string; run_id: string };
+  original_started_at: string;
+  original_finished_at: string;
+  original_counters: WorkflowCounters;
+  requeued_task_revision: number;
+  requeued_task_fingerprint: string;
+  requested_by: "human";
+  approval_id: string;
+  created_at: string;
+  fingerprint: string;
+  phase: "prepared" | "task-requeued" | "ready";
+  event_id: string | null;
+  event_fingerprint: string | null;
+}
 export interface WorkflowCorrection { enabled: boolean; max_corrections: 0 | 1; budget: WorkflowBudget | null }
 export interface WorkflowRoleAssignment { role_id: WorkflowRoleId; agent_id: string; sandbox: SandboxMode; client_context_categories: ClientContextCategory[] }
 export interface WorkflowReviewPolicy {
@@ -100,6 +177,8 @@ export interface GovernedWorkflow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  planner_recovery?: PlannerRecovery;
+  uncharged_claim_recovery?: UnchargedClaimRecovery;
 }
 export interface WorkflowStage {
   schema_version: 1;
