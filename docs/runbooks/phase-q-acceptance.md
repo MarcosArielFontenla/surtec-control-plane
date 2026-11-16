@@ -1,5 +1,21 @@
 # Phase Q acceptance - operating views
 
+## T012 final acceptance — 2026-11-16
+
+**Phase Q complete.** The repository owner requested final acceptance on `master`. The browser checks ran in the requested order against `a70bf1960004e019e9226e22526b87bd42138c44`, with the 900-second ceiling for each command.
+
+| Check | Result |
+| --- | --- |
+| Original protected spec catalog | Prior four-check PASS retained, with no waiver |
+| [GitHub CI on master](https://github.com/MarcosArielFontenla/surtec-control-plane/actions/runs/43879293004) | PASS on the same commit. 163 test files passed, with 6,956 tests passed and 17 declared skips. Typecheck and build passed. |
+| Dependency audit | PASS in the same GitHub CI run. No known vulnerabilities were reported. |
+| `pnpm smoke:operating-views:playwright` | Exit 0 in 40.217 s. All 11 groups passed using the actual API, Vite and Chromium. Five optional font responses were served locally. Zero real runtime calls. |
+| `pnpm smoke:local:playwright` | Exit 0 in 537.655 s. All five workflow templates, retained Planner recovery, human gates, verification and bounded correction passed through the actual API and browser. Reload and API restart preserved the recorded state, rotated the session and produced no replay. Exactly 35 synthetic turns and zero browser read cancellations. |
+
+Both commands closed normally with both streams at EOF. Each reported Chromium closed, Vite closed, API stopped and fixture removed, with an empty cleanup failure list. The external temp directories contained only caches after the runs and were removed after inspection. No manual repeat is needed for these checks. The original timeout and subsequent diagnostic results below remain historical records. Deferred Phase P work keeps its separate disposition.
+
+## Historical checkpoints before final acceptance
+
 Latest synthetic qualification (2026-10-18): **113/113 delta checks PASS, native synthetic runner exit 0**, after the explicitly authorized `HasExited` observation correction. Unavailable/non-boolean observations remain null; actual supervision conditions, guards, limits, timeouts and matrix expectations are unchanged. Qualified in-memory candidate: **`8BEDDE6430F2E1802B41ED63A3363296F3D7253E946E02C84F74D858249751CA`**. The 189 original checks were not repeated. That qualification turn ran no real CI; the subsequent acceptance attempt below is **UNKNOWN**. T012/Q remains pending without waiver.
 
 Latest design status (2026-10-18): the [bounded completion-versus-workload design](../architecture/phase-q-operating-views-design.md#t012-bounded-ci-completion-versus-workload-design---2026-10-18-utc-proposed-only) has memory-only implementation and passing synthetic delta qualification. The owner subsequently authorized one actual CI -> audit -> Q smoke -> general smoke sequence. Its launcher returned no terminal receipt, so the sequence stopped without the conditional commands. Synthetic qualification does not establish this detached launcher's lifecycle or native acceptance; no further CI, profiler or verbose campaign follows automatically.

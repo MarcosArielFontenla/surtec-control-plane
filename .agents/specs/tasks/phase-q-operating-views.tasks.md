@@ -1,13 +1,15 @@
 ---
 spec: .agents/specs/operating-views.spec.yaml
 feature: phase-q-operating-views
-status: in_progress
+status: done
 createdAt: "2026-10-16"
 reviewedBy: repository-owner
 approvedAt: "2026-10-16T14:48:57Z"
 ---
 
 # Phase Q - operating-view tasks
+
+**Final acceptance recorded 2026-11-16.** T012 is complete on master. The approved catalog PASS, GitHub CI and audit, both browser commands and verified cleanup are recorded in the [T012 final acceptance](../../../docs/runbooks/phase-q-acceptance.md#t012-final-acceptance--2026-11-16). Earlier attempts below retain their observed results.
 
 **Initial approval recorded 2026-10-16 at 14:48:57 UTC:** the owner explicitly approved the design, spec and T001-T012 plan and initially requested T001 only. This actual conversation approval supersedes the historical draft-only statements below, not their safety boundaries. Implementation uses the Q branch named in the design checkpoint, created without committing, resetting or isolating away the pre-existing dirty P work; all changes remain preserved. The T001 slice included only its three source/test/schema paths plus Q approval/evidence artifacts.
 
@@ -67,7 +69,7 @@ No production P cutover, pending routine effect, maintenance/backup/restore/reco
 
 <!-- maps to: ac-behavior,ac-schemas,ac-types,ac-build -->
 - [x] T011 (depends: T010) Add focused actual API/Vite/Playwright Q acceptance over fictional state/fake runtime, cover healthy/incomplete/degraded/blocked/budget-disabled/delivery/privacy/mobile/reload/restart/refusals and owned cleanup, and retain general compatibility assertions -> scripts/playwright-operating-views-smoke.ts, scripts/fixtures/operating-views-api.ts, scripts/playwright-local-app-smoke.ts, scripts/harness-validators.test.ts, package.json
-- [ ] T012 (depends: T011) Record actual compatibility/bounds/security behavior and scoped verification, run the separately authorized original checks and one final ordinary CI/audit/focused-Q/general-browser sequence, report known failures/unavailable cleanup without waiver and stop at Q -> docs/architecture/phase-q-operating-views-design.md, docs/architecture/current-architecture.md, docs/architecture/organization-state-migration.md, docs/security/threat-model.md, docs/runbooks/local-development.md, docs/runbooks/phase-q-acceptance.md, .agents/specs/operating-views.spec.yaml, .agents/specs/tasks/phase-q-operating-views.tasks.md
+- [x] T012 (depends: T011) Record actual compatibility/bounds/security behavior and scoped verification, run the separately authorized original checks and one final ordinary CI/audit/focused-Q/general-browser sequence, report known failures/unavailable cleanup without waiver and stop at Q -> docs/architecture/phase-q-operating-views-design.md, docs/architecture/current-architecture.md, docs/architecture/organization-state-migration.md, docs/security/threat-model.md, docs/runbooks/local-development.md, docs/runbooks/phase-q-acceptance.md, .agents/specs/operating-views.spec.yaml, .agents/specs/tasks/phase-q-operating-views.tasks.md
 
 ## Verification policy and approval boundary
 
