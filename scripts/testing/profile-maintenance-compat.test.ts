@@ -8,17 +8,23 @@ const testFile = fileURLToPath(new URL("../profile-maintenance.test.ts", import.
 const archiveFile = new URL("../../fixtures/profile-maintenance/workflow-orchestrator-p14.bin", import.meta.url);
 
 describe("historical profiler adapter", () => {
-  it("adapts exactly three byte comparisons and two archived fixture reads", () => {
+  it("adapts the byte comparisons, archived fixture reads and portable file URL without changing the original bytes", () => {
     const bytes = readFileSync(testFile);
     const source = bytes.toString("utf8");
     const adapted = historicalProfilerAdapter(testFile).load(testFile)!;
     const comparison = "expect(readFileSync(copiedProfiler).equals(readFileSync(profilerSource))).toBe(true);";
     const archiveRead = 'readFileSync(new URL("../fixtures/profile-maintenance/workflow-orchestrator-p14.bin", import.meta.url))';
+    const portableImport = 'import { fileURLToPath, pathToFileURL } from "node:url";';
+    const portableUrl = "url = pathToFileURL(path).href;";
     expect(adapted.split(comparison)).toHaveLength(4);
     expect(adapted.split(archiveRead)).toHaveLength(3);
+    expect(adapted.split(portableImport)).toHaveLength(2);
+    expect(adapted.split(portableUrl)).toHaveLength(2);
     expect(adapted
       .replaceAll(comparison, "expect(readFileSync(copiedProfiler)).toEqual(readFileSync(profilerSource));")
-      .replaceAll(archiveRead, "readFileSync(failureFixturePath)")).toBe(source);
+      .replaceAll(archiveRead, "readFileSync(failureFixturePath)")
+      .replace(portableImport, 'import { fileURLToPath } from "node:url";')
+      .replace(portableUrl, 'url = new URL(`file:///${path}`).href;')).toBe(source);
     expect(readFileSync(testFile).equals(bytes)).toBe(true);
   });
 

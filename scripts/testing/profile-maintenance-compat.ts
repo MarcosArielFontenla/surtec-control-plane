@@ -16,6 +16,16 @@ const revisions = [
     after: 'expect(createHash("sha256").update(readFileSync(new URL("../fixtures/profile-maintenance/workflow-orchestrator-p14.bin", import.meta.url))).digest("hex")).toBe("' + fixtureHash + '");',
     count: 2,
   },
+  {
+    before: 'import { fileURLToPath } from "node:url";',
+    after: 'import { fileURLToPath, pathToFileURL } from "node:url";',
+    count: 1,
+  },
+  {
+    before: 'url = new URL(`file:///${path}`).href;',
+    after: "url = pathToFileURL(path).href;",
+    count: 1,
+  },
 ] as const;
 
 export function adaptHistoricalProfilerTest(bytes: Buffer): string {
