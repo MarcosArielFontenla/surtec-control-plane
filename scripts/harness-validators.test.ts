@@ -197,6 +197,19 @@ describe("native Harness validators", () => {
     expect(run(root, "validate-spec.ps1").code).toBe(1);
   }, 25_000);
 
+  it("accepts the full offline eval catalog and refuses a script that omits organizational checks", () => {
+    const root = fixture(); const document = spec(root); document.designContract.acceptanceChecks[0].command = "pnpm evals:check"; save(root, document);
+    const accepted = run(root, "validate-spec.ps1");
+    expect(accepted.code, accepted.output).toBe(0);
+    expect(accepted.output).toContain("0 checks executed");
+    const path = join(root, "package.json"); const pkg = JSON.parse(readFileSync(path, "utf8"));
+    pkg.scripts["evals:check"] = "tsx scripts/run-evals.ts && tsx scripts/run-outcome-evals.ts";
+    writeFileSync(path, JSON.stringify(pkg));
+    const refused = run(root, "validate-spec.ps1");
+    expect(refused.code).toBe(1);
+    expect(refused.output).toContain("Package check implementation has changed; review the catalog");
+  }, 25_000);
+
   it("clears inherited injection/secrets and terminates a timed-out child", () => {
     const root = fixture();
     const literal = (value: string) => "'" + value.replaceAll("'", "''") + "'";

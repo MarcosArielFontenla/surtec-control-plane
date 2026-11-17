@@ -80,7 +80,7 @@
     },
     {
       "path": ".agents/scripts/common.ps1",
-      "sha256": "0e53774071a5414e13f60954489700ed1fb3388d594528cc388e2a488be959eb",
+      "sha256": "99a4e534ad09e89773127128f8cb9ad8cb1901336f4ef7621fdeb7dade3d89da",
       "capability": "validators",
       "required": true
     },

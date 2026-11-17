@@ -101,7 +101,7 @@ function Get-SafeCheckInvocation {
         'pnpm schemas:check' = @('schemas:check', 'node scripts/check-schemas.mjs')
         'pnpm secrets:check' = @('secrets:check', 'node scripts/check-secrets.mjs')
         'pnpm repository:check' = @('repository:check', 'tsx scripts/check-repository-consistency.ts')
-        'pnpm evals:check' = @('evals:check', 'tsx scripts/run-evals.ts && tsx scripts/run-outcome-evals.ts')
+        'pnpm evals:check' = @('evals:check', 'tsx scripts/run-evals.ts && tsx scripts/run-outcome-evals.ts && vitest run --maxWorkers=1 scripts/organizational-harness-read-only.test.ts scripts/organizational-objective-ancestry.test.ts scripts/organizational-issue-cycles.test.ts scripts/organizational-execution-role.test.ts scripts/organizational-role-permissions.test.ts scripts/organizational-issue-approval.test.ts scripts/organizational-context-budget.test.ts scripts/organizational-confidential-context-consent.test.ts scripts/organizational-issue-completion-evidence.test.ts scripts/organizational-active-write-checkout.test.ts scripts/organizational-execution-budget.test.ts scripts/organizational-routine-prohibited-action.test.ts scripts/organizational-harness-source-integrity.test.ts scripts/organizational-scaffold-ownership-conflict.test.ts scripts/organizational-issue-transition.test.ts')
     }
     if (@($scripts.Keys) -cnotcontains $Command) { throw 'Acceptance command is not in the exact local catalog' }
     $definition = $scripts[$Command]
