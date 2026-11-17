@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { throws } from "node:assert/strict";
 import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -528,6 +529,18 @@ describe("local issue service", () => {
     expect(() => issues.dispatch(issue.id, admitted.issue.revision, "frontend-engineer")).toThrow(/authorization|rework/i);
   });
 
+  function expectAuthorizationRejected(taskId: string, action: () => unknown, message = "issue transition rejected: transition-not-allowed") {
+    const issuePath = join(state, "issues", "issues.json");
+    const taskPath = join(state, "tasks", `${taskId}.json`);
+    const issueBytes = readFileSync(issuePath);
+    const taskBytes = readFileSync(taskPath);
+    const taskCreationCalls = vi.mocked(fakeCreateTask).mock.calls.length;
+    throws(action, (error: unknown) => error instanceof IssueServiceError && error.status === 409 && error.message === message);
+    expect(readFileSync(issuePath)).toEqual(issueBytes);
+    expect(readFileSync(taskPath)).toEqual(taskBytes);
+    expect(fakeCreateTask).toHaveBeenCalledTimes(taskCreationCalls);
+  }
+
   it("records out-of-scope discovery without granting permission and increments scope only on approval", () => {
     const issues = service();
     const proposed = issues.create(input());
@@ -540,6 +553,8 @@ describe("local issue service", () => {
     expect(decision.status).toBe("needs-decision");
     expect(decision.scope_revision).toBe(1);
     expect(decision.scope_change_proposal?.proposed_scope.allowed_path_patterns).toContain("registry/projects.yml");
+    expectAuthorizationRejected(admitted.taskId, () => issues.resolveDecision(proposed.id, decision.revision, "approval-2", "Continue under the current scope."),
+      "a pending scope proposal requires an explicit scope decision");
     const revised = issues.approveScopeRevision(proposed.id, decision.revision, decision.scope_change_proposal!.id, "approval-2");
     expect(revised.status).toBe("authorized");
     expect(revised.scope_revision).toBe(2);
@@ -614,12 +629,24 @@ describe("local issue service", () => {
     const candidate = issues.recordCandidate({ issueId: proposed.id, taskId: admitted.taskId, executionId: "run-no-verify", repositoryId: "alpha", baseRevision: "a".repeat(40), candidateRevision: "b".repeat(40), changedPaths: ["dashboard/src/views/profile.tsx"], scopeRevision: 1 });
     issues.recordVerification({ issueId: proposed.id, taskId: admitted.taskId, executionId: "run-no-verify", candidateId: candidate.id, status: "informational", label: "Verification skipped", reference: "No verification command is configured." });
     finishTask(admitted.taskId, "needs-review");
-    const decision = issues.get(proposed.id).issue;
+    const before = issues.get(proposed.id);
+    const decision = before.issue;
+    const eventCount = readIssueDocument().events.length;
     expect(decision.status).toBe("needs-decision");
     expect(() => issues.acceptCandidate(proposed.id, { expectedRevision: decision.revision, candidateId: candidate.id, fingerprint: candidate.diff_fingerprint, approvalId: "review-no-test", rationale: "not verified", confirmedCriteria: input().acceptance_criteria, acknowledgeEvidenceGaps: true })).toThrow(/ready for review/i);
-    const resumed = issues.resolveDecision(proposed.id, decision.revision, "approval-2", "Add a verifier before retrying.");
-    expect(resumed.status).toBe("authorized");
-    expect(issues.get(proposed.id).candidates.find((entry) => entry.id === candidate.id)?.invalidated_at).not.toBeNull();
+    expectAuthorizationRejected(admitted.taskId, () => issues.authorize(proposed.id, decision.revision, "approval-2"));
+    expectAuthorizationRejected(admitted.taskId, () => issues.resumeBlocked(proposed.id, decision.revision, "A verifier is available."));
+
+    const rationale = "Add a verifier before retrying.";
+    const resumed = issues.resolveDecision(proposed.id, decision.revision, "approval-2", rationale);
+    expect(resumed).toMatchObject({ status: "authorized", revision: decision.revision + 1, scope_revision: decision.scope_revision, authorized_scope: decision.authorized_scope });
+    const after = issues.get(proposed.id);
+    const { events } = readIssueDocument();
+    expect(events).toHaveLength(eventCount + 1);
+    expect(events.at(-1)).toMatchObject({ issue_id: proposed.id, type: "decision-recorded", payload: { approval_id: "approval-2", rationale, scope_revision: decision.scope_revision, scope_unchanged: true } });
+    expect(after.candidates.find((entry) => entry.id === candidate.id)).toMatchObject({ invalidated_at: expect.any(String) });
+    expect(after.evidence).toHaveLength(before.evidence.length + 1);
+    expect(after.evidence.at(-1)).toMatchObject({ kind: "review", status: "informational", reference: rationale, scope_revision: decision.scope_revision });
   });
 
   it("requires an explicit human resume after a blocked execution", () => {
@@ -629,8 +656,17 @@ describe("local issue service", () => {
     const admitted = issues.dispatch(proposed.id, authorized.revision, "frontend-engineer");
     issues.markBlocked(proposed.id, admitted.taskId, "Verifier unavailable.");
     const blocked = issues.get(proposed.id).issue;
+    const eventCount = readIssueDocument().events.length;
     expect(blocked.status).toBe("blocked");
-    expect(issues.resumeBlocked(proposed.id, blocked.revision, "Verifier has been restored.").status).toBe("authorized");
+    const rationale = "Verifier has been restored.";
+    expectAuthorizationRejected(admitted.taskId, () => issues.authorize(proposed.id, blocked.revision, "approval-2"));
+    expectAuthorizationRejected(admitted.taskId, () => issues.resolveDecision(proposed.id, blocked.revision, "approval-2", rationale));
+
+    const resumed = issues.resumeBlocked(proposed.id, blocked.revision, rationale);
+    expect(resumed).toMatchObject({ status: "authorized", revision: blocked.revision + 1, scope_revision: blocked.scope_revision, authorized_scope: blocked.authorized_scope });
+    const { events } = readIssueDocument();
+    expect(events).toHaveLength(eventCount + 1);
+    expect(events.at(-1)).toMatchObject({ issue_id: proposed.id, type: "blocker-resolved", payload: { rationale } });
   });
 });
 

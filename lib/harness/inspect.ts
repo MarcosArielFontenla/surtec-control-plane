@@ -9,6 +9,7 @@ import { redactText } from "../security/redaction";
 
 const MAX_ENTRIES = 128;
 const MAX_TOTAL = 2 * 1024 * 1024;
+type InventoryLimit = "entry-count" | "depth" | "read-error";
 function frontmatter(raw: string | undefined): Record<string, unknown> | null {
   try {
     const match = raw && /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
@@ -17,6 +18,10 @@ function frontmatter(raw: string | undefined): Record<string, unknown> | null {
   } catch { return null; }
 }
 export function inspectHarness(root: string, projectId: string, source: HarnessSource, now = new Date()): ProjectHarnessProfile {
+  return inspectHarnessWithCoverage(root, projectId, source, now).profile;
+}
+
+export function inspectHarnessWithCoverage(root: string, projectId: string, source: HarnessSource, now = new Date()) {
   const trusted = source.status === "trusted" ? source.manifest : null;
   const policy = source.registry && Object.hasOwn(source.registry.projects, projectId) ? source.registry.projects[projectId] : undefined;
   const result: ProjectHarnessProfile = {
@@ -46,22 +51,23 @@ export function inspectHarness(root: string, projectId: string, source: HarnessS
   };
   const paths = new Set<string>(["AGENTS.md", ".agents/AGENTS.md", ".agents/orchestration/ROUTING.md"]);
   for (const entry of trusted?.expected_entries ?? []) paths.add(entry.path);
-  let inventoryLimited = false;
+  const inventoryLimits = new Set<InventoryLimit>();
   function walk(path: string, depth: number): void {
     try {
-      if (depth > 6 || paths.size >= MAX_ENTRIES) { inventoryLimited = true; return; }
+      if (depth > 6) { inventoryLimits.add("depth"); return; }
+      if (paths.size >= MAX_ENTRIES) { inventoryLimits.add("entry-count"); return; }
       const stat = lstatSync(join(root, path));
       if (stat.isSymbolicLink()) { paths.add(path); return; }
       if (!stat.isDirectory()) { paths.add(path); return; }
       const names = readdirSync(join(root, path)).sort();
-      if (names.length > MAX_ENTRIES) inventoryLimited = true;
+      if (names.length > MAX_ENTRIES) inventoryLimits.add("entry-count");
       for (const name of names.slice(0, MAX_ENTRIES)) {
-        if (paths.size >= MAX_ENTRIES) { inventoryLimited = true; break; }
+        if (paths.size >= MAX_ENTRIES) { inventoryLimits.add("entry-count"); break; }
         const child = `${path}/${name}`;
         if (safeRelative(child)) walk(child, depth + 1);
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") inventoryLimited = true;
+      if (depth > 0 || (error as NodeJS.ErrnoException).code !== "ENOENT") inventoryLimits.add("read-error");
     }
   }
   walk(".agents", 0);
@@ -75,8 +81,8 @@ export function inspectHarness(root: string, projectId: string, source: HarnessS
   const installed = !!primer || result.entries.some((entry) => entry.path.startsWith(".agents/") && entry.status !== "missing");
   const recognized = frontmatter(primer)?.role === "session-primer" && frontmatter(content.get(".agents/AGENTS.md"))?.role === "artifact-registry";
   result.status = !installed ? "absent" : recognized ? "healthy" : content.has(".agents/orchestration/ROUTING.md") ? "unknown" : "legacy";
-  if (inventoryLimited) result.findings.push(finding("inventory-limit", "Inventory coverage is incomplete.", [".agents"], "The bounded inventory could not cover all entries.", "Review the unsupported or oversized tree locally."));
-  if (inventoryLimited || result.entries.some((entry) => entry.status === "unsafe")) result.status = "unknown";
+  if (inventoryLimits.size > 0) result.findings.push(finding("inventory-limit", "Inventory coverage is incomplete.", [".agents"], "The bounded inventory could not cover all entries.", "Review the unsupported or oversized tree locally."));
+  if (inventoryLimits.size > 0 || result.entries.some((entry) => entry.status === "unsafe")) result.status = "unknown";
   if (!trusted) result.findings.push(finding("source-unavailable", "Canonical comparison is unavailable.", ["registry/harness-sources.yml"], source.reason ?? "No trusted baseline is available.", "Review the trusted source registry and baseline."));
   const expected = trusted?.expected_entries ?? [];
   for (const capability of CAPABILITIES) {
@@ -172,5 +178,5 @@ export function inspectHarness(root: string, projectId: string, source: HarnessS
   result.findings = [...new Map(result.findings.map((entry) => [entry.id, entry])).values()].slice(0, 128);
   result.doctor_status = doctorStatus(result);
   assertProfile(result);
-  return result;
+  return { profile: result, inventoryLimits: [...inventoryLimits] };
 }

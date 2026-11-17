@@ -1,0 +1,10 @@
+schema_version: 1
+archetypes:
+  personal@1:
+    verification:
+      frontend: [test, build]
+      backend: [test, build]
+    templates:
+      - .agents/templates/entity.spec.yaml
+      - .agents/templates/feature.tasks.md
+    execution_authority: none

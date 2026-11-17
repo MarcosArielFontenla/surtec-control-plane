@@ -567,6 +567,9 @@ function transition(document: IssueDocument, issue: WorkIssue, to: WorkIssue["st
   const envelope: IssueTransitionEnvelope = { event_id: randomUUID(), from: issue.status, to, expected_revision: expectedRevision };
   const check = checkIssueTransition({ status: issue.status, revision: issue.revision, seen_event_ids: new Set(document.events.map((event) => event.id)) }, envelope);
   if (!check.accepted) throw new IssueServiceError(`issue transition rejected: ${check.reason}`, 409);
+  if (to === "authorized" && check.rule.event !== type) {
+    throw new IssueServiceError("issue transition rejected: transition-not-allowed", 409);
+  }
   issue.status = to;
   appendEvent(document, issue, type, payload, at);
 }
@@ -1031,11 +1034,11 @@ export function createIssueService(repoRoot: string = process.cwd(), options: Is
       return mutateIssueDocument((document) => {
         const issue = requireIssue(document, id);
         if (issue.scope_change_proposal) throw new IssueServiceError("a pending scope proposal requires an explicit scope decision", 409);
+        transition(document, issue, "authorized", expectedRevision, "decision-recorded", { approval_id: approval, rationale: reason, scope_revision: issue.scope_revision, scope_unchanged: true }, now().toISOString());
         for (const candidateId of issue.candidate_ids) {
           const candidate = document.candidates[candidateId];
           if (candidate && candidate.invalidated_at === null) candidate.invalidated_at = now().toISOString();
         }
-        transition(document, issue, "authorized", expectedRevision, "decision-recorded", { approval_id: approval, rationale: reason, scope_revision: issue.scope_revision, scope_unchanged: true }, now().toISOString());
         addEvidence(document, issue, { task_id: null, execution_id: null, candidate_id: null, candidate_revision: null, diff_fingerprint: null, scope_revision: issue.scope_revision, kind: "review", label: "Human decision to resume under unchanged scope", reference: reason, status: "informational" }, now().toISOString());
         return issue;
       });

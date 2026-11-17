@@ -75,7 +75,22 @@ export function assertWorkflowPreviewIssue(preview: Pick<WorkflowPreview, "reque
 
 // Finish browser API reads before comparing effects: even a profile GET owns a
 // domain lock. This is not global quiescence, and writes are never filtered out.
-type BrowserReadSnapshotLabel = "unlabelled" | "phase-n-before-preview" | "phase-n-after-api-refusals" | "phase-n-after-browser-previews";
+type BrowserReadSnapshotLabel = "unlabelled" | "phase-n-before-preview" | "phase-n-after-api-refusals" | "phase-n-after-browser-previews"
+  | "t013-panel-drain" | "t013-before-preview-effects";
+
+function isBudgetGet(method: string | undefined, url: string | undefined): boolean {
+  return method === "GET" && url?.split("?", 1)[0] === "/api/budgets";
+}
+
+export function createBudgetProxyTrace() {
+  const totals = { received: 0, forwarded: 0, upstream_headers: 0, upstream_finished: 0 };
+  return {
+    observe(hop: keyof typeof totals, request: { method?: string; url?: string }) {
+      if (isBudgetGet(request.method, request.url)) totals[hop]++;
+    },
+    snapshot: () => ({ ...totals }),
+  };
+}
 type BrowserReadObservation = {
   label: BrowserReadSnapshotLabel;
   phase: "drain" | "waiting-before-capture" | "capturing" | "waiting-after-capture" | "recapturing";
@@ -115,6 +130,8 @@ export function trackBrowserApiReads(context: Pick<BrowserContext, "on" | "off">
   let generation = 0, disposed = false, failure: Error | null = null, cancelledReads = 0;
   let navigationReads: WeakSet<Request> | null = null;
   const readMetadata = new WeakMap<Request, { sequence: number; started_at: number | null }>();
+  const budgetHeaders = new WeakSet<Request>();
+  const budgetDeadlines = new WeakMap<Error, ReadonlyArray<{ sequence: number; headers_received: boolean }>>();
   const deadlineActivities = new WeakMap<Error, BrowserReadActivity>();
   const failureActivities = new WeakMap<Error, BrowserReadFailure>();
   let latestDeadlineError: Error | null = null, finishedReads = 0, failedReads = 0;
@@ -133,7 +150,7 @@ export function trackBrowserApiReads(context: Pick<BrowserContext, "on" | "off">
     const difference = end - start;
     return Number.isFinite(difference) ? Math.floor(difference) : null;
   };
-  const diagnosticLabels = new Set<BrowserReadSnapshotLabel>(["unlabelled", "phase-n-before-preview", "phase-n-after-api-refusals", "phase-n-after-browser-previews"]);
+  const diagnosticLabels = new Set<BrowserReadSnapshotLabel>(["unlabelled", "phase-n-before-preview", "phase-n-after-api-refusals", "phase-n-after-browser-previews", "t013-panel-drain", "t013-before-preview-effects"]);
   const diagnosticPaths = new Set(["/api/overview", "/api/today", "/api/runs", "/api/organization", "/api/operating/overview", "/api/dispatch-options", "/api/portfolio/profiles", "/api/session", "/api/work-issues", "/api/workflows", "/api/inbox", "/api/budgets"]);
   const diagnosticPath = (value: Request): string => {
     try {
@@ -173,7 +190,13 @@ export function trackBrowserApiReads(context: Pick<BrowserContext, "on" | "off">
     }
     notify();
   };
-  context.on("request", request); context.on("requestfinished", finished); context.on("requestfailed", failed);
+  const response = (value: Pick<import("playwright").Response, "request">) => {
+    try {
+      const associated = value.request();
+      if (pending.has(associated) && diagnosticPath(associated) === "/api/budgets") budgetHeaders.add(associated);
+    } catch { /* Optional diagnostics must not affect request tracking. */ }
+  };
+  context.on("request", request); context.on("response", response); context.on("requestfinished", finished); context.on("requestfailed", failed);
 
   async function bounded<T>(action: (check: () => void, observation: BrowserReadObservation) => Promise<T>, readTimeoutMs: number, label: BrowserReadSnapshotLabel = "unlabelled"): Promise<T> {
     const observation: BrowserReadObservation = { label: diagnosticLabels.has(label) ? label : "unlabelled", phase: "drain", generation_at_capture: null, captures_started: 0, recaptures: 0 };
@@ -194,12 +217,16 @@ export function trackBrowserApiReads(context: Pick<BrowserContext, "on" | "off">
       try {
         const at = readTime();
         const activityRows: Array<BrowserReadActivity["pending_reads"][number]> = [];
+        const budgetRows: Array<{ sequence: number; headers_received: boolean }> = [];
         for (const value of pending) {
           if (activityRows.length === 8) break;
           const metadata = readMetadata.get(value)!;
-          activityRows.push(Object.freeze({ method: "GET", path: diagnosticPath(value), sequence: metadata.sequence,
+          const path = diagnosticPath(value);
+          if (path === "/api/budgets") budgetRows.push({ sequence: metadata.sequence, headers_received: budgetHeaders.has(value) });
+          activityRows.push(Object.freeze({ method: "GET", path, sequence: metadata.sequence,
             age_ms: elapsed(at, metadata.started_at), started_in_window: metadata.sequence > generationAtStart }));
         }
+        budgetDeadlines.set(expirationError, budgetRows);
         deadlineActivities.set(expirationError, Object.freeze({ schema_version: 1, label: observation.label, phase: observation.phase,
           read_timeout_ms: readTimeoutMs, elapsed_ms: elapsed(at, windowStartedAt), pending_at_start: pendingAtStart,
           pending_at_deadline: pending.size, started_in_window: generation - generationAtStart,
@@ -240,9 +267,10 @@ export function trackBrowserApiReads(context: Pick<BrowserContext, "on" | "off">
       }
     }
   }
-  const drain = (readTimeoutMs = timeoutMs) => bounded((check) => idle(check), readTimeoutMs);
+  const drain = (readTimeoutMs = timeoutMs, label?: BrowserReadSnapshotLabel) => bounded((check) => idle(check), readTimeoutMs, label);
   return {
     drain,
+    budgetDeadline: (error: unknown) => error instanceof Error ? budgetDeadlines.get(error) ?? [] : [],
     failureActivity: (error: unknown): BrowserReadFailure | null => error instanceof Error ? failureActivities.get(error) ?? null : null,
     deadlineActivity: (...errors: [] | [unknown]): BrowserReadActivity | null => {
       const error = errors.length ? errors[0] : latestDeadlineError;
@@ -285,7 +313,7 @@ export function trackBrowserApiReads(context: Pick<BrowserContext, "on" | "off">
     }, readTimeoutMs, label),
     dispose: () => {
       disposed = true;
-      context.off("request", request); context.off("requestfinished", finished); context.off("requestfailed", failed);
+      context.off("request", request); context.off("response", response); context.off("requestfinished", finished); context.off("requestfailed", failed);
       pending.clear(); notify();
     },
   };
@@ -757,7 +785,7 @@ export async function settleWorkflowPanels(page: Pick<Page, "getByRole">, drain:
 
 /** Real UI approvals and real controller/worker/Git; only role responses are fake. */
 async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUrl: string; root: string; stateRoot: string;
-  projectsRoot: string; post: (path: string, body: unknown) => Promise<Response>; effects: () => Promise<unknown>; drainReads: () => Promise<void>; stage: (value: string) => void; recoveryOnly?: boolean;
+  projectsRoot: string; post: (path: string, body: unknown) => Promise<Response>; effects: (label?: BrowserReadSnapshotLabel) => Promise<unknown>; drainReads: (label?: BrowserReadSnapshotLabel) => Promise<void>; stage: (value: string) => void; recoveryOnly?: boolean;
   claimRecovery?: (value: { issue: WorkIssue; facts: WorkflowDetail; task: TaskRecord }) => Promise<WorkflowDetail> }) {
   const { page, apiUrl, post, root } = input;
   const observe = (path: string, action: () => Promise<unknown>) => observeResponse(page, path, "POST", action, 30_000);
@@ -814,7 +842,7 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
     // Use the existing parent refresh instead of reloading the document and
     // aborting old browser queries. Closed panels also stop their old pollers.
     // Complete mount/old-panel reads before observing the explicit refresh.
-    await settleWorkflowPanels(page, input.drainReads);
+    await settleWorkflowPanels(page, () => input.drainReads("t013-panel-drain"));
     const refreshed = await observeIssueRefresh(page, () => page.locator(".work-issues-panel > .work-issues-heading")
       .getByRole("button", { name: "Actualizar", exact: true }).click());
     const fresh = selectRefreshedWorkflowIssue(refreshed["/api/work-issues"], issue, (await lineage(issue.id)).issue);
@@ -848,7 +876,7 @@ async function workflowCampaign(input: { page: Page; apiUrl: string; dashboardUr
       await panel.getByLabel("Máximo de intentos", { exact: true }).fill("4");
     }
     assert.equal(await panel.locator(".workflow-role input:checked").count(), 0, "consent starts empty independently for every role");
-    const before = await input.effects();
+    const before = await input.effects("t013-before-preview-effects");
     const previewResponse = await observe("/api/workflows/preview", () => panel.getByRole("button", { name: "Previsualizar workflow", exact: true }).click());
     assert.equal(previewResponse.status(), 200);
     let preview = await previewResponse.json() as WorkflowPreview;
@@ -1161,6 +1189,7 @@ async function main(): Promise<void> {
   let vite: ViteDevServer | null = null;
   let browser: Browser | null = null;
   let reads: ReturnType<typeof trackBrowserApiReads> | null = null;
+  const budgetProxyTrace = createBudgetProxyTrace();
   let tempRoot: string | null = null;
 
   try {
@@ -1284,11 +1313,21 @@ async function main(): Promise<void> {
     const vitePort = await reserveLoopbackPort();
     vite = await createServer({
       configFile: join(repoRoot, "vite.config.ts"),
+      plugins: [{ name: "synthetic-budget-read-trace", configureServer(server) {
+        server.middlewares.use((request, _response, next) => { budgetProxyTrace.observe("received", request); next(); });
+      } }],
       server: {
         host: "127.0.0.1",
         port: vitePort,
         strictPort: true,
-        proxy: { "/api": { target: apiUrl } },
+        proxy: { "/api": { target: apiUrl, configure(proxy) {
+          proxy.on("proxyReq", (_outgoing, request) => budgetProxyTrace.observe("forwarded", request));
+          proxy.on("proxyRes", (upstream, request) => {
+            if (!isBudgetGet(request.method, request.url)) return;
+            budgetProxyTrace.observe("upstream_headers", request);
+            upstream.once("end", () => budgetProxyTrace.observe("upstream_finished", request));
+          });
+        } } },
       },
     });
     await vite.listen();
@@ -1546,7 +1585,14 @@ async function main(): Promise<void> {
     // Persistent unknown-gate refusal is tested separately; subsequent successful
     // admissions here must still prove that no retained fence blocks execution.
     let effectCaptureLabel: BrowserReadSnapshotLabel = "unlabelled";
-    const effects = (readTimeoutMs = 10_000) => reads!.snapshot(async () => ({ state: await harnessTreeHash(stateRoot, ["locks/orchestrator-schedule.lock", "maintenance/boundary.lock"]), worktrees: await hashOrAbsent(join(projectsRoot, "surtec-worktrees")), executor: await readFile(join(tempRoot!, "executor-effects.jsonl"), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return "absent"; }) }), readTimeoutMs, effectCaptureLabel);
+    const effects = (readTimeoutMs = 10_000, label: BrowserReadSnapshotLabel = effectCaptureLabel) => reads!.snapshot(async () => ({ state: await harnessTreeHash(stateRoot, ["locks/orchestrator-schedule.lock", "maintenance/boundary.lock"]), worktrees: await hashOrAbsent(join(projectsRoot, "surtec-worktrees")), executor: await readFile(join(tempRoot!, "executor-effects.jsonl"), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return "absent"; }) }), readTimeoutMs, label);
+    async function assertIssueAuthorizationRefused(path: string, body: unknown) {
+      const before = await effects();
+      const response = await apiPost(path, body);
+      assert.equal(response.status, 409, `${path} rejects the current source state`);
+      assert.deepEqual(await response.json(), { error: "issue transition rejected: transition-not-allowed" });
+      assert.deepEqual(await effects(), before, `${path} preserves persisted state and execution effects`);
+    }
     // Intake may append the issue aggregate, never execution authority or work.
     // This separate assertion does not weaken the full effects() comparison.
     const intakeExecutionEffects = () => reads!.snapshot(async () => ({
@@ -1855,7 +1901,19 @@ async function main(): Promise<void> {
     assert.deepEqual(await intakeExecutionEffects(), beforeIntakeExecution);
     page.off("request", recordIntake);
 
-    const authorizeIssueResponse = await observeResponse(page, `/api/work-issues/${issueCreateBody.issue.id}/authorize`, "POST", () => issueCard.getByRole("button", { name: "Autorizar scope exacto", exact: true }).click());
+    stage = "reject resume and decision resolution from a proposed issue";
+    const proposedIssuePath = `/api/work-issues/${issueCreateBody.issue.id}`;
+    const proposedRevision = issueCreateBody.issue.revision;
+    await assertIssueAuthorizationRefused(`${proposedIssuePath}/resume`, {
+      expected_revision: proposedRevision, rationale: "Synthetic blocker resolution.",
+    });
+    await assertIssueAuthorizationRefused(`${proposedIssuePath}/resolve-decision`, {
+      expected_revision: proposedRevision, approval_id: "synthetic-decision-approval", rationale: "Synthetic same-scope decision.",
+    });
+    assert.ok(await issueCard.getByText("proposed", { exact: true }).isVisible());
+
+    stage = "authorize the proposed issue through the dashboard";
+    const authorizeIssueResponse = await observeResponse(page, `${proposedIssuePath}/authorize`, "POST", () => issueCard.getByRole("button", { name: "Autorizar scope exacto", exact: true }).click());
     assert.equal(authorizeIssueResponse.status(), 200, "exact-scope authorization is an authenticated human action");
     const authorizedIssue = (await authorizeIssueResponse.json() as { issue: { revision: number } }).issue;
     await issueCard.getByText("authorized", { exact: true }).waitFor();
@@ -1955,6 +2013,14 @@ async function main(): Promise<void> {
       await page.getByRole("button", { name: "Actualizar", exact: true }).click();
       const card = page.locator(".work-issue-card").filter({ hasText: title });
       await card.getByText("needs-decision", { exact: true }).waitFor();
+      if (decision === "approve") {
+        stage = "reject initial authorization while a scope decision is pending";
+        await assertIssueAuthorizationRefused(`/api/work-issues/${proposed.id}/authorize`, {
+          expected_revision: detail.issue.revision, approval_id: "synthetic-initial-approval",
+        });
+        assert.ok(await card.getByText("needs-decision", { exact: true }).isVisible());
+        stage = "approve the new scope revision through the dashboard";
+      }
       const decisionResponse = await observeResponse(page, `/api/work-issues/${proposed.id}/scope-decision`, "POST", () => card.getByRole("button", { name: decision === "approve" ? "Autorizar nueva revisión de scope" : "Rechazar y cancelar issue", exact: true }).click());
       assert.equal(decisionResponse.status(), 200);
       stage = `scope ${decision}: GET issue lineage after browser decision`;
@@ -2078,7 +2144,7 @@ async function main(): Promise<void> {
     assert.deepEqual((await readApiJson<HarnessResponse>(`${apiUrl}/api/projects/${profileProjectId}/harness`)).saved, restoredSavedHarness, "GET unknown observations do not replace explicitly restored saved evidence");
 
     const workflows = await workflowCampaign({ page, apiUrl, dashboardUrl, root: tempRoot, stateRoot, projectsRoot,
-      post: (path, body) => apiPost(path, body, firstSessionToken, 30_000), effects: () => effects(30_000), drainReads: () => reads!.drain(30_000),
+      post: (path, body) => apiPost(path, body, firstSessionToken, 30_000), effects: (label) => effects(30_000, label), drainReads: (label) => reads!.drain(30_000, label),
       stage: (value) => { stage = value; console.log(value); } });
     // A test-owned terminal snapshot deliberately has no event for its newer
     // revision. Reads/restart must expose uncertainty, never repair or replay.
@@ -2201,6 +2267,10 @@ async function main(): Promise<void> {
     if (nodeFailure) console.error("SMOKE_NODE_API_FAILURE " + JSON.stringify(nodeFailure));
     const readActivity = reads?.deadlineActivity(error);
     if (readActivity) console.error("SMOKE_READ_ACTIVITY " + JSON.stringify(readActivity));
+    const budgetReads = reads?.budgetDeadline(error);
+    if (budgetReads?.length && readActivity?.label.startsWith("t013-")) {
+      console.error("SMOKE_T013_BUDGET_READS " + JSON.stringify({ label: readActivity.label, browser_pending: budgetReads, proxy_totals: budgetProxyTrace.snapshot() }));
+    }
     const readFailure = reads?.failureActivity(error);
     if (readFailure) console.error("SMOKE_READ_FAILURE " + JSON.stringify(readFailure));
     if (tempRoot) {

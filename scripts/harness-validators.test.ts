@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse, stringify } from "yaml";
 import { assertWorkflowPreviewIssue, cleanupSmoke, harnessTreeHash, ISSUE_REFRESH_PATHS, observeIssueRefresh, observeResponse,
   nodeApiFailure, observeNodeApi, selectRefreshedWorkflowIssue, trackBrowserApiReads } from "./playwright-local-app-smoke";
-import { settleWorkflowPanels } from "./playwright-local-app-smoke";
+import { createBudgetProxyTrace, settleWorkflowPanels } from "./playwright-local-app-smoke";
 import { captureUnchargedFixtureNative, requestUnchargedFixture, type UnchargedFixtureAction } from "./playwright-local-app-smoke";
 import { assertOperatingFixtureRoot, isOperatingOfflineAsset, operatingConsoleCategory, operatingFailureLocation, operatingFailureSummary, operatingSmokeEnvironment, parseOperatingReady } from "./playwright-operating-views-smoke";
 
@@ -1146,6 +1146,44 @@ describe("isolated browser smoke read activity", () => {
   }
   afterEach(() => { for (const tracker of trackers.splice(0)) tracker.dispose(); vi.useRealTimers(); });
   const fakeDeadlines = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+  it("tracks only budget GET proxy milestones without retaining the request", () => {
+    const trace = createBudgetProxyTrace();
+    const budget = { method: "GET", url: "/api/budgets?project_id=PRIVATE" };
+    trace.observe("received", { ...budget, method: "POST" });
+    trace.observe("received", { method: "GET", url: "/api/budgets/other" });
+    trace.observe("received", budget);
+    trace.observe("forwarded", budget);
+    const beforeHeaders = trace.snapshot();
+    trace.observe("upstream_headers", budget);
+    trace.observe("upstream_finished", budget);
+    expect(beforeHeaders).toEqual({ received: 1, forwarded: 1, upstream_headers: 0, upstream_finished: 0 });
+    expect(trace.snapshot()).toEqual({ received: 1, forwarded: 1, upstream_headers: 1, upstream_finished: 1 });
+    expect(JSON.stringify(trace.snapshot())).not.toContain("PRIVATE");
+  });
+
+  it.each(["t013-panel-drain", "t013-before-preview-effects"] as const)("traces budget header arrival at %s without changing the drain", async (label) => {
+    fakeDeadlines();
+    const { context, tracker } = setup();
+    const beforeHeaders = request("/api/budgets?project_id=PRIVATE");
+    const beforeBody = request("/api/budgets");
+    const completed = request("/api/budgets");
+    for (const item of [beforeHeaders, beforeBody, completed]) context.emit("request", item);
+    context.emit("response", { request: () => beforeBody });
+    context.emit("response", { request: () => completed });
+    context.emit("requestfinished", completed);
+    const capture = vi.fn();
+    const outcome = observe(label === "t013-panel-drain" ? tracker.drain(30_000, label) : tracker.snapshot(capture, 30_000, label));
+    await vi.advanceTimersByTimeAsync(30_000);
+    const error = failure(await outcome);
+    expect(activity(tracker, error)).toMatchObject({ label, pending_at_deadline: 2 });
+    expect(JSON.parse(error.message.split("SMOKE_READ_DIAGNOSTIC ")[1]!)).toMatchObject({ captures_started: 0 });
+    expect(tracker.budgetDeadline(error)).toEqual([{ sequence: 1, headers_received: false }, { sequence: 2, headers_received: true }]);
+    expect(tracker.budgetDeadline(new Error(error.message))).toEqual([]);
+    expect(capture).not.toHaveBeenCalled();
+    tracker.dispose();
+    expect(context.listenerCount("response")).toBe(0);
+  });
 
   it("distinguishes two reads already pending at the workflow drain from new arrivals and preserves the legacy payload", async () => {
     fakeDeadlines();

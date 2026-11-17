@@ -80,6 +80,10 @@ export function harnessProfilesPath(base: string = stateDir()): string {
   return join(base, "harness", "profiles.json");
 }
 
+export function scaffoldOperationsDir(base: string = stateDir()): string {
+  return join(base, "harness", "scaffold-operations");
+}
+
 // Control/ownership files are outside the replaceable operating-state catalog.
 export function maintenanceDir(base: string = stateDir()): string { return join(base, "maintenance"); }
 export function maintenanceControlPath(base: string = stateDir()): string { return join(maintenanceDir(base), "control.json"); }

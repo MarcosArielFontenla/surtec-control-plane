@@ -1,0 +1,47 @@
+schema_version: 1
+name: phase-r-archetype-apply
+entity: HarnessScaffoldOperation
+domains:
+  - project-configuration
+  - harness-provisioning
+  - local-state
+purpose: Apply and verify approved personal scaffold additions to one registered checkout with a recoverable preimage and separately approved rollback.
+requirements:
+  - id: req-approval
+    description: Resolve registered project policy and current checkout evidence, show the exact personal@1 plan, and require live confirmation of its digest and exclusive access before any target mutation.
+  - id: req-apply
+    description: Persist a sealed preimage before publishing only approved missing templates without replacement, recording durable intent, exact ownership and partial completion.
+  - id: req-verification
+    description: Verify applied bytes, preserved entries, Git index and HEAD, and the actual Doctor observation, with independent scoped and overall validation outcomes.
+  - id: req-rollback
+    description: Present a separately approved rollback preview and remove only the unchanged creations owned by the operation, preserving foreign or edited files and reporting unresolved recovery states.
+constraints:
+  - Limit the write set to the two reviewed template paths under an existing physical destination parent.
+  - Use a bounded versioned journal in ignored local state and persist only canonical bytes and private-safe evidence.
+  - Preserve the existing policy, maintenance, Doctor, and no-effect preview boundaries.
+  - Require a separate decision for the first checkout pilot after synthetic qualification.
+nonGoals:
+  - Existing-file edits, directory provisioning, generated updates, obsolete-file reconciliation and source repinning.
+  - Dashboard, runtime or project command execution, Git mutations and maintenance-lock override.
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-11-16T18:57:42Z"
+  acceptanceChecks:
+    - id: ac-behavior
+      requirementIds: [req-approval, req-apply, req-verification, req-rollback]
+      description: Run the suite including isolated Git and local state coverage for fresh approval, no-overwrite apply, verification, fault recovery and separately approved rollback.
+      command: pnpm test
+      expectedExitCode: 0
+    - id: ac-schema
+      requirementIds: [req-apply, req-rollback]
+      description: Compile the versioned scaffold operation schema with the existing schema catalog.
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-approval, req-apply, req-verification, req-rollback]
+      description: Typecheck the CLI, scaffold operations, journal and fixtures.
+      command: pnpm typecheck
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications: []

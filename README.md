@@ -6,6 +6,8 @@ Surtec Control Plane is a local dashboard for discovering, observing, and safely
 
 The [Factory Local PoC roadmap](docs/roadmap/factory-local-poc.md) is the active evolution plan: demonstrate one real local delivery through the existing request, authorized plan, execution, candidate, evidence, review, and human acceptance flow.
 
+The [current checkpoint](docs/roadmap/factory-local-poc.md#current-checkpoint--phase-s-t033-open) tracks Phase S, with T033 open pending the integrated Chromium smoke.
+
 The roadmap separates the PoC from retained P/Q acceptance debt and future capabilities. Its adoption is documentation-only; it does not certify the current checkout, enable deferred features, or authorize later phases. The [historical evolution roadmap](docs/roadmap/control-plane-evolution.md) retains its original results and planning entries.
 
 ## Stack

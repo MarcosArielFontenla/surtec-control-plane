@@ -1,5 +1,13 @@
 # Factory Local PoC roadmap
 
+## Current checkpoint · Phase S, T033 open
+
+Phase Q closed at T012. Phase R closed after the approved `personal@1` pilot and documented the Doctor inventory limit. The Factory F3 and F5 local acceptance remains recorded below. See the [Phase Q acceptance](../runbooks/phase-q-acceptance.md) and [Phase R scaffold pilot](../runbooks/harness-scaffold-apply.md).
+
+Phase S is the active organizational EVAL work. T030–T032 passed their scoped checks. The offline gate passed 62 organizational tests and schema validation checked 65 schemas. The T033 run reached the three new HTTP refusal checks and continued into T013, where a pending budget read prevented the workflow effect capture from starting. Chromium, Vite, the API and the fixture were cleaned up. Eleven synthetic diagnostic cases passed, followed by typecheck with the diagnostic labels wired through the smoke.
+
+T033 remains open pending an integrated Chromium PASS with the new diagnostic capture available. The follow-up is to resume that gate with the existing limits and review the bounded diagnostics if it stops again. See the [T032–T033 acceptance checkpoint](../proposals/phase-s-issue-authorization-source-state.md#acceptance-checkpoint).
+
 ## F3 and F5 local acceptance — 2026-11-12
 
 The owner confirmed QA and accepted the corrected Gear List candidate locally for F3-01 through F3-08 after Reviewer approval and a sealed V01–V08 PASS. F3 and F5 are closed. F4's applicable controls have recorded evidence. The [F5 pilot closure report](../runbooks/factory-local-f5-pilot-review.md) records the decision digest and pilot history. The [regression debt record](#debt-f2-global-900) tracks the later regression and CI results.

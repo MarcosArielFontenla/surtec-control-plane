@@ -13,7 +13,7 @@
     "repository:check": "tsx scripts/check-repository-consistency.ts",
     "harness:check": "pwsh -NoProfile -File .agents/scripts/check-harness.ps1",
     "audit:check": "pnpm audit --audit-level moderate",
-    "evals:check": "tsx scripts/run-evals.ts && tsx scripts/run-outcome-evals.ts",
+    "evals:check": "tsx scripts/run-evals.ts && tsx scripts/run-outcome-evals.ts && vitest run --maxWorkers=1 scripts/organizational-harness-read-only.test.ts scripts/organizational-objective-ancestry.test.ts scripts/organizational-issue-cycles.test.ts scripts/organizational-execution-role.test.ts scripts/organizational-role-permissions.test.ts scripts/organizational-issue-approval.test.ts scripts/organizational-context-budget.test.ts scripts/organizational-confidential-context-consent.test.ts scripts/organizational-issue-completion-evidence.test.ts scripts/organizational-active-write-checkout.test.ts scripts/organizational-execution-budget.test.ts scripts/organizational-routine-prohibited-action.test.ts scripts/organizational-harness-source-integrity.test.ts scripts/organizational-scaffold-ownership-conflict.test.ts scripts/organizational-issue-transition.test.ts",
     "evals:outcomes": "tsx scripts/run-outcome-evals.ts",
     "evals:canary": "tsx scripts/run-live-canaries.ts",
     "ci:check": "pnpm repository:check && pnpm harness:check && pnpm schemas:check && pnpm secrets:check && pnpm evals:check && pnpm test && pnpm typecheck && pnpm build",

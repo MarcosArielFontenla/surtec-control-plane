@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { resolve, join, dirname, posix } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { inspectHarness } from "./inspect";
+import { inspectHarness, inspectHarnessWithCoverage } from "./inspect";
 import { hash, loadHarnessSource, readContained, safeRelative } from "./source";
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
@@ -64,6 +64,22 @@ function fixture(installed = true) {
 }
 const source = () => loadHarnessSource(process.cwd());
 describe("read-only Harness inventory", () => {
+  it("reports entry and depth limits through the internal coverage observation", () => {
+    const trusted = source();
+    const wide = fixture(false);
+    mkdirSync(join(wide, ".agents"));
+    for (let index = 0; index < 130; index++) writeFileSync(join(wide, ".agents", `fixture-${index}.txt`), "fixture");
+    const now = new Date("2026-11-16T20:00:00.000Z");
+    const observation = inspectHarnessWithCoverage(wide, "fixture", trusted, now);
+    expect(observation.inventoryLimits).toEqual(["entry-count"]);
+    expect(observation.profile).toEqual(inspectHarness(wide, "fixture", trusted, now));
+    expect(observation.profile.entries).toHaveLength(128);
+    expect(observation.profile.findings).toEqual(expect.arrayContaining([expect.objectContaining({ id: "inventory-limit" })]));
+
+    const deep = fixture(false);
+    mkdirSync(join(deep, ".agents/a/b/c/d/e/f/g"), { recursive: true });
+    expect(inspectHarnessWithCoverage(deep, "fixture", trusted, now).inventoryLimits).toEqual(["depth"]);
+  });
   it("recognizes absent Harness without inventing installed capability coverage", () => { const profile = inspectHarness(fixture(false), "fixture", source()); expect(profile.status).toBe("absent"); expect(profile.detected_version).toBeNull(); expect(profile.testing_policy.mode).toBe("functional"); });
   it("does not infer ownership from inherited dictionary properties", () => { expect(inspectHarness(fixture(false), "constructor", source()).testing_policy.mode).toBe("functional"); });
   it("observes the reviewed layout without claiming ownership or execution", () => {

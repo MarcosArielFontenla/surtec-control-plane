@@ -1,0 +1,46 @@
+schema_version: 1
+name: phase-r-archetype-preview
+entity: ProjectArchetype
+domains:
+  - project-configuration
+  - harness-inspection
+purpose: Reuse a verification pattern observed in a real pilot and preview a small canonically pinned scaffold subset on disposable fixtures.
+requirements:
+  - id: req-recommendation
+    description: Explicitly select the versioned personal archetype and return independent test and build recommendations for applicable frontend and backend components with zero execution authority.
+  - id: req-preview
+    description: Compare the two pinned template entries and observed root primer against the trusted source and report deterministic add, preserve and conflict decisions with ownership, validation expectations and rollback planning.
+  - id: req-safety
+    description: Bound reads to stable physical contained paths and refuse unknown source, unsafe paths or unstable input while keeping target bytes and file inventory identical.
+  - id: req-fixture
+    description: Qualify the preview with a disposable fixture and the actual Doctor, compare the hypothetical Doctor result separately and verify fixture cleanup.
+constraints:
+  - Resolve archetype and source configuration through closed reviewed data.
+  - Keep actual verification commands, route activation and scope authority in their existing policy boundary.
+  - Return relative paths and bounded metadata, with diff content limited to trusted canonical additions.
+  - Report unknown validation until a relevant check passes against the observed target.
+nonGoals:
+  - Real-project provisioning, apply, backup execution, rollback execution and automatic generated updates.
+  - Additional archetypes, browser controls, new product endpoints and role or budget changes.
+designContract:
+  status: approved
+  reviewedBy: repository-owner
+  approvedAt: "2026-11-16T18:15:47Z"
+  acceptanceChecks:
+    - id: ac-behavior
+      requirementIds: [req-recommendation, req-preview, req-safety, req-fixture]
+      description: Run the current suite including the proposed registry, read-only preview and real Doctor fixture acceptance tests.
+      command: pnpm test
+      expectedExitCode: 0
+    - id: ac-schema
+      requirementIds: [req-recommendation]
+      description: Compile the closed versioned archetype schema with the existing schema catalog.
+      command: pnpm schemas:check
+      expectedExitCode: 0
+    - id: ac-types
+      requirementIds: [req-preview, req-safety, req-fixture]
+      description: Typecheck the preview contract, fixture and existing consumers.
+      command: pnpm typecheck
+      expectedExitCode: 0
+  checksWaiver: null
+clarifications: []

@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:surtec:harness-scaffold-operation:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "operation_id", "state_root_fingerprint", "revision", "preimage", "preimage_sha256", "checkpoints", "snapshot_sha256"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "operation_id": { "type": "string", "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$(?![\\s\\S])" },
+    "state_root_fingerprint": { "$ref": "#/$defs/sha256" },
+    "revision": { "type": "integer", "minimum": 1, "maximum": 33 },
+    "preimage": { "$ref": "#/$defs/preimage" },
+    "preimage_sha256": { "$ref": "#/$defs/sha256" },
+    "checkpoints": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/checkpoint" } },
+    "snapshot_sha256": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$(?![\\s\\S])" },
+    "maybeSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+    "template": { "enum": [".agents/templates/entity.spec.yaml", ".agents/templates/feature.tasks.md"] },
+    "preimage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "archetype_id", "archetype_sha256", "source", "scaffold_fingerprint", "apply_digest", "git", "prior_doctor_fingerprint", "entries", "additions"],
+      "properties": {
+        "project_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$(?![\\s\\S])" },
+        "archetype_id": { "const": "personal@1" },
+        "archetype_sha256": { "$ref": "#/$defs/sha256" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "version", "fingerprint"],
+          "properties": {
+            "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$(?![\\s\\S])" },
+            "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,239}$(?![\\s\\S])" },
+            "fingerprint": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "scaffold_fingerprint": { "$ref": "#/$defs/sha256" },
+        "apply_digest": { "$ref": "#/$defs/sha256" },
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["checkout_fingerprint", "template_parent_fingerprint", "head", "branch", "index_sha256", "index_entries_sha256"],
+          "properties": {
+            "checkout_fingerprint": { "$ref": "#/$defs/sha256" },
+            "template_parent_fingerprint": { "$ref": "#/$defs/sha256" },
+            "head": { "type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$(?![\\s\\S])" },
+            "branch": { "anyOf": [{ "type": "string", "pattern": "^refs/heads/[^\\x00-\\x20\\x7f]{1,512}$(?![\\s\\S])" }, { "type": "null" }] },
+            "index_sha256": { "$ref": "#/$defs/maybeSha256" },
+            "index_entries_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        "prior_doctor_fingerprint": { "$ref": "#/$defs/sha256" },
+        "entries": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/entry" } },
+        "additions": { "type": "array", "minItems": 1, "maxItems": 2, "items": { "$ref": "#/$defs/addition" } }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "presence", "decision", "ownership", "ownership_evidence_sha256", "observed_sha256", "canonical_sha256", "git_exclusion"],
+      "properties": {
+        "path": { "anyOf": [{ "$ref": "#/$defs/template" }, { "const": "AGENTS.md" }] },
+        "presence": { "enum": ["missing", "present"] },
+        "decision": { "enum": ["safe-addition", "unchanged", "user-owned-conflict", "manual-migration-required"] },
+        "ownership": { "enum": ["scaffold-managed", "surtec-generated", "project-owned", "user-owned", "unknown"] },
+        "ownership_evidence_sha256": { "$ref": "#/$defs/maybeSha256" },
+        "observed_sha256": { "$ref": "#/$defs/maybeSha256" },
+        "canonical_sha256": { "$ref": "#/$defs/sha256" },
+        "git_exclusion": { "enum": ["index-entry", "head-entry", "ignored", null] }
+      }
+    },
+    "addition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "preimage", "sha256", "byte_count"],
+      "properties": {
+        "path": { "$ref": "#/$defs/template" },
+        "preimage": { "const": "absent" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "byte_count": { "type": "integer", "minimum": 0, "maximum": 262144 }
+      }
+    },
+    "checkpoint": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "path"],
+          "properties": { "kind": { "const": "stage-intent" }, "path": { "$ref": "#/$defs/template" } }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "path", "file_identity_sha256", "file_metadata_sha256"],
+          "properties": {
+            "kind": { "enum": ["staged", "published"] }, "path": { "$ref": "#/$defs/template" },
+            "file_identity_sha256": { "$ref": "#/$defs/sha256" }, "file_metadata_sha256": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "result", "observation_sha256", "doctor_fingerprint", "doctor_validation"],
+          "properties": {
+            "kind": { "const": "verification" }, "result": { "enum": ["passed", "failed", "unknown"] },
+            "observation_sha256": { "$ref": "#/$defs/maybeSha256" },
+            "doctor_fingerprint": { "$ref": "#/$defs/maybeSha256" },
+            "doctor_validation": { "enum": ["passed", "failed", "unknown"] }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "rollback_digest", "paths"],
+          "properties": {
+            "kind": { "const": "rollback-approved" }, "rollback_digest": { "$ref": "#/$defs/sha256" },
+            "paths": { "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": { "$ref": "#/$defs/template" } }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "path"],
+          "properties": { "kind": { "const": "rollback-intent" }, "path": { "$ref": "#/$defs/template" } }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "path", "outcome"],
+          "properties": {
+            "kind": { "const": "absence-observed" }, "path": { "$ref": "#/$defs/template" },
+            "outcome": { "enum": ["removed", "already-absent"] }
+          }
+        }
+      ]
+    }
+  }
+}
