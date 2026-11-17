@@ -1,6 +1,6 @@
 # Phase S · Bind authorization actions to their source states
 
-Status **T032 passed. T033 implemented and open for integrated browser acceptance.**
+Status **T032 and T033 passed.**
 
 ## Finding and required behavior
 
@@ -43,4 +43,5 @@ Stop at the first failure or unknown result. Keep the existing timeouts and allo
 - The partial scaffold apply case passed outside the Windows sandbox with an owned temporary directory. Inside the sandbox its hard-link publication returned `EPERM`. The existing no-overwrite and ownership checks remain in force.
 - `pnpm evals:check` passed v1 and v2 and all 62 organizational cases. `pnpm schemas:check` validated 65 schemas. `pnpm typecheck` passed after the diagnostic label wiring correction.
 - The T033 smoke reached T013 after the HTTP refusals and their state comparisons. A budget read was pending for about 37 seconds when the existing 30-second read-drain deadline fired. Chromium, Vite and the API closed and the owned workspace was removed.
-- The T013 diagnostic distinguishes panel drain from pre-preview effect capture. It retains per-request Chromium header arrival and aggregate Vite ingress, forwarding, upstream headers and upstream body completion. The aggregates do not correlate individual proxy requests with browser sequences. Eleven synthetic tests passed. Integrated acceptance with this capture is pending.
+- The T013 diagnostic distinguishes panel drain from pre-preview effect capture. It retains per-request Chromium header arrival and aggregate Vite ingress, forwarding, upstream headers and upstream body completion. The aggregates do not correlate individual proxy requests with browser sequences. Eleven synthetic tests passed.
+- The subsequent integrated `pnpm smoke:local:playwright` on `b2743cf` passed with Chromium and the real local API. It exercised all three HTTP refusals and the valid dashboard actions, reached all five workflow templates and verified restart behavior. The run recorded 35 synthetic executor turns, exit 0 and 648.193 seconds. Chromium, Vite, the API, the fixture and the launcher's temporary root completed cleanup. T033 is closed.

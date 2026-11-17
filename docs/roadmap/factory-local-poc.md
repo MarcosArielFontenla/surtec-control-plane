@@ -1,12 +1,16 @@
 # Factory Local PoC roadmap
 
-## Current checkpoint · Phase S, T033 open
+## Current checkpoint · Phase S, T033 closed
 
 Phase Q closed at T012. Phase R closed after the approved `personal@1` pilot and documented the Doctor inventory limit. The Factory F3 and F5 local acceptance remains recorded below. See the [Phase Q acceptance](../runbooks/phase-q-acceptance.md) and [Phase R scaffold pilot](../runbooks/harness-scaffold-apply.md).
 
 Phase S is the active organizational EVAL work. T030–T032 passed their scoped checks. The offline gate passed 62 organizational tests and schema validation checked 65 schemas. The T033 run reached the three new HTTP refusal checks and continued into T013, where a pending budget read prevented the workflow effect capture from starting. Chromium, Vite, the API and the fixture were cleaned up. Eleven synthetic diagnostic cases passed, followed by typecheck with the diagnostic labels wired through the smoke.
 
-T033 remains open pending an integrated Chromium PASS with the new diagnostic capture available. The follow-up is to resume that gate with the existing limits and review the bounded diagnostics if it stops again. See the [T032–T033 acceptance checkpoint](../proposals/phase-s-issue-authorization-source-state.md#acceptance-checkpoint).
+T033 closed with the integrated Chromium smoke on the catalog-fix revision `b2743cf`. The real local API and dashboard passed with 35 synthetic executor turns. Native exit was 0 after 648.193 seconds. Chromium, Vite, the API, the fixture and the launcher's temporary root all completed cleanup. See the [T032–T033 acceptance checkpoint](../proposals/phase-s-issue-authorization-source-state.md#acceptance-checkpoint).
+
+The exact Harness catalog now accepts the full offline EVAL script and rejects the earlier form that omits organizational checks. The subsequent [master CI run](https://github.com/MarcosArielFontenla/surtec-control-plane/actions/runs/44156844788) passed Harness, EVALs, tests, typecheck and build. Its dependency audit failed on the Vite dependency `picomatch@4.0.7`. npm reported `4.0.7` as the latest published version at verification time. The audit remains required. See [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf).
+
+Next, qualify one small real request and then one medium request on separate branches from updated master. Use the same comparison fields for both pilots: elapsed time from request to acceptance, observed tokens and accounting completeness, human interventions, failed attempts and rework. Keep criteria, verification and acceptance evidence for both. Add specialized review and additional roles only where the task risk warrants them. Review repeated instructions before changing a control, keeping one authoritative source for each decision. Use pilot evidence to prioritize further scaffold work. Remote multi-user access needs a separate authentication, permissions and isolation design.
 
 ## F3 and F5 local acceptance — 2026-11-12
 
