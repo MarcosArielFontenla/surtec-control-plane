@@ -43,7 +43,17 @@ Both pilots used `frontend-engineer` with `gpt-6-luna` at medium effort and the 
 
 Each run stopped on the token guard before making changes. These measurements compare the cost of reaching the stop. They cannot establish how much either task costs to deliver, how task complexity affects delivery cost, or whether the dry prompt savings would change a live outcome. The two pilot ledgers remain separate.
 
-The next proposed increment is an offline diagnosis of context growth before editing. Compare the admitted prompt and bounded tool responses across the recorded turns. Capture the byte counts and attribution that can be verified without copying response content or private evidence into Git. If retained evidence cannot support the comparison, record what is missing and qualify an observer with synthetic events before considering any further live pilot.
+#### Offline native response measurement
+
+| Pilot attempt | Verified native call–response pairs | Observed UTF-8 response bytes through interruption |
+| --- | ---: | ---: |
+| Small · Initial | 4/4 | 56,267 |
+| Small · Successor | 4/4 | 63,706 |
+| Medium | 4/4 | 122,435 |
+
+The offline check verified 12 pairs and measured 242,408 response bytes across the three interrupted turns. It matched each final native `exec` response to its preceding call by `call_id` within the same turn and summed the UTF-8 text blocks. Coverage is partial because the turns ended in interruption. All 26 synthetic tests passed. SHA-256 checks confirmed that the three retained session files and their three task records were unchanged by validation.
+
+Attribution to Surtec execution items and the first edit both remain unknown. The exact response bytes before the first edit are therefore unavailable. The measured subtotals cover retained response text through interruption. Runtime token savings and delivery cost remain unmeasured. Only aggregate results are recorded here.
 
 ## F3 and F5 local acceptance — 2026-11-12
 
