@@ -55,6 +55,12 @@ The offline check verified 12 pairs and measured 242,408 response bytes across t
 
 Attribution to Surtec execution items and the first edit both remain unknown. The exact response bytes before the first edit are therefore unavailable. The measured subtotals cover retained response text through interruption. Runtime token savings and delivery cost remain unmeasured. Only aggregate results are recorded here.
 
+#### Synthetic response budget trial
+
+The offline fixture reduced response text from 65,536 to 12,288 UTF-8 bytes, saving **53,248 bytes (81.25%)**. The four responses retained 4,096, 4,096, 3,584 and 512 bytes, including truncation notices. All stayed within the experimental limits of 4 KiB per response and 12 KiB per turn.
+
+The test recovered **all six Local Issues criteria** from the retained text: combined project and state filters, the default view of all local issues, selection persistence after reload, one-action reset, distinct unavailable and no-match states, and navigation to the exact issue in its project. Removing the exact-issue criterion failed the evidence check even though the response stayed within budget. All 25 focused synthetic tests passed, including six new cases. Token savings and the effect on a live pilot remain unmeasured.
+
 ## F3 and F5 local acceptance — 2026-11-12
 
 The owner confirmed QA and accepted the corrected Gear List candidate locally for F3-01 through F3-08 after Reviewer approval and a sealed V01–V08 PASS. F3 and F5 are closed. F4's applicable controls have recorded evidence. The [F5 pilot closure report](../runbooks/factory-local-f5-pilot-review.md) records the decision digest and pilot history. The [regression debt record](#debt-f2-global-900) tracks the later regression and CI results.
