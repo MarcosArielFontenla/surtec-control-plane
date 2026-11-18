@@ -10,7 +10,40 @@ T033 closed with the integrated Chromium smoke on the catalog-fix revision `b274
 
 The exact Harness catalog now accepts the full offline EVAL script and rejects the earlier form that omits organizational checks. The subsequent [master CI run](https://github.com/MarcosArielFontenla/surtec-control-plane/actions/runs/44156844788) passed Harness, EVALs, tests, typecheck and build. Its dependency audit failed on the Vite dependency `picomatch@4.0.7`. npm reported `4.0.7` as the latest published version at verification time. The audit remains required. See [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf).
 
-Next, qualify one small real request and then one medium request on separate branches from updated master. Use the same comparison fields for both pilots: elapsed time from request to acceptance, observed tokens and accounting completeness, human interventions, failed attempts and rework. Keep criteria, verification and acceptance evidence for both. Add specialized review and additional roles only where the task risk warrants them. Review repeated instructions before changing a control, keeping one authoritative source for each decision. Use pilot evidence to prioritize further scaffold work. Remote multi-user access needs a separate authentication, permissions and isolation design.
+Use the same comparison fields for both pilots: elapsed time from request to acceptance, observed tokens and accounting completeness, human interventions, failed attempts and rework. Keep criteria, verification and acceptance evidence for both. Add specialized review and additional roles only where the task risk warrants them. Review repeated instructions before changing a control, keeping one authoritative source for each decision. Use pilot evidence to prioritize further scaffold work. Remote multi-user access needs a separate authentication, permissions and isolation design.
+
+### Small pilot closed · Blocked by cost
+
+The External Issues empty-state fix stopped before edits, verification or a candidate. The two single-attempt runs closed at 31.659 s and 39.193 s from their respective requests. They recorded 110,043 and 109,627 tokens, for **219,670 observed tokens** with incomplete terminal accounting. Each attempt had a ceiling of one attempt, 300 s and 100,000 tokens. There were two failed attempts and zero candidate rework rounds. Local acceptance was never reached.
+
+The private dry comparison removed a duplicate copy of the issue criteria and scope from the turn message. The complete prompt decreased from 36,862 to 35,732 bytes and from 396 to 385 lines, saving **1,130 bytes (3.07%) and 11 lines**. The admitted manifest, mandatory source hashes and verification commands matched. The comparison measured initial prompt size. Runtime savings remain unmeasured. The owner closed the pilot as blocked by cost after reviewing that result.
+
+### Medium pilot closed · Blocked by cost
+
+Add combinable project and lifecycle-state filters to the local Issues list. Default to all local issues, keep the selected values on refresh, and offer one action to clear them when there are no matches. Keep the existing distinction between an unavailable list and a confirmed empty result. When an exact workflow or issue is opened from an existing navigation action, reveal the target even if the prior filter would hide it. Keep that behavior scoped to the exact issue and project.
+
+Scope the change to Issues presentation and its existing navigation integration. Keep filtering in the client using the existing issue read model. Verify combined filters, refresh, reset, no matches, and exact-target navigation with focused Issues and App tests and `pnpm typecheck`. Run the local Chromium smoke with synthetic issues against the exact candidate before human review and acceptance.
+
+The owner approved the request and the private registration with one conditional dispatch. The live preview matched the dry preview on the separate branch from master. The sole `frontend-engineer` attempt hit the 100,000-token guard before edits and stopped with **128,878 observed tokens**. The worker stopped without a candidate or verification. The owner closed the pilot as blocked by cost. The original issue and attempt remain recorded as blocked and failed, respectively.
+
+### Pilot comparison
+
+Both pilots used `frontend-engineer` with `gpt-6-luna` at medium effort and the same ceiling per admitted run of one attempt, 300 seconds and 100,000 tokens. The small pilot's successor had its own approval and retained the first attempt's observed usage.
+
+| Measure | Small · External Issues empty state | Medium · Local Issues filters |
+| --- | --- | --- |
+| Request to terminal outcome per run | 31.659 s and 39.193 s | 37.217 s |
+| Execution time per run | 29.656 s and 36.259 s | 34.528 s |
+| Observed tokens per run | 110,043 and 109,627 | 128,878 |
+| Observed total and terminal accounting | 219,670, incomplete | 128,878, incomplete |
+| Recorded approval decisions | 4, including approval of the successor attempt | 2, covering the request and private registration with conditional dispatch |
+| Failed attempts | 2 | 1 |
+| Edits, candidate rework and checks | 0 edits, 0 candidate revisions, verification never reached | 0 edits, 0 candidate revisions, verification never reached |
+| Time to acceptance | Unavailable | Unavailable |
+
+Each run stopped on the token guard before making changes. These measurements compare the cost of reaching the stop. They cannot establish how much either task costs to deliver, how task complexity affects delivery cost, or whether the dry prompt savings would change a live outcome. The two pilot ledgers remain separate.
+
+The next proposed increment is an offline diagnosis of context growth before editing. Compare the admitted prompt and bounded tool responses across the recorded turns. Capture the byte counts and attribution that can be verified without copying response content or private evidence into Git. If retained evidence cannot support the comparison, record what is missing and qualify an observer with synthetic events before considering any further live pilot.
 
 ## F3 and F5 local acceptance — 2026-11-12
 
