@@ -61,6 +61,12 @@ The offline fixture reduced response text from 65,536 to 12,288 UTF-8 bytes, sav
 
 The test recovered **all six Local Issues criteria** from the retained text: combined project and state filters, the default view of all local issues, selection persistence after reload, one-action reset, distinct unavailable and no-match states, and navigation to the exact issue in its project. Removing the exact-issue criterion failed the evidence check even though the response stayed within budget. All 25 focused synthetic tests passed, including six new cases. Token savings and the effect on a live pilot remain unmeasured.
 
+#### External Issues offline preflight
+
+The preflight passed on `master` at `ad72896`. It recovered evidence for confirmed emptiness, provider unavailability, partial results with filters and links, and the synthetic API and Chromium verification points. The four scoped reads used **3,921 UTF-8 bytes** in total: 2,597 for the Issues view, 889 for component tests, 296 for the API fixture, and 139 for the browser smoke. All four fit within 4 KiB per response and 12 KiB per turn without truncation.
+
+All 10 focused synthetic tests passed. Negative cases verified refusal of out-of-scope and fifth reads, missing or ambiguous evidence, and oversized windows. Candidate verification, live token usage, and delivery acceptance remain pending. No model call or product change was needed for this checkpoint.
+
 ## F3 and F5 local acceptance — 2026-11-12
 
 The owner confirmed QA and accepted the corrected Gear List candidate locally for F3-01 through F3-08 after Reviewer approval and a sealed V01–V08 PASS. F3 and F5 are closed. F4's applicable controls have recorded evidence. The [F5 pilot closure report](../runbooks/factory-local-f5-pilot-review.md) records the decision digest and pilot history. The [regression debt record](#debt-f2-global-900) tracks the later regression and CI results.
