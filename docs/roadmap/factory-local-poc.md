@@ -10,6 +10,8 @@ T033 closed with the integrated Chromium smoke on the catalog-fix revision `b274
 
 The exact Harness catalog now accepts the full offline EVAL script and rejects the earlier form that omits organizational checks. The subsequent [master CI run](https://github.com/MarcosArielFontenla/surtec-control-plane/actions/runs/44156844788) passed Harness, EVALs, tests, typecheck and build. Its dependency audit failed on the Vite dependency `picomatch@4.0.7`. npm reported `4.0.7` as the latest published version at verification time. The audit remains required. See [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf).
 
+**Dependency audit recheck (2026-11-27).** `pnpm audit:check` passed with pnpm 10.24.0 and the dependency inputs of remote `master` at `1e926eb`. The command exited 0 and reported `No known vulnerabilities found`. GitHub [withdrew GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) on 2026-11-18. The earlier CI failure remains historical evidence. The audit gate still runs `pnpm audit --audit-level moderate` with the same dependency declarations and lockfile.
+
 Use the same comparison fields for both pilots: elapsed time from request to acceptance, observed tokens and accounting completeness, human interventions, failed attempts and rework. Keep criteria, verification and acceptance evidence for both. Add specialized review and additional roles only where the task risk warrants them. Review repeated instructions before changing a control, keeping one authoritative source for each decision. Use pilot evidence to prioritize further scaffold work. Remote multi-user access needs a separate authentication, permissions and isolation design.
 
 ### Small pilot closed · Blocked by cost
