@@ -12,6 +12,10 @@ The exact Harness catalog now accepts the full offline EVAL script and rejects t
 
 **Dependency audit recheck (2026-11-27).** `pnpm audit:check` passed with pnpm 10.24.0 and the dependency inputs of remote `master` at `1e926eb`. The command exited 0 and reported `No known vulnerabilities found`. GitHub [withdrew GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) on 2026-11-18. The earlier CI failure remains historical evidence. The audit gate still runs `pnpm audit --audit-level moderate` with the same dependency declarations and lockfile.
 
+**Integrated local candidate gate.** On `885e9ab`, `pnpm ci:check` passed in **893.031 seconds**, leaving **6.969 seconds** within the 900-second limit. All 186 Vitest files passed (7,140 tests passed and 14 skipped). Typecheck and build passed. The subsequent `pnpm audit:check` passed in 1.922 seconds and reported `No known vulnerabilities found`. The timing reporter closed and the run's temporary directory was removed.
+
+The earlier runs on `3139a0c` remain historical evidence. Two runs reached the 900-second limit in Vitest, and an intervening run stopped when the EVALs and full suite attempted to write to the same timing directory. The passing run used separate timing directories and included the consolidation of duplicate repeated-finding coverage. The 6.969-second margin applies to this observed run.
+
 Use the same comparison fields for both pilots: elapsed time from request to acceptance, observed tokens and accounting completeness, human interventions, failed attempts and rework. Keep criteria, verification and acceptance evidence for both. Add specialized review and additional roles only where the task risk warrants them. Review repeated instructions before changing a control, keeping one authoritative source for each decision. Use pilot evidence to prioritize further scaffold work. Remote multi-user access needs a separate authentication, permissions and isolation design.
 
 ### Small pilot closed · Blocked by cost
