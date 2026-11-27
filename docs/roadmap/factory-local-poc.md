@@ -65,7 +65,15 @@ The test recovered **all six Local Issues criteria** from the retained text: com
 
 The preflight passed on `master` at `ad72896`. It recovered evidence for confirmed emptiness, provider unavailability, partial results with filters and links, and the synthetic API and Chromium verification points. The four scoped reads used **3,921 UTF-8 bytes** in total: 2,597 for the Issues view, 889 for component tests, 296 for the API fixture, and 139 for the browser smoke. All four fit within 4 KiB per response and 12 KiB per turn without truncation.
 
-All 10 focused synthetic tests passed. Negative cases verified refusal of out-of-scope and fifth reads, missing or ambiguous evidence, and oversized windows. Candidate verification, live token usage, and delivery acceptance remain pending. No model call or product change was needed for this checkpoint.
+All 10 focused synthetic tests passed. Negative cases verified refusal of out-of-scope and fifth reads, missing or ambiguous evidence, and oversized windows. Candidate verification, live token usage, and delivery acceptance were still pending at this checkpoint. No model call or product change was needed for this checkpoint.
+
+#### External Issues follow-up closed · Assisted delivery
+
+The owner accepted the combined candidate locally at `c288504`. The follow-up's model attempts stopped without an applicable diff. The IssuesView change and the separate Chromium case for `GET /api/inbox` were prepared locally and validated together in the isolated checkout. The fix distinguishes a confirmed empty result from an unavailable inbox or repository while retaining available issues, filtering and links.
+
+Patch hashes and applicability were verified. The focused IssuesView tests passed (89 passed, one skipped by configuration), typecheck passed, and the full smoke with the real local API and Chromium passed, including the new synthetic inbox case. Temporary resources were cleaned up.
+
+The follow-up recorded **51,741 observed tokens** across attempts with known usage. This is an observed subtotal, and the original cost-blocked pilot keeps its separate **219,670-token** record with incomplete accounting. The follow-up is closed as an assisted delivery with a local commit.
 
 ## F3 and F5 local acceptance — 2026-11-12
 
