@@ -335,6 +335,7 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
   const repoIds = useMemo(() => (inbox ? inbox.repos.map((entry) => entry.id) : []), [inbox]);
   const failed = inbox ? inbox.repos.filter((entry) => !entry.ok) : [];
   const allFailed = inbox != null && inbox.repos.length > 0 && failed.length === inbox.repos.length;
+  const selectedRepoFailed = failed.some((entry) => entry.id === repo);
   const externalItems = inbox ? (repo ? inbox.items.filter((item) => item.projectId === repo) : inbox.items) : [];
 
   async function perform(issueId: string, operation: () => Promise<unknown>) {
@@ -573,7 +574,12 @@ export function IssuesView({ workflowFocus, onOpenTask }: { workflowFocus?: Work
         {externalError && <div className="banner banner--warn view-note">No pude leer los issues externos ({externalError}).</div>}
         {allFailed && <div className="banner banner--danger view-note">GitHub no disponible (¿gh instalado y autenticado?).</div>}
         {!allFailed && failed.length > 0 && <div className="banner banner--warn view-note">No se pudo leer: {failed.map((entry) => entry.id).join(", ")}.</div>}
-        {!inbox && !externalError ? <p className="empty-mini">cargando issues externos…</p> : externalItems.length === 0 ? <div className="empty"><p>Sin issues externos abiertos</p></div> : (
+        {!externalError && !allFailed && selectedRepoFailed && <p className="empty-mini">Issues externos no disponibles para este repositorio.</p>}
+        {externalError || allFailed || selectedRepoFailed ? null : !inbox ? <p className="empty-mini">cargando issues externos…</p> : externalItems.length === 0 ? (
+          !repo && failed.length > 0
+            ? <p className="empty-mini">Sin issues abiertos en los repositorios disponibles.</p>
+            : <div className="empty"><p>Sin issues externos abiertos</p></div>
+        ) : (
           <div className="panel" style={{ padding: "6px 18px" }}>
             {externalItems.map((item) => <div key={`${item.slug}#${item.number}`} className="issue-row">
               <span className="issue-repo">{item.projectId}</span><span className="issue-num">#{item.number}</span>

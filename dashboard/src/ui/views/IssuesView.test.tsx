@@ -799,6 +799,30 @@ process.once('SIGTERM', stop);
     vi.spyOn(api, "getInbox").mockResolvedValue({ items: [], repos: [{ id: "beta", slug: "owner/beta", ok: false, error: "no gh" }] });
     render(<IssuesView />);
     await waitFor(() => expect(screen.getByText(/github no disponible/i)).toBeTruthy());
+    expect(screen.queryByText(/sin issues externos abiertos/i)).toBeNull();
+  });
+
+  it("distinguishes a healthy empty repository from a failed repository in a partial inbox", async () => {
+    vi.spyOn(api, "getInbox").mockResolvedValue({
+      items: [inbox.items[0]!],
+      repos: [...inbox.repos, { id: "failed", slug: "owner/failed", ok: false }],
+    });
+    render(<IssuesView />);
+    expect((await screen.findByRole("link", { name: /beta issue/i })).getAttribute("href")).toBe("https://gh/beta/2");
+    expect(screen.getByText("No se pudo leer: failed.")).toBeTruthy();
+    const filter = screen.getByLabelText("Repositorio externo");
+    fireEvent.change(filter, { target: { value: "alpha" } });
+    expect(screen.getByText("Sin issues externos abiertos")).toBeTruthy();
+    fireEvent.change(filter, { target: { value: "failed" } });
+    expect(screen.getByText("Issues externos no disponibles para este repositorio.")).toBeTruthy();
+    expect(screen.queryByText("Sin issues externos abiertos")).toBeNull();
+  });
+
+  it("does not report an empty inbox when the provider read rejects", async () => {
+    vi.spyOn(api, "getInbox").mockRejectedValue(new Error("synthetic inbox failure"));
+    render(<IssuesView />);
+    expect(await screen.findByText(/no pude leer los issues externos/i)).toBeTruthy();
+    expect(screen.queryByText(/sin issues externos abiertos/i)).toBeNull();
   });
 
   it("keeps local work proposals separate from provider inbox issues", async () => {
