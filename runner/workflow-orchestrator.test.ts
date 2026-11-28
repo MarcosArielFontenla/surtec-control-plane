@@ -1031,18 +1031,17 @@ describe("T010 one bounded correction under existing authority", () => {
     expect(await worker!.runOnce()).toBe(0); expect(f.executor.run).toHaveBeenCalledTimes(4); expect(listTasks()).toHaveLength(4);
   }, 90000);
 
-  it.each([{ protectedEdit: true }, { failedVerification: true }, { repeatFinding: true }, { correctionTokenCap: 3 }])("retains consumption and stops after unsuccessful correction %#", async (options) => {
+  it.each([{ protectedEdit: true }, { failedVerification: true }, { correctionTokenCap: 3 }])("retains consumption and stops after unsuccessful correction %#", async (options) => {
     const f = await correctionFixture({ ...options, checkpointSetup: true });
     await f.advanceStage("qa");
-    if (options.repeatFinding) await f.advanceStage("correction");
-    const detail = await f.advanceCheckpoint(options.repeatFinding ? "review" : "correction");
+    const detail = await f.advanceCheckpoint("correction");
     expect(detail.workflow.status).toBe("needs-decision"); expect(detail.lineage!.corrections_consumed).toBe(1);
     if (options.correctionTokenCap) {
       expect(detail.workflow.counters.total_tokens).toBeLessThan(detail.workflow.budget.max_total_tokens);
       expect(detail.workflow.blocked_reason).toContain("budget");
       expect(detail.workflow.candidate).toEqual(f.original);
     }
-    expect(detail.workflow.counters.tasks).toBe(options.repeatFinding ? 6 : 5); expect(await worker!.runOnce()).toBe(0);
+    expect(detail.workflow.counters.tasks).toBe(5); expect(await worker!.runOnce()).toBe(0);
     expect(() => worker!.retry(detail.stages.at(-1)!.task_id!)).toThrow(/controller/);
     const bytes = readFileSync(join(state, "workflows/workflows.json"));
     expect(() => mutateWorkflowDocument((document) => { document.lineages[detail.workflow.lineage_id!]!.corrections_consumed = 0; })).toThrow();
@@ -1092,12 +1091,22 @@ describe("T013 correction completion and exhausted-authority recovery", () => {
   }, 90000);
 
   it("does not replay an exhausted second correction request through duplicate ticks, a fresh worker or explicit recovery", async () => {
-    const f = await correctionFixture({ repeatFinding: true });
+    const f = await correctionFixture({ repeatFinding: true, checkpointSetup: true });
     await f.advanceStage("qa"); await f.advanceStage("correction"); const exhausted = await f.advance("review");
     const current = exhausted.stages.at(-1)!;
     expect(exhausted.workflow.status).toBe("needs-decision"); expect(exhausted.workflow.blocked_reason).toContain("single correction");
     expect(exhausted.lineage!.corrections_consumed).toBe(1); expect(exhausted.workflow.counters).toMatchObject({ tasks: 6, attempts: 6, total_tokens: 18, accounting_complete: true });
+    const checkpoint = f.checkpoint();
+    expect(checkpoint.workflow.status).toBe("needs-decision");
+    expect(checkpoint.lineage!.corrections_consumed).toBe(1);
+    expect(checkpoint.workflow.counters.tasks).toBe(6);
+    expect(await worker!.runOnce()).toBe(0);
+    expect(() => worker!.retry(checkpoint.stages.at(-1)!.task_id!)).toThrow(/controller/);
     const workflowBytes = readFileSync(join(state, "workflows/workflows.json")), issueBytes = readFileSync(join(state, "issues/issues.json")), identities = listTasks().map((task) => task.envelope.id).sort();
+    expect(() => mutateWorkflowDocument((document) => { document.lineages[checkpoint.workflow.lineage_id!]!.corrections_consumed = 0; })).toThrow();
+    expect(readFileSync(join(state, "workflows/workflows.json")).equals(workflowBytes)).toBe(true);
+    new WorkflowOrchestrator(root).reconcile();
+    expect(f.checkpoint().lineage!.corrections_consumed).toBe(1);
     await worker!.stop();
     const restarted = new WorkflowOrchestrator(root); worker = new TaskOrchestrator({ repoRoot: root, workflows: restarted, executor: f.executor, maxConcurrent: 1 });
     for (const duplicate of [f.controller, restarted, new WorkflowOrchestrator(root)]) duplicate.reconcile();

@@ -1739,6 +1739,44 @@ async function main(): Promise<void> {
     await recordedManifest.getByText(defaultPreview.fingerprint, { exact: true }).waitFor();
     await page.getByRole("button", { name: "Volver", exact: true }).click();
 
+    stage = "distinguish healthy empty and unavailable external Issues in Chromium";
+    const inboxRoute = new URL("/api/inbox", dashboardUrl).href;
+    const syntheticIssueUrl = "https://example.invalid/available/issues/1";
+    const serveSyntheticInbox = async (route: Route) => {
+      if (route.request().method() !== "GET") { await route.continue(); return; }
+      await route.fulfill({ status: 200, json: {
+        items: [{ number: 1, title: "Synthetic external issue", url: syntheticIssueUrl,
+          updatedAt: "2026-05-20T00:00:00Z", labels: [], projectId: "available", slug: "fixture/available" }],
+        repos: [
+          { id: "empty", slug: "fixture/empty", ok: true },
+          { id: "failed", slug: "fixture/failed", ok: false },
+          { id: "available", slug: "fixture/available", ok: true },
+        ],
+      } });
+    };
+    await page.route(inboxRoute, serveSyntheticInbox);
+    try {
+      const response = await observeResponse(page, "/api/inbox", "GET",
+        () => page.getByRole("button", { name: "Issues", exact: true }).click());
+      assert.equal(response.url(), inboxRoute);
+      assert.equal(response.status(), 200);
+      const inboxPanel = page.locator(".work-provider-issues");
+      const link = inboxPanel.getByRole("link", { name: "Synthetic external issue", exact: true });
+      await link.waitFor();
+      assert.equal(await link.getAttribute("href"), syntheticIssueUrl);
+      await inboxPanel.getByText("No se pudo leer: failed.", { exact: true }).waitFor();
+      const filter = inboxPanel.getByLabel("Repositorio externo");
+      const empty = inboxPanel.getByText("Sin issues externos abiertos", { exact: true });
+      await filter.selectOption("empty");
+      await empty.waitFor();
+      await filter.selectOption("failed");
+      await inboxPanel.getByText("Issues externos no disponibles para este repositorio.", { exact: true }).waitFor();
+      assert.equal(await empty.count(), 0);
+    } finally {
+      await page.unroute(inboxRoute, serveSyntheticInbox);
+    }
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
+
     const pendingIntakeKey = "surtec.work-issue.pending-request.v1";
     const intakePosts: ManualIssueCreateInput[] = [];
     const recordIntake = (request: Request) => {

@@ -10,6 +10,12 @@ T033 closed with the integrated Chromium smoke on the catalog-fix revision `b274
 
 The exact Harness catalog now accepts the full offline EVAL script and rejects the earlier form that omits organizational checks. The subsequent [master CI run](https://github.com/MarcosArielFontenla/surtec-control-plane/actions/runs/44156844788) passed Harness, EVALs, tests, typecheck and build. Its dependency audit failed on the Vite dependency `picomatch@4.0.7`. npm reported `4.0.7` as the latest published version at verification time. The audit remains required. See [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf).
 
+**Dependency audit recheck (2026-11-27).** `pnpm audit:check` passed with pnpm 10.24.0 and the dependency inputs of remote `master` at `1e926eb`. The command exited 0 and reported `No known vulnerabilities found`. GitHub [withdrew GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) on 2026-11-18. The earlier CI failure remains historical evidence. The audit gate still runs `pnpm audit --audit-level moderate` with the same dependency declarations and lockfile.
+
+**Integrated local candidate gate.** On `885e9ab`, `pnpm ci:check` passed in **893.031 seconds**, leaving **6.969 seconds** within the 900-second limit. All 186 Vitest files passed (7,140 tests passed and 14 skipped). Typecheck and build passed. The subsequent `pnpm audit:check` passed in 1.922 seconds and reported `No known vulnerabilities found`. The timing reporter closed and the run's temporary directory was removed.
+
+The earlier runs on `3139a0c` remain historical evidence. Two runs reached the 900-second limit in Vitest, and an intervening run stopped when the EVALs and full suite attempted to write to the same timing directory. The passing run used separate timing directories and included the consolidation of duplicate repeated-finding coverage. The 6.969-second margin applies to this observed run.
+
 Use the same comparison fields for both pilots: elapsed time from request to acceptance, observed tokens and accounting completeness, human interventions, failed attempts and rework. Keep criteria, verification and acceptance evidence for both. Add specialized review and additional roles only where the task risk warrants them. Review repeated instructions before changing a control, keeping one authoritative source for each decision. Use pilot evidence to prioritize further scaffold work. Remote multi-user access needs a separate authentication, permissions and isolation design.
 
 ### Small pilot closed · Blocked by cost
@@ -65,7 +71,15 @@ The test recovered **all six Local Issues criteria** from the retained text: com
 
 The preflight passed on `master` at `ad72896`. It recovered evidence for confirmed emptiness, provider unavailability, partial results with filters and links, and the synthetic API and Chromium verification points. The four scoped reads used **3,921 UTF-8 bytes** in total: 2,597 for the Issues view, 889 for component tests, 296 for the API fixture, and 139 for the browser smoke. All four fit within 4 KiB per response and 12 KiB per turn without truncation.
 
-All 10 focused synthetic tests passed. Negative cases verified refusal of out-of-scope and fifth reads, missing or ambiguous evidence, and oversized windows. Candidate verification, live token usage, and delivery acceptance remain pending. No model call or product change was needed for this checkpoint.
+All 10 focused synthetic tests passed. Negative cases verified refusal of out-of-scope and fifth reads, missing or ambiguous evidence, and oversized windows. Candidate verification, live token usage, and delivery acceptance were still pending at this checkpoint. No model call or product change was needed for this checkpoint.
+
+#### External Issues follow-up closed · Assisted delivery
+
+The owner accepted the combined candidate locally at `c288504`. The follow-up's model attempts stopped without an applicable diff. The IssuesView change and the separate Chromium case for `GET /api/inbox` were prepared locally and validated together in the isolated checkout. The fix distinguishes a confirmed empty result from an unavailable inbox or repository while retaining available issues, filtering and links.
+
+Patch hashes and applicability were verified. The focused IssuesView tests passed (89 passed, one skipped by configuration), typecheck passed, and the full smoke with the real local API and Chromium passed, including the new synthetic inbox case. Temporary resources were cleaned up.
+
+The follow-up recorded **51,741 observed tokens** across attempts with known usage. This is an observed subtotal, and the original cost-blocked pilot keeps its separate **219,670-token** record with incomplete accounting. The follow-up is closed as an assisted delivery with a local commit.
 
 ## F3 and F5 local acceptance — 2026-11-12
 
